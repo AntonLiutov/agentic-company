@@ -1,0 +1,349 @@
+import json
+import subprocess
+from collections.abc import Sequence
+from pathlib import Path
+
+from agentic_company.agents.fullstack import CodexCliRunner
+from agentic_company.agents.planning import run_pipeline
+from agentic_company.integrations.codex.cli import resolve_codex_binary
+from agentic_company.integrations.codex.events import (
+    append_raw_codex_event,
+    parse_codex_event_sections,
+    render_raw_codex_events,
+    write_structured_codex_artifacts,
+)
+
+
+def test_codex_cli_runner_invokes_codex_exec_with_planning_context(
+    tmp_path, write_sample_requirements
+):
+    run_dir = _create_planning_run(tmp_path, write_sample_requirements)
+    calls: list[tuple[Sequence[str], str, int, Path]] = []
+
+    def fake_executor(
+        command: Sequence[str],
+        prompt: str,
+        timeout_seconds: int,
+        log_path: Path,
+        raw_events_path: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((command, prompt, timeout_seconds, log_path))
+        summary_path = Path(command[command.index("--output-last-message") + 1])
+        summary_path.write_text(
+            "# Execution Summary\n\nStatus: codex completed\n", encoding="utf-8"
+        )
+        log_path.write_text("streamed log output\n", encoding="utf-8")
+        stdout = "\n".join(
+            [
+                json.dumps({"method": "turn/started", "params": {}}),
+                json.dumps(
+                    {
+                        "method": "item/agentMessage/delta",
+                        "params": {"delta": "Working now.", "phase": "commentary"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "method": "item/commandExecution/outputDelta",
+                        "params": {"delta": "pytest passed\n"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "method": "turn/diff/updated",
+                        "params": {"diff": "diff --git a/app.py b/app.py\n"},
+                    }
+                ),
+                json.dumps(
+                    {"method": "turn/completed", "params": {"turn": {"status": "completed"}}}
+                ),
+            ]
+        )
+        raw_events_path.write_text(stdout + "\n", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    result = CodexCliRunner(
+        codex_binary="codex-test",
+        timeout_seconds=42,
+        command_executor=fake_executor,
+    ).run(run_dir)
+
+    command, prompt, timeout_seconds, log_path = calls[0]
+
+    assert result.status == "codex_completed"
+    assert timeout_seconds == 42
+    assert log_path == run_dir / "codex" / "execution.log"
+    assert (run_dir / "codex" / "prompt.md").exists()
+    assert (run_dir / "codex" / "execution.log").exists()
+    assert not (run_dir / "08-qa-report.md").exists()
+    assert not (run_dir / "09-handoff-summary.md").exists()
+    assert not (run_dir / "12-deployment-request.md").exists()
+    assert command[:2] == ["codex-test", "exec"]
+    assert command[command.index("--model") + 1] == "gpt-5.5"
+    assert command[command.index("--sandbox") + 1] == "workspace-write"
+    assert command[command.index("--cd") + 1] == str(run_dir / "generated-project")
+    assert command[command.index("--add-dir") + 1] == str(run_dir)
+    assert "--skip-git-repo-check" in command
+    assert "--json" in command
+    assert command[-1] == "-"
+    assert "Implementation brief:" in prompt
+    assert "Simple LLM Chat" in prompt
+    assert "Work only inside the target project directory." in prompt
+    assert "Do not print secret values" in prompt
+    assert "Prefer `uv`" in prompt
+    assert "pyproject.toml" in prompt
+    assert "uv.lock" in prompt
+    assert "docker compose up --build" in prompt
+    assert "Do not install `uv` with `pip` inside Docker" in prompt
+    assert "--mount=type=cache,target=/root/.cache/uv" in prompt
+    assert "uv run --no-sync" in prompt
+    assert "dependency cache" in prompt
+    events = _read_jsonl(run_dir / "codex" / "events.jsonl")
+    sections = parse_codex_event_sections(events)
+    assert "Turn started" in sections["events"]
+    assert "Working now." in sections["commentary"]
+    assert "pytest passed" in sections["command"]
+    assert "diff --git" in sections["diff"]
+
+    events = _read_events(run_dir)
+    assert any(
+        event["event"] == "execution_started" and event["data"]["provider"] == "codex-cli"
+        for event in events
+    )
+    assert any(
+        event["event"] == "execution_completed" and event["data"]["status"] == "codex_completed"
+        for event in events
+    )
+
+
+def test_codex_cli_runner_records_failure_summary_when_codex_fails(
+    tmp_path, write_sample_requirements
+):
+    run_dir = _create_planning_run(tmp_path, write_sample_requirements)
+
+    def fake_executor(
+        command: Sequence[str],
+        prompt: str,
+        timeout_seconds: int,
+        log_path: Path,
+        raw_events_path: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        log_path.write_text("boom\n", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="boom")
+
+    result = CodexCliRunner(command_executor=fake_executor).run(run_dir)
+
+    assert result.status == "codex_failed"
+    assert (run_dir / "07-execution-summary.md").exists()
+    assert "boom" in result.summary
+
+    events = _read_events(run_dir)
+    assert any(
+        event["event"] == "execution_failed" and event["data"]["status"] == "codex_failed"
+        for event in events
+    )
+
+
+def test_codex_cli_runner_can_retry_after_failed_summary(tmp_path, write_sample_requirements):
+    run_dir = _create_planning_run(tmp_path, write_sample_requirements)
+    calls = 0
+
+    def failing_executor(
+        command: Sequence[str],
+        prompt: str,
+        timeout_seconds: int,
+        log_path: Path,
+        raw_events_path: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        log_path.write_text("boom\n", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="boom")
+
+    runner = CodexCliRunner(command_executor=failing_executor)
+
+    first = runner.run(run_dir)
+    second = runner.run(run_dir)
+
+    assert first.status == "codex_failed"
+    assert second.status == "codex_failed"
+    assert calls == 2
+
+
+def test_resolve_codex_binary_falls_back_to_latest_chatgpt_extension(tmp_path):
+    extension_root = (
+        tmp_path
+        / ".vscode"
+        / "extensions"
+        / "openai.chatgpt-26.422.30944-win32-x64"
+        / "bin"
+        / "windows-x86_64"
+    )
+    extension_root.mkdir(parents=True)
+    codex = extension_root / "codex.exe"
+    codex.write_text("", encoding="utf-8")
+
+    resolved = resolve_codex_binary(
+        env={},
+        home=tmp_path,
+        path_lookup=lambda _name: None,
+    )
+
+    assert resolved == str(codex)
+
+
+def test_resolve_codex_binary_prefers_env_override(tmp_path):
+    resolved = resolve_codex_binary(
+        env={"CODEX_BINARY": "C:\\custom\\codex.exe"},
+        home=tmp_path,
+        path_lookup=lambda _name: "ignored",
+    )
+
+    assert resolved == "C:\\custom\\codex.exe"
+
+
+def test_parse_codex_event_sections_handles_completed_agent_messages_and_file_changes():
+    events = [
+        {"type": "thread.started", "thread_id": "thread-1"},
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "item_0",
+                "type": "agent_message",
+                "text": "I\u00e2\u20ac\u2122ll inspect first.",
+            },
+        },
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "item_1",
+                "type": "agent_message",
+                "text": "Then I\u00e2\u20ac\u2122ll write files.",
+            },
+        },
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "command": "python -m py_compile app.py",
+                "aggregated_output": "",
+                "exit_code": 0,
+                "status": "completed",
+            },
+        },
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "file_change",
+                "status": "completed",
+                "changes": [{"kind": "add", "path": "app.py"}],
+            },
+        },
+    ]
+
+    sections = parse_codex_event_sections(events)
+    raw = render_raw_codex_events(events)
+
+    assert "Thread started: thread-1" in sections["events"]
+    assert "I\u2019ll inspect first.\n\nThen I\u2019ll write files." in sections["commentary"]
+    assert "python -m py_compile app.py" in sections["command"]
+    assert "exit_code=0" in sections["command"]
+    assert "- add: app.py" in sections["diff"]
+    assert "I\u2019ll inspect first." in raw
+
+
+def test_append_raw_codex_event_persists_json_events_as_lines(tmp_path):
+    raw_events_path = tmp_path / "codex-events.jsonl"
+
+    append_raw_codex_event(
+        raw_events_path,
+        json.dumps(
+            {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": "I\u00e2\u20ac\u2122m live."},
+            }
+        ),
+    )
+    append_raw_codex_event(raw_events_path, "plain stderr line")
+
+    events = _read_jsonl(raw_events_path)
+    sections = parse_codex_event_sections(events)
+
+    assert len(events) == 1
+    assert "I\u2019m live." in sections["commentary"]
+
+
+def test_write_structured_codex_artifacts_preserves_streamed_timestamps(tmp_path):
+    run_dir = tmp_path / "run"
+    raw_path = run_dir / "codex" / "events.jsonl"
+    raw_path.parent.mkdir(parents=True)
+    raw_path.write_text(
+        json.dumps(
+            {
+                "type": "item.completed",
+                "recorded_at": "2026-04-27T00:36:01",
+                "item": {"type": "agent_message", "text": "streamed first"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    artifacts = write_structured_codex_artifacts(
+        run_dir,
+        json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "agent_message",
+                    "text": "final rewrite should not replace streamed file",
+                },
+            }
+        ),
+        raw_events_filename="codex/events.jsonl",
+    )
+
+    events = _read_jsonl(raw_path)
+
+    assert artifacts == ["codex/events.jsonl"]
+    assert events[0]["recorded_at"] == "2026-04-27T00:36:01"
+    assert events[0]["item"]["text"] == "streamed first"
+
+
+def test_append_raw_codex_event_redacts_secret_values(tmp_path):
+    raw_path = tmp_path / "events.jsonl"
+
+    append_raw_codex_event(
+        raw_path,
+        json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "aggregated_output": "OPENAI_API_KEY=sk-secretsecretsecret",
+                },
+            }
+        ),
+    )
+
+    raw_text = raw_path.read_text(encoding="utf-8")
+
+    assert "sk-secretsecretsecret" not in raw_text
+    assert "***REDACTED***" in raw_text
+
+
+def _create_planning_run(tmp_path: Path, write_sample_requirements) -> Path:
+    requirements = tmp_path / "requirements.md"
+    write_sample_requirements(requirements)
+    return run_pipeline(requirements, tmp_path / "runs", run_id="codex-runner-test")
+
+
+def _read_events(run_dir: Path) -> list[dict[str, object]]:
+    return [
+        json.loads(line)
+        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+
+
+def _read_jsonl(path: Path) -> list[dict[str, object]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]

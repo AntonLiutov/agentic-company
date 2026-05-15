@@ -1,0 +1,27 @@
+id: template-agent
+name: Template Agent
+family: template
+version: 0.1.0
+status: draft
+activation:
+  complexity:
+    - low
+    - medium
+    - high
+  phases:
+    - discovery
+    - planning
+    - delivery
+    - handoff
+inputs: []
+outputs: []
+decision_rights:
+  autonomous: []
+  escalate: []
+handoffs:
+  receives_from: []
+  sends_to: []
+runtime:
+  goals: []
+  guardrails: []
+  style: concise_and_structured

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-company.local/agents/planning/schemas/staffing-decision.schema.json",
+  "title": "Staffing Decision",
+  "type": "object",
+  "required": [
+    "project_type",
+    "complexity",
+    "delivery_mode",
+    "selected_agents",
+    "optional_agents",
+    "rationale"
+  ],
+  "properties": {
+    "project_type": { "type": "string" },
+    "complexity": { "type": "string" },
+    "delivery_mode": { "type": "string" },
+    "selected_agents": { "type": "array", "items": { "type": "string" } },
+    "optional_agents": { "type": "array", "items": { "type": "string" } },
+    "rationale": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-company.local/agents/planning/schemas/workflow-plan.schema.json",
+  "title": "Workflow Plan",
+  "type": "object",
+  "required": ["workflow_id", "project_name", "phases"],
+  "properties": {
+    "workflow_id": { "type": "string" },
+    "project_name": { "type": "string" },
+    "phases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "owner", "outputs"],
+        "properties": {
+          "name": { "type": "string" },
+          "owner": { "type": "string" },
+          "outputs": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

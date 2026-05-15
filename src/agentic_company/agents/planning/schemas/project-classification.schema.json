@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-company.local/agents/planning/schemas/project-classification.schema.json",
+  "title": "Project Classification",
+  "type": "object",
+  "required": ["project_type", "complexity", "delivery_mode", "rationale"],
+  "properties": {
+    "project_type": { "type": "string" },
+    "complexity": { "type": "string", "enum": ["low", "medium", "high"] },
+    "delivery_mode": { "type": "string" },
+    "rationale": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}
