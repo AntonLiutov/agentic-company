@@ -1,4 +1,4 @@
-﻿# Platform Rearchitecture
+# Platform Rearchitecture
 
 This is the active development stage after the first end-to-end PoC.
 
@@ -314,9 +314,9 @@ Implementation notes:
 ```text
 planning_node -> run_pipeline
 fullstack_node -> CodexCliRunner
-qa_node -> QualityRunner
+qa_node -> QualityCodexRunner
 deployment_node -> DeploymentAgent graph
-handoff_node -> write_handoff_summary
+handoff_node -> HandoffCodexRunner
 ```
 
 - The first graph can be linear:
@@ -453,7 +453,8 @@ Implementation notes:
 
 - `PlanningAgent` wraps the deterministic planning pipeline.
 - `FullstackAgent` wraps `CodexCliRunner`.
-- `QualityAgent` wraps `QualityRunner`.
+- `QualityAgent` wraps `QualityCodexRunner`; QA Codex owns quality work and the
+  platform only parses the output contract.
 - `DeploymentAgent` wraps deployment plan/request and `AzureDeploymentRunner`.
 - `HandoffAgent` wraps handoff rendering.
 - The graph should call agent wrappers, not lower-level helpers directly.
@@ -491,18 +492,9 @@ Goal:
 Quality Agent graph:
 
 ```text
-prepare_context
-  -> check_existing_evidence
-  -> prepare_evidence
-  -> build_test_plan
-  -> artifact_checks
-  -> static_security_checks
-  -> python_checks
-  -> docker_checks
-  -> browser_checks
-  -> summarize_results
-  -> write_report
-  -> apply_result
+codex_quality_execution
+  -> parse_quality_contract
+  -> apply_quality_result
 ```
 
 Deployment Agent graph:
@@ -521,14 +513,15 @@ load_deployment_request
 
 Implementation notes:
 
-- Start with QA because it has the clearest deterministic check sequence.
-- Keep old `QualityRunner` as a compatibility facade until the new graph is stable.
-- Then convert deployment with the same pattern.
+- QA must not be modeled as fixed internal check nodes. The QA Codex Agent decides,
+  generates, and executes the necessary checks for the active feature.
+- Then convert deployment with the same Codex-agent ownership pattern when we are
+  ready to make deployment less deterministic.
 - Each subgraph should expose one public agent `run(state)` method to the company graph.
 
 Acceptance criteria:
 
-- QA subgraph writes the same QA report/results/log artifacts as today.
+- QA Codex writes feature-scoped QA report/results/log artifacts.
 - Deployment subgraph writes the same deployment summary/log/handoff behavior as today.
 - Existing tests still pass or are updated without weakening coverage.
 - New tests prove subgraph node order and pass/fail routing.

@@ -14,6 +14,7 @@ from agentic_company.orchestration.graphs import (
     DeliveryGraphNodes,
     run_delivery_graph,
 )
+from agentic_company.platform.artifacts import load_execution_request
 from agentic_company.platform.events import write_event
 from agentic_company.platform.state import DeliveryState, initial_delivery_state
 
@@ -53,6 +54,7 @@ class DeliveryGraphRuntime:
                 target_project_dir=target_project_dir,
                 max_repair_attempts=max_repair_attempts,
             )
+            state = self._hydrate_existing_run_context(run_dir, state)
             self.save_state(run_dir, state)
             self._write_state_event(event_log, state)
 
@@ -168,6 +170,23 @@ class DeliveryGraphRuntime:
             raise ValueError(f"Delivery graph node is not configured: {node_name}")
 
         def run(state: DeliveryState) -> DeliveryState:
+            blockers = state.get("blockers", [])
+            if blockers:
+                write_event(
+                    event_log,
+                    run_id,
+                    GRAPH_AGENT_ID,
+                    "delivery_graph_node_skipped",
+                    {
+                        "node": node_name,
+                        "stage": state["stage"],
+                        "status": state["status"],
+                        "reason": "state_has_blockers",
+                        "blockers": blockers,
+                    },
+                )
+                return state
+
             write_event(
                 event_log,
                 run_id,
@@ -206,6 +225,8 @@ class DeliveryGraphRuntime:
                     "status": updated["status"],
                 },
             )
+            self.save_state(Path(updated["run_dir"]), updated)
+            self._write_state_event(event_log, updated)
             return updated
 
         return run
@@ -222,3 +243,28 @@ class DeliveryGraphRuntime:
                 "state_artifact": self.state_filename,
             },
         )
+
+    def _hydrate_existing_run_context(
+        self,
+        run_dir: Path,
+        state: DeliveryState,
+    ) -> DeliveryState:
+        request_path = run_dir / "06-execution-request.json"
+        if not request_path.exists():
+            return state
+
+        request = load_execution_request(run_dir)
+        updated: DeliveryState = {**state}
+        updated["target_project_dir"] = request.target_project_dir
+        updated["project_archetype"] = request.project_archetype
+        updated["feature_queue"] = request.feature_queue
+        updated["completed_feature_ids"] = request.completed_feature_ids
+        updated["feature_statuses"] = {
+            feature_id: "qa_passed" for feature_id in request.completed_feature_ids
+        }
+        updated["feature_repair_attempts"] = {}
+        active_feature = request.active_feature
+        updated["active_feature_id"] = (
+            str(active_feature["id"]) if active_feature and active_feature.get("id") else None
+        )
+        return updated

@@ -33,7 +33,9 @@ def test_agent_registry_lists_first_class_delivery_agents():
         "deployment-agent",
         "documentation-handoff-agent",
     ]
-    assert agent_by_id("qa-agent").runtime == "L2 Tool Executor"
+    assert agent_by_id("qa-agent").runtime == "L6 Codex QA Agent"
+    assert agent_by_id("deployment-agent").runtime == "L6 Codex Deployment Agent"
+    assert agent_by_id("documentation-handoff-agent").runtime == "L6 Codex Handoff Agent"
     with pytest.raises(KeyError):
         agent_by_id("missing-agent")
 
@@ -122,7 +124,7 @@ def test_azure_deployment_agent_maps_deployment_status(tmp_path):
     assert result["completed_nodes"] == ["deployment"]
 
 
-def test_handoff_agent_writes_handoff_artifact(tmp_path):
+def test_handoff_agent_maps_handoff_status_and_artifacts(tmp_path):
     run_dir = tmp_path / "run"
     target_dir = run_dir / "generated-project"
     state = initial_delivery_state(
@@ -130,23 +132,42 @@ def test_handoff_agent_writes_handoff_artifact(tmp_path):
         run_dir=run_dir,
         target_project_dir=target_dir,
     )
-    calls: list[tuple[Path, Path, str]] = []
+    runner = FakeRunner(
+        AgentRunResult(
+            agent_id="handoff-codex-agent",
+            status="handoff_ready",
+            output_artifacts=[
+                "09-handoff-summary.md",
+                "handoff/release-report.html",
+                "handoff/release-evidence.json",
+            ],
+            summary="ready",
+        )
+    )
 
-    def writer(run_dir_arg: Path, target_dir_arg: Path, run_id: str) -> str:
-        calls.append((run_dir_arg, target_dir_arg, run_id))
-        return "09-handoff-summary.md"
+    result = HandoffAgent(runner=runner).run(state)
 
-    result = HandoffAgent(writer=writer).run(state)
-
-    assert calls == [(run_dir, target_dir, "run")]
+    assert runner.run_dirs == [run_dir]
     assert result["stage"] == "handoff"
-    assert result["status"] == "completed"
+    assert result["status"] == "handoff_ready"
     assert result["completed_nodes"] == ["handoff"]
     assert result["artifacts"] == [
         {
             "path": "09-handoff-summary.md",
             "kind": "handoff",
-            "owner_agent": "documentation-handoff-agent",
+            "owner_agent": "handoff-codex-agent",
             "visibility": "user",
-        }
+        },
+        {
+            "path": "handoff/release-report.html",
+            "kind": "handoff",
+            "owner_agent": "handoff-codex-agent",
+            "visibility": "user",
+        },
+        {
+            "path": "handoff/release-evidence.json",
+            "kind": "handoff",
+            "owner_agent": "handoff-codex-agent",
+            "visibility": "user",
+        },
     ]

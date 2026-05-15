@@ -84,12 +84,18 @@ def test_delivery_graph_can_run_console_execution_subset(tmp_path):
     def node(name: str):
         def run(state: DeliveryState) -> DeliveryState:
             visited.append(name)
-            return {
+            updated: DeliveryState = {
                 **state,
                 "stage": name,
                 "status": f"{name}_completed",
                 "completed_nodes": [*state["completed_nodes"], name],
             }
+            if name == "qa":
+                updated["qa_status"] = "passed"
+            if name == "deployment":
+                updated["status"] = "deployment_deployed"
+                updated["deployment_status"] = "deployed"
+            return updated
 
         return run
 
@@ -112,8 +118,96 @@ def test_delivery_graph_can_run_console_execution_subset(tmp_path):
 
     assert visited == CONSOLE_EXECUTION_NODE_ORDER
     assert result["completed_nodes"] == CONSOLE_EXECUTION_NODE_ORDER
-    assert "deployment" not in visited
-    assert "handoff" not in visited
+    assert "handoff" in visited
+    assert result["deployment_status"] == "deployed"
+
+
+def test_delivery_graph_loops_fullstack_and_qa_per_multi_service_feature(tmp_path):
+    visited: list[str] = []
+    feature_queue = [
+        {"id": "F1", "title": "Create tasks", "delivery_order": 1},
+        {"id": "F2", "title": "Mark tasks done", "delivery_order": 2},
+    ]
+
+    def fullstack(state: DeliveryState) -> DeliveryState:
+        feature_id = str(state["active_feature_id"])
+        visited.append(f"fullstack:{feature_id}")
+        feature_statuses = dict(state.get("feature_statuses", {}))
+        feature_statuses[feature_id] = "implemented"
+        return {
+            **state,
+            "stage": "fullstack",
+            "status": "fullstack_feature_implemented",
+            "completed_nodes": [*state["completed_nodes"], "fullstack"],
+            "feature_statuses": feature_statuses,
+        }
+
+    def qa(state: DeliveryState) -> DeliveryState:
+        feature_id = str(state["active_feature_id"])
+        visited.append(f"qa:{feature_id}")
+        completed = [*state.get("completed_feature_ids", []), feature_id]
+        next_feature = next(
+            (feature for feature in feature_queue if str(feature["id"]) not in completed),
+            None,
+        )
+        feature_statuses = dict(state.get("feature_statuses", {}))
+        feature_statuses[feature_id] = "qa_passed"
+        return {
+            **state,
+            "stage": "qa",
+            "status": "qa_feature_passed_next_feature_ready"
+            if next_feature
+            else "feature_queue_qa_completed_deployment_ready",
+            "completed_nodes": [*state["completed_nodes"], f"qa:{feature_id}"],
+            "completed_feature_ids": completed,
+            "active_feature_id": str(next_feature["id"]) if next_feature else None,
+            "feature_statuses": feature_statuses,
+            "qa_status": "passed",
+        }
+
+    def deployment(state: DeliveryState) -> DeliveryState:
+        visited.append("deployment")
+        return {
+            **state,
+            "stage": "deployment",
+            "status": "deployment_deployed",
+            "deployment_status": "deployed",
+            "completed_nodes": [*state["completed_nodes"], "deployment"],
+        }
+
+    def handoff(state: DeliveryState) -> DeliveryState:
+        visited.append("handoff")
+        return {
+            **state,
+            "stage": "handoff",
+            "status": "handoff_completed",
+            "completed_nodes": [*state["completed_nodes"], "handoff"],
+        }
+
+    state = initial_delivery_state(
+        run_id="feature-loop-test",
+        run_dir=tmp_path / "runs" / "feature-loop-test",
+    )
+    state["project_archetype"] = "api-web-compose"
+    state["feature_queue"] = feature_queue
+    state["active_feature_id"] = "F1"
+
+    result = run_delivery_graph(
+        state,
+        nodes=DeliveryGraphNodes(
+            fullstack=fullstack,
+            qa=qa,
+            deployment=deployment,
+            handoff=handoff,
+        ),
+        node_order=CONSOLE_EXECUTION_NODE_ORDER,
+    )
+
+    assert visited == ["fullstack:F1", "qa:F1", "fullstack:F2", "qa:F2", "deployment", "handoff"]
+    assert result["completed_feature_ids"] == ["F1", "F2"]
+    assert result["active_feature_id"] is None
+    assert result["status"] == "handoff_completed"
+    assert result["deployment_status"] == "deployed"
 
 
 def test_delivery_graph_renders_mermaid_design():
@@ -129,5 +223,8 @@ def test_console_execution_graph_renders_mermaid_design():
     mermaid = render_delivery_graph_mermaid(node_order=CONSOLE_EXECUTION_NODE_ORDER)
 
     assert "__start__ --> fullstack;" in mermaid
-    assert "qa --> __end__;" in mermaid
-    assert "deployment --> handoff;" not in mermaid
+    assert "qa -.-> fullstack;" in mermaid
+    assert "qa -.-> deployment;" in mermaid
+    assert "qa -. &nbsp;end&nbsp; .-> __end__;" in mermaid
+    assert "deployment -.-> handoff;" in mermaid
+    assert "handoff --> __end__;" in mermaid

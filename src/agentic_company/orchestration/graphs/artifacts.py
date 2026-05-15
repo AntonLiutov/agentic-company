@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agentic_company.orchestration.graphs.rendering import (
-    render_delivery_expanded_graph_mermaid,
+    render_delivery_graph_mermaid,
 )
+from agentic_company.orchestration.graphs.routing import CONSOLE_EXECUTION_NODE_ORDER
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +39,7 @@ def graph_artifact_specs() -> list[GraphArtifactSpec]:
             relative_path=Path(
                 "src/agentic_company/orchestration/graphs/delivery-graph.mmd",
             ),
-            render=render_delivery_expanded_graph_mermaid,
+            render=lambda: render_delivery_graph_mermaid(node_order=CONSOLE_EXECUTION_NODE_ORDER),
         ),
     ]
 

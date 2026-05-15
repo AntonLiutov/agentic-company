@@ -4,6 +4,7 @@ from agentic_company.console.live_logs import (
     command_progress_entries,
     friendly_log_entries,
 )
+from agentic_company.console.views.live_logs import _codex_event_paths, _codex_log_paths
 
 
 def test_command_progress_entries_include_started_and_completed_steps(tmp_path: Path):
@@ -74,3 +75,78 @@ def test_friendly_log_entries_include_delivery_graph_events(tmp_path: Path):
     assert "Graph node completed" in rendered
     assert "`delivery-graph` | node=fullstack status=codex_completed" in rendered
     assert "Delivery graph completed" in rendered
+
+
+def test_friendly_log_entries_label_codex_feature_messages(tmp_path: Path):
+    rendered = "\n".join(
+        friendly_log_entries(
+            [],
+            [
+                {
+                    "recorded_at": "2026-05-02T00:41:55",
+                    "feature_id": "F1",
+                    "type": "item.completed",
+                    "item": {
+                        "type": "agent_message",
+                        "text": "I am implementing the create/list feature.",
+                    },
+                }
+            ],
+            qa_log=tmp_path / "missing-qa.log",
+            deployment_log=tmp_path / "missing-deployment.log",
+        )
+    )
+
+    assert "Codex (F1)" in rendered
+    assert "create/list feature" in rendered
+
+
+def test_friendly_log_entries_label_qa_codex_feature_messages(tmp_path: Path):
+    rendered = "\n".join(
+        friendly_log_entries(
+            [],
+            [
+                {
+                    "recorded_at": "2026-05-02T00:41:55",
+                    "agent_id": "qa-codex-agent",
+                    "feature_id": "F1",
+                    "type": "item.completed",
+                    "item": {
+                        "type": "agent_message",
+                        "text": "I am reviewing the create/list feature.",
+                    },
+                }
+            ],
+            qa_log=tmp_path / "missing-qa.log",
+            deployment_log=tmp_path / "missing-deployment.log",
+        )
+    )
+
+    assert "QA Codex (F1)" in rendered
+    assert "reviewing the create/list feature" in rendered
+
+
+def test_qa_codex_attempt_logs_are_discovered_recursively(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    attempt_dir = run_dir / "qa" / "codex" / "F1" / "attempt-1"
+    attempt_dir.mkdir(parents=True)
+    events_path = attempt_dir / "events.jsonl"
+    log_path = attempt_dir / "execution.log"
+    events_path.write_text("{}\n", encoding="utf-8")
+    log_path.write_text("QA Codex execution is starting...\n", encoding="utf-8")
+
+    assert events_path in _codex_event_paths(run_dir)
+    assert log_path in _codex_log_paths(run_dir)
+
+
+def test_handoff_codex_attempt_logs_are_discovered_recursively(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    attempt_dir = run_dir / "handoff" / "codex" / "attempt-1"
+    attempt_dir.mkdir(parents=True)
+    events_path = attempt_dir / "events.jsonl"
+    log_path = attempt_dir / "execution.log"
+    events_path.write_text("{}\n", encoding="utf-8")
+    log_path.write_text("Handoff Codex execution is starting...\n", encoding="utf-8")
+
+    assert events_path in _codex_event_paths(run_dir)
+    assert log_path in _codex_log_paths(run_dir)

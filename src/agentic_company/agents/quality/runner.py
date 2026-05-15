@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agentic_company.agents.quality.graph import (
+from agentic_company.agents.quality.legacy_workflow import (
     QA_COMMANDS_LOG_FILENAME,
     QA_DOCKER_SUMMARY_FILENAME,
     QA_REPORT_FILENAME,

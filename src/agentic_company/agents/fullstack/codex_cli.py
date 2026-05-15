@@ -48,10 +48,21 @@ class CodexCliRunner:
         request = load_execution_request(run_dir)
         event_log = run_dir / "events.jsonl"
         target_dir = Path(request.target_project_dir)
-        summary_path = run_dir / self.summary_filename
-        prompt_path = run_dir / self.prompt_filename
-        log_path = run_dir / self.log_filename
-        raw_events_path = run_dir / self.raw_events_filename
+        active_feature_id = _active_feature_id(request)
+        summary_filename = _feature_artifact_filename(
+            self.summary_filename,
+            active_feature_id,
+        )
+        prompt_filename = _feature_artifact_filename(self.prompt_filename, active_feature_id)
+        log_filename = _feature_artifact_filename(self.log_filename, active_feature_id)
+        raw_events_filename = _feature_artifact_filename(
+            self.raw_events_filename,
+            active_feature_id,
+        )
+        summary_path = run_dir / summary_filename
+        prompt_path = run_dir / prompt_filename
+        log_path = run_dir / log_filename
+        raw_events_path = run_dir / raw_events_filename
 
         if summary_path.exists() and not _is_failed_summary(summary_path):
             LOGGER.info("Codex execution already completed run_dir=%s", run_dir)
@@ -59,7 +70,7 @@ class CodexCliRunner:
             return AgentRunResult(
                 agent_id=request.agent_id,
                 status="already_completed",
-                output_artifacts=[self.summary_filename],
+                output_artifacts=[summary_filename],
                 summary=summary,
             )
 
@@ -92,6 +103,7 @@ class CodexCliRunner:
                 "target_project_dir": request.target_project_dir,
                 "provider": "codex-cli",
                 "mode": "codex-exec",
+                **_feature_event_data(active_feature_id),
             },
         )
 
@@ -107,9 +119,10 @@ class CodexCliRunner:
                 request.agent_id,
                 "execution_failed",
                 {
-                    "artifact": self.summary_filename,
+                    "artifact": summary_filename,
                     "target_project_dir": request.target_project_dir,
                     "status": "codex_cli_missing",
+                    **_feature_event_data(active_feature_id),
                 },
             )
             raise RuntimeError(
@@ -118,7 +131,7 @@ class CodexCliRunner:
         structured_artifacts = write_structured_codex_artifacts(
             run_dir,
             completed.stdout,
-            raw_events_filename=self.raw_events_filename,
+            raw_events_filename=raw_events_filename,
         )
 
         if completed.returncode != 0:
@@ -138,16 +151,17 @@ class CodexCliRunner:
                 request.agent_id,
                 "execution_failed",
                 {
-                    "artifact": self.summary_filename,
+                    "artifact": summary_filename,
                     "target_project_dir": request.target_project_dir,
                     "status": "codex_failed",
                     "returncode": completed.returncode,
+                    **_feature_event_data(active_feature_id),
                 },
             )
             return AgentRunResult(
                 agent_id=request.agent_id,
                 status="codex_failed",
-                output_artifacts=[self.summary_filename, self.log_filename, *structured_artifacts],
+                output_artifacts=[summary_filename, log_filename, *structured_artifacts],
                 summary=summary,
             )
 
@@ -163,9 +177,10 @@ class CodexCliRunner:
             request.agent_id,
             "execution_completed",
             {
-                "artifact": self.summary_filename,
+                "artifact": summary_filename,
                 "target_project_dir": request.target_project_dir,
                 "status": "codex_completed",
+                **_feature_event_data(active_feature_id),
             },
         )
         LOGGER.info("Codex execution completed run_id=%s", request.run_id)
@@ -173,9 +188,9 @@ class CodexCliRunner:
             agent_id=request.agent_id,
             status="codex_completed",
             output_artifacts=[
-                self.summary_filename,
-                self.prompt_filename,
-                self.log_filename,
+                summary_filename,
+                prompt_filename,
+                log_filename,
                 *structured_artifacts,
                 *request.expected_outputs,
             ],
@@ -224,6 +239,7 @@ def build_codex_prompt(request: ExecutionRequest, run_dir: Path) -> str:
     outputs = "\n".join(f"- {artifact}" for artifact in request.expected_outputs)
     instructions = "\n".join(f"- {instruction}" for instruction in request.instructions)
     constraints = "\n".join(f"- {constraint}" for constraint in request.constraints)
+    feature_context = _render_feature_context(request)
 
     return f"""You are the Fullstack Agent for agentic-company.
 
@@ -245,6 +261,30 @@ Instructions:
 Constraints:
 {constraints}
 
+Feature delivery context:
+{feature_context}
+
+Workspace ownership:
+- Product implementation files belong inside `{request.target_project_dir}` only.
+- Create application folders there, for example `api/`, `web/`, `src/`, `tests/`,
+  `scripts/`, `docs/`, or other project-local folders when they are part of the
+  generated application.
+- Do not write QA, deployment, handoff, or orchestration artifacts. Those belong
+  to other agents.
+- Do not write outside `{request.target_project_dir}` unless the execution
+  request explicitly names a required run-level artifact.
+- If you create implementation helper scripts or smoke tests, keep them inside
+  the generated project, preferably under `scripts/`, `tests/`, or a clearly
+  named project-local folder.
+- You may create or update project-local `.gitignore` and `.dockerignore` files
+  inside `{request.target_project_dir}` when they keep generated app artifacts,
+  caches, secrets, or Docker contexts clean.
+- Do not update the platform repository's root `.gitignore` or `.dockerignore`
+  unless the execution request explicitly asks for platform-level changes.
+- The platform owns Codex logs and execution summaries outside the generated
+  project; mention generated project files in your final summary instead of
+  creating duplicate run-level reports.
+
 Credential handling:
 - If `{request.target_project_dir}\\.env` already exists, preserve it.
 - Do not print secret values in generated files, logs, summaries, or comments.
@@ -255,6 +295,26 @@ Environment setup:
 - Prefer `uv` for Python project setup and run commands.
 - Include a `pyproject.toml` for generated Python apps when dependencies are needed.
 - Include `uv.lock` when possible so Docker and local setup are reproducible.
+- Local verification may create `.venv`, `__pycache__`, `.pytest_cache`, Playwright
+  caches, or other tool caches inside the generated project. That is acceptable
+  during execution. Exclude those paths in project-local `.gitignore` and
+  `.dockerignore`; do not treat their temporary presence as a delivery failure.
+- Do not recursively list dependency/cache directories such as `.venv`,
+  `node_modules`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.next`,
+  `dist`, or `build`. Use targeted file listings that exclude caches.
+- Do not attempt risky cleanup of locked environments on Windows. If a cache or
+  virtual environment cannot be removed because a process holds a file handle,
+  leave it in place, document it as a local verification artifact, and finish
+  successfully if the product acceptance criteria are satisfied.
+- Do not stop broad sets of processes by matching the generated project path.
+  Only stop an exact process ID that you started and still own; never stop the
+  running Codex process, terminal process, Docker Desktop, or unrelated tools.
+- For `api-web-compose`, Docker Compose naming is not flexible:
+  - service names must be exactly `api` and `web`;
+  - image names must follow the exact `agentic-{{app-slug}}-{{service}}:latest`
+    policy from the execution request;
+  - container names must follow the exact `agentic-{{app-slug}}-{{service}}`
+    policy from the execution request.
 - Keep generated Python dependency constraints stable and minimal. Avoid changing Python
   version requirements or package lower bounds unless the requirements explicitly need it,
   because those changes invalidate Docker dependency cache layers.
@@ -279,6 +339,44 @@ Implementation brief:
 When finished, leave the project files in the working directory and summarize what you built,
 what you intentionally skipped, and how to run it.
 """
+
+
+def _active_feature_id(request: ExecutionRequest) -> str | None:
+    if request.project_archetype != "api-web-compose":
+        return None
+    if not request.active_feature:
+        return None
+    feature_id = request.active_feature.get("id")
+    return str(feature_id) if feature_id else None
+
+
+def _feature_artifact_filename(filename: str, feature_id: str | None) -> str:
+    if not feature_id:
+        return filename
+    path = Path(filename)
+    if path.parent == Path("."):
+        return f"{path.stem}-{feature_id}{path.suffix}"
+    return str(path.parent / feature_id / path.name).replace("\\", "/")
+
+
+def _feature_event_data(feature_id: str | None) -> dict[str, str]:
+    return {"feature_id": feature_id} if feature_id else {}
+
+
+def _render_feature_context(request: ExecutionRequest) -> str:
+    if not request.active_feature:
+        return "- No active feature is scoped for this run; implement the full request."
+
+    feature = request.active_feature
+    criteria = "\n".join(f"  - {criterion}" for criterion in feature.get("acceptance_criteria", []))
+    completed = ", ".join(request.completed_feature_ids) or "none"
+    return f"""- Project archetype: `{request.project_archetype}`
+- Active feature: `{feature.get("id")}` - {feature.get("title")}
+- Active feature acceptance criteria:
+{criteria or "  - None provided."}
+- Completed features before this run: {completed}
+- Implement only the active feature in this Codex run.
+- Preserve behavior for completed features and avoid broad rewrites unless required."""
 
 
 def _is_failed_summary(summary_path: Path) -> bool:

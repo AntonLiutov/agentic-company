@@ -2,29 +2,33 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol
 
 from agentic_company.agents.base import AgentDescriptor
+from agentic_company.agents.handoff.codex_cli import HandoffCodexRunner
 from agentic_company.agents.handoff.graph import run_handoff_agent_graph
-from agentic_company.agents.handoff.summary import write_handoff_summary
+from agentic_company.platform.models import AgentRunResult
 from agentic_company.platform.state import DeliveryState
 
-HandoffWriter = Callable[[Path, Path, str], str]
+
+class RunnerLike(Protocol):
+    def run(self, run_dir: Path) -> AgentRunResult:
+        """Run handoff."""
 
 
 class HandoffAgent:
-    """Write handoff artifacts as a delivery graph agent."""
+    """Run the Handoff specialist as a Codex-owned delivery graph agent."""
 
     descriptor = AgentDescriptor(
         agent_id="documentation-handoff-agent",
         name="Documentation / Handoff Agent",
-        runtime="L0 Deterministic",
+        runtime="L6 Codex Handoff Agent",
         stage="handoff",
     )
 
-    def __init__(self, writer: HandoffWriter = write_handoff_summary) -> None:
-        self.writer = writer
+    def __init__(self, runner: RunnerLike | None = None) -> None:
+        self.runner = runner or HandoffCodexRunner()
 
     def run(self, state: DeliveryState) -> DeliveryState:
-        return run_handoff_agent_graph(state, self.writer)
+        return run_handoff_agent_graph(state, runner=self.runner)

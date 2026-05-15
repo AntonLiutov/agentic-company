@@ -2,12 +2,16 @@ import json
 
 from agentic_company.console.support import (
     PLANNING_ARTIFACTS,
+    artifact_groups_for_run,
     clear_console_runs,
     codex_execution_running,
+    console_status_label,
     create_console_run,
+    delivery_overview_for_run,
     ensure_required_env_defaults,
     execution_completed,
     initial_env_value,
+    list_sample_requirements,
     load_sample_requirements,
     missing_required_env_keys,
     read_events,
@@ -41,6 +45,195 @@ def test_console_run_writes_requirements_artifacts_and_runtime_events(tmp_path):
 
     staffing = json.loads((run_dir / "03-staffing-decision.json").read_text(encoding="utf-8"))
     assert "Fullstack Agent" in staffing["selected_agents"]
+
+
+def test_console_support_lists_and_loads_sample_requirements(tmp_path):
+    requirements_dir = tmp_path / "examples" / "requirements"
+    requirements_dir.mkdir(parents=True)
+    (requirements_dir / "b-sample.md").write_text("Project name: B\n", encoding="utf-8")
+    (requirements_dir / "a-sample.md").write_text("Project name: A\n", encoding="utf-8")
+
+    samples = list_sample_requirements(tmp_path)
+
+    assert [sample.name for sample in samples] == ["a-sample.md", "b-sample.md"]
+    assert load_sample_requirements(tmp_path, "a-sample.md") == "Project name: A\n"
+
+
+def test_artifact_groups_for_run_group_state_artifacts_by_agent(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    for filename, _, _ in PLANNING_ARTIFACTS[:2]:
+        (run_dir / filename).write_text("{}", encoding="utf-8")
+    artifacts = [
+        {
+            "path": "07-execution-summary-F1.md",
+            "kind": "execution",
+            "owner_agent": "fullstack-agent",
+            "visibility": "user",
+        },
+        {
+            "path": "qa/results-F1.json",
+            "kind": "qa",
+            "owner_agent": "qa-agent",
+            "visibility": "user",
+        },
+        {
+            "path": "qa/codex/F1/attempt-1/prompt.md",
+            "kind": "qa",
+            "owner_agent": "qa-agent",
+            "visibility": "user",
+        },
+        {
+            "path": "handoff/release-report.html",
+            "kind": "handoff",
+            "owner_agent": "handoff-codex-agent",
+            "visibility": "user",
+        },
+    ]
+    for artifact in artifacts:
+        path = run_dir / artifact["path"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}" if path.suffix == ".json" else "artifact", encoding="utf-8")
+    (run_dir / ".delivery-state.json").write_text(
+        json.dumps({"artifacts": artifacts}),
+        encoding="utf-8",
+    )
+
+    groups = artifact_groups_for_run(run_dir)
+    grouped_paths = {
+        group_name: [artifact[0] for artifact in group_artifacts]
+        for group_name, _, group_artifacts in groups
+    }
+    qa_labels = [
+        artifact[1]
+        for group_name, _, group_artifacts in groups
+        if group_name == "QA Agent"
+        for artifact in group_artifacts
+    ]
+
+    assert "Planning Agent" in grouped_paths
+    assert groups[0][0] == "Documentation / Handoff Agent"
+    assert grouped_paths["Documentation / Handoff Agent"] == ["handoff/release-report.html"]
+    assert grouped_paths["Fullstack Agent"] == ["07-execution-summary-F1.md"]
+    assert grouped_paths["QA Agent"] == [
+        "qa/results-F1.json",
+        "qa/codex/F1/attempt-1/prompt.md",
+    ]
+    assert "F1 - QA results" in qa_labels
+    assert "F1 - Codex prompt" in qa_labels
+
+
+def test_delivery_overview_scales_feature_queue_and_deployment_targets(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    feature_queue = [
+        {
+            "id": f"F{index}",
+            "title": f"Feature {index}",
+            "delivery_order": index,
+            "suggested_owner_agent": "fullstack-agent",
+        }
+        for index in range(1, 8)
+    ]
+    (run_dir / ".delivery-state.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run",
+                "stage": "handoff",
+                "status": "handoff_ready",
+                "project_archetype": "api-web-compose",
+                "active_feature_id": None,
+                "feature_queue": feature_queue,
+                "completed_feature_ids": [f"F{index}" for index in range(1, 8)],
+                "feature_statuses": {f"F{index}": "qa_passed" for index in range(1, 8)},
+                "feature_repair_attempts": {"F3": 2},
+                "qa_status": "passed",
+                "deployment_status": "deployed",
+                "blockers": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    deployment_dir = run_dir / "deployment"
+    deployment_dir.mkdir()
+    (deployment_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "status": "deployed",
+                "topology_summary": "API plus web service.",
+                "deployment_targets": [
+                    {
+                        "service": "api",
+                        "public_url": "https://api.example.test",
+                    },
+                    {
+                        "service": "web",
+                        "public_url": "https://web.example.test",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "handoff").mkdir()
+    (run_dir / "handoff" / "release-report.html").write_text("<html></html>", encoding="utf-8")
+
+    overview = delivery_overview_for_run(run_dir)
+
+    assert overview.run_id == "run"
+    assert overview.stage == "handoff"
+    assert overview.status == "handoff_ready"
+    assert overview.project_archetype == "api-web-compose"
+    assert overview.completed_feature_count == 7
+    assert overview.total_feature_count == 7
+    assert [feature.feature_id for feature in overview.features] == [
+        "F1",
+        "F2",
+        "F3",
+        "F4",
+        "F5",
+        "F6",
+        "F7",
+    ]
+    assert overview.features[2].repair_attempts == 2
+    assert overview.qa_status == "passed"
+    assert overview.deployment_status == "deployed"
+    assert overview.handoff_status == "ready"
+    assert overview.topology_summary == "API plus web service."
+    assert [(target.label, target.url) for target in overview.deployment_targets] == [
+        ("API", "https://api.example.test"),
+        ("WEB", "https://web.example.test"),
+    ]
+
+
+def test_delivery_overview_falls_back_to_workflow_plan_before_execution(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "04-workflow-plan.json").write_text(
+        json.dumps(
+            {
+                "feature_queue": [
+                    {"id": "F1", "title": "Create tasks", "delivery_order": 1},
+                    {"id": "F2", "title": "Complete tasks", "delivery_order": 2},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    overview = delivery_overview_for_run(run_dir)
+
+    assert overview.stage == "planning"
+    assert overview.status == "planning_ready"
+    assert overview.completed_feature_count == 0
+    assert overview.total_feature_count == 2
+    assert [feature.status for feature in overview.features] == ["pending", "pending"]
+
+
+def test_console_status_label_keeps_qa_uppercase():
+    assert console_status_label("qa") == "QA"
+    assert console_status_label("qa_passed") == "QA Passed"
+    assert console_status_label("feature_queue_qa_completed") == "Feature Queue QA Completed"
 
 
 def test_console_support_runs_codex_execution_through_graph_runtime(tmp_path, monkeypatch):
@@ -172,6 +365,50 @@ def test_execution_completed_keeps_failed_codex_runs_retryable(tmp_path):
     assert execution_completed(run_dir)
 
 
+def test_execution_completed_accepts_feature_scoped_summaries_and_state(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    (run_dir / "07-execution-summary-F1.md").write_text(
+        "# Execution Summary\n\nStatus: codex completed\n",
+        encoding="utf-8",
+    )
+
+    assert execution_completed(run_dir)
+
+    (run_dir / "07-execution-summary-F2.md").write_text(
+        "# Execution Summary\n\nStatus: codex failed\n",
+        encoding="utf-8",
+    )
+
+    assert not execution_completed(run_dir)
+
+    (run_dir / ".delivery-state.json").write_text(
+        json.dumps({"status": "feature_queue_qa_completed_downstream_paused"}),
+        encoding="utf-8",
+    )
+
+    assert execution_completed(run_dir)
+
+
+def test_codex_execution_running_detects_feature_scoped_log(tmp_path):
+    run_dir = tmp_path / "run"
+    feature_log = run_dir / "codex" / "F1" / "execution.log"
+    feature_log.parent.mkdir(parents=True)
+    feature_log.write_text("status=running\n", encoding="utf-8")
+
+    assert codex_execution_running(run_dir)
+
+
+def test_review_completed_accepts_feature_scoped_results(tmp_path):
+    run_dir = tmp_path / "run"
+    qa_dir = run_dir / "qa"
+    qa_dir.mkdir(parents=True)
+    (qa_dir / "results-F1.json").write_text('{"status": "passed"}\n', encoding="utf-8")
+
+    assert review_completed(run_dir)
+
+
 def test_console_support_writes_run_local_env_file(tmp_path):
     requirements = load_sample_requirements()
     run_dir = create_console_run(requirements, tmp_path / "runs")
@@ -243,7 +480,7 @@ def test_codex_execution_running_is_false_after_failed_summary(tmp_path):
     assert not codex_execution_running(run_dir)
 
 
-def test_codex_execution_running_stays_true_until_review_finishes(tmp_path):
+def test_codex_execution_running_stays_true_until_graph_reaches_terminal_state(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / ".codex-execution.status").write_text("running\n", encoding="utf-8")
@@ -260,4 +497,11 @@ def test_codex_execution_running_stays_true_until_review_finishes(tmp_path):
     (run_dir / "qa" / "results.json").write_text('{"status": "passed"}\n', encoding="utf-8")
 
     assert review_completed(run_dir)
+    assert codex_execution_running(run_dir)
+
+    (run_dir / ".delivery-state.json").write_text(
+        json.dumps({"status": "feature_queue_qa_completed_downstream_paused"}),
+        encoding="utf-8",
+    )
+
     assert not codex_execution_running(run_dir)

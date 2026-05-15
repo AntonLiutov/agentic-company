@@ -13,6 +13,8 @@ DELIVERY_GRAPH_NODE_ORDER = [
 CONSOLE_EXECUTION_NODE_ORDER = [
     "fullstack",
     "qa",
+    "deployment",
+    "handoff",
 ]
 
 CONSOLE_DEPLOYMENT_NODE_ORDER = [

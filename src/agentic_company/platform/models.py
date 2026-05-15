@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from typing import Any
 
 
 @dataclass(slots=True)
@@ -18,6 +19,10 @@ class ExecutionRequest:
     expected_outputs: list[str]
     instructions: list[str]
     constraints: list[str]
+    project_archetype: str = "single-service-streamlit"
+    feature_queue: list[dict[str, Any]] = field(default_factory=list)
+    active_feature: dict[str, Any] | None = None
+    completed_feature_ids: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)

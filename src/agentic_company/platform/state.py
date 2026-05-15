@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import NotRequired, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from agentic_company.platform.artifacts import ArtifactRef
 
@@ -26,6 +26,12 @@ class DeliveryState(TypedDict):
     blockers: list[str]
     auto_confirmations: list[str]
     completed_nodes: list[str]
+    project_archetype: NotRequired[str]
+    feature_queue: NotRequired[list[dict[str, Any]]]
+    active_feature_id: NotRequired[str | None]
+    completed_feature_ids: NotRequired[list[str]]
+    feature_statuses: NotRequired[dict[str, str]]
+    feature_repair_attempts: NotRequired[dict[str, int]]
 
 
 def initial_delivery_state(
@@ -54,6 +60,12 @@ def initial_delivery_state(
         "blockers": [],
         "auto_confirmations": [],
         "completed_nodes": [],
+        "project_archetype": "single-service-streamlit",
+        "feature_queue": [],
+        "active_feature_id": None,
+        "completed_feature_ids": [],
+        "feature_statuses": {},
+        "feature_repair_attempts": {},
     }
 
 
