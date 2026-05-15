@@ -117,9 +117,9 @@ def test_multi_service_requirements_produce_feature_queue(tmp_path):
 
 def test_workflow_plan_schema_covers_feature_queue_contract():
     schema = json.loads(
-        Path(
-            "src/agentic_company/agents/planning/schemas/workflow-plan.schema.json"
-        ).read_text(encoding="utf-8")
+        Path("src/agentic_company/agents/planning/schemas/workflow-plan.schema.json").read_text(
+            encoding="utf-8"
+        )
     )
 
     assert "feature_queue" in schema["required"]

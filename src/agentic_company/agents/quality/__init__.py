@@ -10,12 +10,20 @@ from agentic_company.agents.quality.graph import (
     QUALITY_AGENT_GRAPH_NODE_ORDER,
     render_quality_agent_graph_mermaid,
 )
+from agentic_company.agents.quality.runner import (
+    QualityRunner,
+    run_qa_checks,
+    summarize_status,
+)
 
 __all__ = [
     "QUALITY_AGENT_GRAPH_NODE_ORDER",
     "QUALITY_CODEX_AGENT_ID",
     "QualityAgent",
     "QualityCodexRunner",
+    "QualityRunner",
     "build_quality_codex_prompt",
     "render_quality_agent_graph_mermaid",
+    "run_qa_checks",
+    "summarize_status",
 ]

@@ -12,9 +12,9 @@ def test_write_graph_artifacts_persists_single_langgraph_delivery_graph(tmp_path
         "src/agentic_company/orchestration/graphs/delivery-graph.mmd",
     }
     assert all(write.changed for write in writes)
-    content = paths[
-        "src/agentic_company/orchestration/graphs/delivery-graph.mmd"
-    ].path.read_text(encoding="utf-8")
+    content = paths["src/agentic_company/orchestration/graphs/delivery-graph.mmd"].path.read_text(
+        encoding="utf-8"
+    )
     assert "__start__ --> fullstack;" in content
     assert "fullstack -.-> qa;" in content
     assert "qa -.-> fullstack;" in content
