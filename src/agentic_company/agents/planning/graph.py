@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import NotRequired, Protocol, TypedDict, cast
@@ -137,6 +138,18 @@ def _apply_result(state: PlanningAgentGraphState) -> PlanningAgentGraphState:
     updated = mark_node_completed(delivery_state, node_name="planning", stage="planning")
     updated["run_dir"] = str(output_path)
     updated["target_project_dir"] = str(output_path / "generated-project")
+    workflow_plan_path = output_path / "04-workflow-plan.json"
+    if workflow_plan_path.exists():
+        workflow_plan = json.loads(workflow_plan_path.read_text(encoding="utf-8"))
+        feature_queue = list(workflow_plan.get("feature_queue", []))
+        updated["project_archetype"] = str(
+            workflow_plan.get("project_archetype", "single-service-streamlit")
+        )
+        updated["feature_queue"] = feature_queue
+        updated["active_feature_id"] = str(feature_queue[0]["id"]) if feature_queue else None
+        updated["completed_feature_ids"] = []
+        if workflow_plan.get("project_archetype") == "api-web-compose":
+            updated["status"] = "planning_feature_queue_ready"
     extend_artifacts(
         updated,
         [

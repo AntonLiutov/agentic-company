@@ -11,18 +11,17 @@ from streamlit_autorefresh import st_autorefresh
 
 from agentic_company.console.services.graph_artifacts import refresh_graph_artifacts
 from agentic_company.console.support import (
-    ARTIFACT_GROUPS,
-    ARTIFACTS,
-    DIAGNOSTIC_ARTIFACT_GROUPS,
     ArtifactSpec,
-    azure_deployment_running,
+    artifact_groups_for_run,
     clear_console_runs,
     codex_execution_running,
+    console_status_label,
     create_console_run,
-    deployment_completed,
+    delivery_overview_for_run,
     ensure_required_env_defaults,
     execution_completed,
     initial_env_value,
+    list_sample_requirements,
     load_sample_requirements,
     missing_required_env_keys,
     read_events,
@@ -31,7 +30,6 @@ from agentic_company.console.support import (
     repo_root,
     root_env_value,
     saved_env_keys,
-    start_azure_deployment,
     start_codex_execution,
     write_target_env,
 )
@@ -46,40 +44,63 @@ def main() -> None:
     st.set_page_config(
         page_title="Agentic Planning Console",
         layout="wide",
+        initial_sidebar_state="expanded",
     )
+    _apply_console_styles()
 
     root = repo_root()
     _refresh_graph_artifacts(root)
     _ensure_state(root)
 
     st.title("Agentic Planning Console")
-    st.caption("Run the deterministic planning pipeline and inspect the agent artifacts.")
+    st.caption("Run the planning pipeline and inspect the agent artifacts.")
 
-    input_col, output_col = st.columns([0.9, 1.4], gap="large")
-    with input_col:
+    with st.sidebar:
+        st.header("Run setup")
         _render_input_panel(root)
+        st.divider()
         _render_cleanup_panel(root)
-    with output_col:
-        _render_output_panel()
+
+    _render_output_panel()
 
 
 def _ensure_state(root: Path) -> None:
     st.session_state.setdefault("requirements_text", load_sample_requirements(root))
+    st.session_state.setdefault("selected_requirements_sample", "web-app-mvp-chat.md")
     st.session_state.setdefault("last_run_dir", None)
     st.session_state.setdefault("last_error", None)
-    st.session_state.setdefault("output_view", "Artifacts")
+    st.session_state.setdefault("output_view", "Overview")
 
 
 def _render_input_panel(root: Path) -> None:
     st.subheader("Requirements")
 
+    sample_paths = list_sample_requirements(root)
+    sample_options = [path.name for path in sample_paths]
+    if sample_options:
+        selected_sample = st.selectbox(
+            "Sample requirements",
+            sample_options,
+            index=_sample_index(
+                sample_options,
+                str(st.session_state["selected_requirements_sample"]),
+            ),
+        )
+        st.session_state["selected_requirements_sample"] = selected_sample
+    else:
+        selected_sample = ""
+        st.warning("No sample requirements found.")
+
     button_col, path_col = st.columns([0.55, 1])
-    if button_col.button("Load sample", use_container_width=True):
+    if button_col.button("Load selected sample", width="stretch", disabled=not selected_sample):
         LOGGER.info("Loading sample requirements")
-        st.session_state["requirements_text"] = load_sample_requirements(root)
+        st.session_state["requirements_text"] = load_sample_requirements(root, selected_sample)
         st.session_state["last_error"] = None
         st.rerun()
-    path_col.caption("Sample: `examples/requirements/web-app-mvp-chat.md`")
+    if selected_sample:
+        path_col.caption(f"Sample: `examples/requirements/{selected_sample}`")
+    else:
+        path_col.caption("No sample requirements found.")
 
     requirements_text = st.text_area(
         "Project requirements",
@@ -88,7 +109,7 @@ def _render_input_panel(root: Path) -> None:
     )
     st.session_state["requirements_text"] = requirements_text
 
-    if st.button("Run planning pipeline", type="primary", use_container_width=True):
+    if st.button("Run planning pipeline", type="primary", width="stretch"):
         if not requirements_text.strip():
             st.session_state["last_error"] = "Requirements cannot be empty."
             LOGGER.warning("Planning requested with empty requirements")
@@ -111,6 +132,12 @@ def _render_input_panel(root: Path) -> None:
     )
 
 
+def _sample_index(sample_options: list[str], selected_sample: str) -> int:
+    if selected_sample in sample_options:
+        return sample_options.index(selected_sample)
+    return 0
+
+
 def _refresh_graph_artifacts(root: Path) -> None:
     refresh_key = "_graph_artifacts_refreshed_root"
     if st.session_state.get(refresh_key) == str(root):
@@ -131,7 +158,7 @@ def _render_cleanup_panel(root: Path) -> None:
         "Clear only local `runs/console-*` folders. Named smoke or demo runs are left alone."
     )
     confirm = st.checkbox("Confirm clearing console runs")
-    if st.button("Clear console runs", use_container_width=True, disabled=not confirm):
+    if st.button("Clear console runs", width="stretch", disabled=not confirm):
         LOGGER.info("Clearing console runs")
         result = clear_console_runs(root / "runs")
         run_dir_value = st.session_state["last_run_dir"]
@@ -164,19 +191,25 @@ def _render_output_panel() -> None:
     run_dir = Path(str(run_dir_value))
     st.subheader("Run output")
     st.code(str(run_dir), language="text")
-    generated_app_exists = (run_dir / "generated-project" / "app.py").exists()
+    generated_project_dir = run_dir / "generated-project"
+    generated_app_exists = any(
+        [
+            (generated_project_dir / "app.py").exists(),
+            (generated_project_dir / "api" / "app.py").exists(),
+            (generated_project_dir / "web" / "app.py").exists(),
+        ]
+    )
     execution_is_completed = execution_completed(run_dir)
     execution_is_running = codex_execution_running(run_dir)
-    deployment_is_running = azure_deployment_running(run_dir)
-    deployment_is_completed = deployment_completed(run_dir)
+    overview = delivery_overview_for_run(run_dir)
+    deployment_is_running = execution_is_running and overview.stage == "deployment"
+    deployment_is_completed = overview.deployment_status == "deployed"
     if generated_app_exists:
         st.success("Generated project is available.")
-    if _workflow_should_refresh(run_dir, execution_is_running or deployment_is_running):
+    if _workflow_should_refresh(run_dir, execution_is_running):
         _auto_refresh()
     if execution_is_running:
         st.info("Execution workflow is running. Logs and stage status refresh automatically.")
-    if deployment_is_running:
-        st.info("Azure deployment is running. Stage status refreshes automatically.")
     missing_credentials = _render_credentials_panel(run_dir)
     credentials_ready = not missing_credentials
     if not credentials_ready:
@@ -192,16 +225,10 @@ def _render_output_panel() -> None:
         deployment_is_running=deployment_is_running,
         deployment_is_completed=deployment_is_completed,
     )
-    confirm_codex = st.checkbox("Confirm real Codex execution")
     if st.button(
-        "Run Codex execution",
-        use_container_width=True,
-        disabled=(
-            execution_is_completed
-            or execution_is_running
-            or not confirm_codex
-            or not credentials_ready
-        ),
+        "Run delivery workflow",
+        width="stretch",
+        disabled=(execution_is_completed or execution_is_running or not credentials_ready),
     ):
         try:
             ensure_required_env_defaults(run_dir)
@@ -216,9 +243,7 @@ def _render_output_panel() -> None:
             LOGGER.info("Codex execution started run_dir=%s", run_dir)
         st.rerun()
 
-    _render_deployment_action(run_dir, deployment_is_running, deployment_is_completed)
-
-    view_options = ["Artifacts", "Live Logs", "Timeline", "Summary"]
+    view_options = ["Overview", "Artifacts", "Live Logs", "Timeline", "Summary"]
     selected_view = st.radio(
         "Run view",
         view_options,
@@ -227,7 +252,9 @@ def _render_output_panel() -> None:
         key="output_view",
     )
 
-    if selected_view == "Artifacts":
+    if selected_view == "Overview":
+        _render_delivery_overview(run_dir)
+    elif selected_view == "Artifacts":
         _render_artifacts(run_dir)
     elif selected_view == "Live Logs":
         render_live_logs(run_dir)
@@ -239,11 +266,34 @@ def _render_output_panel() -> None:
 
 def _render_artifacts(run_dir: Path) -> None:
     st.caption(
-        "Primary artifacts show the working flow. "
-        "Raw evidence and prepared request files are grouped under diagnostics."
+        "Client-facing handoff artifacts are shown first. "
+        "Technical evidence stays available below for deeper review."
     )
 
-    for group_name, description, artifacts in ARTIFACT_GROUPS:
+    groups = artifact_groups_for_run(run_dir)
+    if not groups:
+        st.info("No artifacts have been written yet.")
+        return
+
+    handoff_primary: list[tuple[str, str, list[ArtifactSpec]]] = []
+    technical_groups: list[tuple[str, str, list[ArtifactSpec]]] = []
+    for group_name, description, artifacts in groups:
+        if group_name != "Documentation / Handoff Agent":
+            technical_groups.append((group_name, description, artifacts))
+            continue
+
+        primary = [
+            artifact for artifact in artifacts if artifact[0] == "handoff/release-report.html"
+        ]
+        technical = [
+            artifact for artifact in artifacts if artifact[0] != "handoff/release-report.html"
+        ]
+        if primary:
+            handoff_primary.append((group_name, description, primary))
+        if technical:
+            technical_groups.append((group_name, description, technical))
+
+    for group_name, description, artifacts in handoff_primary:
         existing = [artifact for artifact in artifacts if (run_dir / artifact[0]).exists()]
         if not existing:
             continue
@@ -253,33 +303,105 @@ def _render_artifacts(run_dir: Path) -> None:
             st.caption(description)
             _render_artifact_entries(run_dir, existing)
 
-    diagnostic_groups = [
-        (
-            group_name,
-            description,
-            [artifact for artifact in artifacts if (run_dir / artifact[0]).exists()],
+    if not technical_groups:
+        return
+
+    with st.expander("Technical evidence and developer artifacts", expanded=False):
+        st.caption(
+            "Planning, implementation, QA, deployment, prompts, logs, and structured evidence."
         )
-        for group_name, description, artifacts in DIAGNOSTIC_ARTIFACT_GROUPS
-    ]
-    diagnostics = [artifact for _, _, artifacts in diagnostic_groups for artifact in artifacts]
-    if diagnostics:
-        show_diagnostics = st.toggle(
-            f"Show diagnostics ({len(diagnostics)})",
-            value=False,
-            help="Raw JSON, command logs, Docker logs, Codex prompt, and deployment requests.",
-        )
-        if show_diagnostics:
+        for group_name, description, artifacts in technical_groups:
+            existing = [artifact for artifact in artifacts if (run_dir / artifact[0]).exists()]
+            if not existing:
+                continue
+
             with st.container(border=True):
-                st.subheader("Diagnostics")
+                st.subheader(f"{group_name} ({len(existing)})")
+                st.caption(description)
+                _render_artifact_entries(run_dir, existing)
+
+
+def _render_delivery_overview(run_dir: Path) -> None:
+    overview = delivery_overview_for_run(run_dir)
+    if not overview.features and not overview.deployment_targets and not overview.blockers:
+        return
+
+    with st.container(border=True):
+        st.subheader("Delivery Overview")
+        metric_cols = st.columns(5)
+        metric_cols[0].metric("Stage", _display_value(overview.stage))
+        metric_cols[1].metric("Features", _feature_count_label(overview))
+        metric_cols[2].metric("QA", _display_value(overview.qa_status or "pending"))
+        metric_cols[3].metric(
+            "Deployment",
+            _display_value(overview.deployment_status or "pending"),
+        )
+        metric_cols[4].metric("Handoff", _display_value(overview.handoff_status or "pending"))
+
+        if overview.blockers:
+            st.error("Blocked: " + "; ".join(overview.blockers))
+
+        if overview.features:
+            st.caption("Feature queue is shown compactly so longer release batches stay readable.")
+            st.dataframe(
+                [
+                    {
+                        "Feature": feature.feature_id,
+                        "Status": _feature_status_label(feature.status, active=feature.active),
+                        "Repairs": feature.repair_attempts,
+                        "Owner": _owner_label(feature.owner),
+                        "Title": feature.title,
+                    }
+                    for feature in sorted(
+                        overview.features,
+                        key=lambda feature: (
+                            feature.delivery_order or 9999,
+                            feature.feature_id,
+                        ),
+                    )
+                ],
+                hide_index=True,
+                width="stretch",
+            )
+
+        if overview.project_archetype or overview.topology_summary or overview.deployment_targets:
+            cols = st.columns([0.38, 0.62])
+            with cols[0]:
+                st.write("Topology")
                 st.caption(
-                    "Detailed evidence for debugging QA, Codex, Docker, and deployment behavior."
+                    overview.topology_summary
+                    or overview.project_archetype
+                    or "Topology will appear after planning/deployment."
                 )
-                for group_name, description, artifacts in diagnostic_groups:
-                    if not artifacts:
-                        continue
-                    st.markdown(f"**{group_name} ({len(artifacts)})**")
-                    st.caption(description)
-                    _render_artifact_entries(run_dir, artifacts)
+            with cols[1]:
+                st.write("Public links")
+                if overview.deployment_targets:
+                    for target in overview.deployment_targets:
+                        st.link_button(target.label, target.url)
+                else:
+                    st.caption("Public URLs will appear after deployment.")
+
+
+def _feature_count_label(overview) -> str:
+    total = overview.total_feature_count
+    if total == 0:
+        return "none"
+    return f"{overview.completed_feature_count}/{total}"
+
+
+def _display_value(value: str) -> str:
+    return console_status_label(value)
+
+
+def _feature_status_label(status: str, *, active: bool) -> str:
+    label = _display_value(status)
+    return f"{label} (active)" if active else label
+
+
+def _owner_label(owner: str) -> str:
+    if not owner:
+        return ""
+    return owner.replace("-agent", "").replace("-", " ").title()
 
 
 def _render_artifact_entries(
@@ -296,6 +418,12 @@ def _render_artifact_entries(
             st.caption(f"Runtime: {runtime} | Artifact: `{filename}`")
             if path.suffix == ".json":
                 st.json(read_json_artifact(path))
+            elif path.suffix == ".html":
+                st.iframe(
+                    path,
+                    width="stretch",
+                    height=760,
+                )
             elif path.suffix in {".jsonl", ".log", ".patch"}:
                 st.code(path.read_text(encoding="utf-8"), language=_artifact_language(path))
             else:
@@ -311,15 +439,17 @@ def _render_stage_notice(
     deployment_is_running: bool,
     deployment_is_completed: bool,
 ) -> None:
-    summary_path = run_dir / "07-execution-summary.md"
+    overview = delivery_overview_for_run(run_dir)
+    execution_summary_exists = any(run_dir.glob("07-execution-summary*.md"))
     qa_results_path = run_dir / "qa" / "results.json"
+    qa_results_exists = qa_results_path.exists() or any((run_dir / "qa").glob("results-*.json"))
     handoff_path = run_dir / "09-handoff-summary.md"
     deployment_request_path = run_dir / "12-deployment-request.json"
     deployment_summary_path = run_dir / "13-deployment-summary.md"
-    qa_status = _qa_status(qa_results_path)
+    qa_status = overview.qa_status or _qa_status(qa_results_path)
     events = read_events(run_dir)
     qa_running = _event_open(events, "qa_started", "qa_completed")
-    handoff_running = _event_open(events, "handoff_started", "handoff_ready")
+    handoff_running = _event_open(events, "handoff_started", "handoff_completed")
 
     if missing_credentials:
         current = "Credentials required"
@@ -334,10 +464,10 @@ def _render_stage_notice(
         else:
             current = "Execution running"
             next_step = "QA starts after Codex completes"
-    elif not summary_path.exists():
+    elif not execution_summary_exists:
         current = "Ready for execution"
-        next_step = "Run Codex execution"
-    elif not qa_results_path.exists():
+        next_step = "Run delivery workflow"
+    elif not qa_results_exists:
         current = "Execution complete"
         next_step = "QA starts automatically in the execution graph"
     elif qa_status == "failed":
@@ -347,20 +477,20 @@ def _render_stage_notice(
         current = "Deployment running"
         next_step = "Review deployment summary, then handoff"
     elif qa_status == "passed" and not deployment_summary_path.exists():
-        current = "Ready for deployment"
-        next_step = "Deploy generated project to Azure"
+        current = "QA passed"
+        next_step = "Deployment starts automatically in the delivery graph"
     elif deployment_summary_path.exists() and not deployment_is_completed:
         current = "Deployment needs attention"
         next_step = "Inspect deployment summary and retry"
     elif deployment_is_completed and not handoff_path.exists():
-        current = "Deployment QA passed"
+        current = "Deployment smoke checks passed"
         next_step = "Wait for final handoff summary"
     elif deployment_is_completed:
         current = "Deployment complete"
         next_step = "Review handoff summary"
     elif execution_is_completed and deployment_request_path.exists():
-        current = "Ready for deployment"
-        next_step = "Deploy generated project to Azure"
+        current = "Deployment prepared"
+        next_step = "Continue automatic delivery workflow"
     elif execution_is_completed:
         current = "Handoff ready"
         next_step = "Review artifacts"
@@ -372,8 +502,8 @@ def _render_stage_notice(
     stages = [
         ("Planning", "done"),
         ("Credentials", "blocked" if missing_credentials else "done"),
-        ("Execution", _execution_stage(summary_path, execution_is_running)),
-        ("QA", _qa_stage(qa_results_path, qa_status, qa_running)),
+        ("Execution", _execution_stage(execution_summary_exists, execution_is_running)),
+        ("QA", _qa_stage(qa_results_exists, qa_status, qa_running)),
         ("Deployment", _deployment_stage(deployment_summary_path, deployment_is_running)),
         (
             "Handoff",
@@ -387,19 +517,19 @@ def _render_stage_notice(
     ]
     cols = st.columns(len(stages))
     for column, (label, status) in zip(cols, stages, strict=False):
-        column.metric(label, status)
+        column.metric(label, console_status_label(status))
 
 
-def _execution_stage(summary_path: Path, execution_is_running: bool) -> str:
+def _execution_stage(execution_summary_exists: bool, execution_is_running: bool) -> str:
     if execution_is_running:
         return "running"
-    return "done" if summary_path.exists() else "pending"
+    return "done" if execution_summary_exists else "pending"
 
 
-def _qa_stage(qa_results_path: Path, qa_status: str, qa_running: bool) -> str:
+def _qa_stage(qa_results_exists: bool, qa_status: str, qa_running: bool) -> str:
     if qa_running:
         return "running"
-    if not qa_results_path.exists():
+    if not qa_results_exists:
         return "pending"
     return qa_status
 
@@ -455,7 +585,7 @@ def _workflow_should_refresh(run_dir: Path, execution_is_running: bool) -> bool:
     terminal_events = {
         "execution_failed",
         "qa_completed",
-        "handoff_ready",
+        "handoff_completed",
     }
     terminal_seen = any(event.get("event") in terminal_events for event in events)
     return execution_started and not terminal_seen
@@ -479,51 +609,6 @@ def _auto_refresh() -> None:
     )
 
 
-def _render_deployment_action(
-    run_dir: Path,
-    deployment_is_running: bool,
-    deployment_is_completed: bool,
-) -> None:
-    request_path = run_dir / "12-deployment-request.json"
-    qa_results_path = run_dir / "qa" / "results.json"
-    if _qa_status(qa_results_path) != "passed":
-        return
-
-    with st.expander("Azure deployment", expanded=deployment_is_running):
-        st.warning(
-            "This creates or updates Azure resources for the generated project. "
-            "Use the selected Azure CLI account only if the subscription is correct."
-        )
-        if request_path.exists():
-            request = read_json_artifact(request_path)
-            inputs = request.get("inputs", {})
-            if isinstance(inputs, dict):
-                st.caption(
-                    "Target: "
-                    f"`{inputs.get('resource_group', '')}` / "
-                    f"`{inputs.get('container_app_name', '')}`"
-                )
-        else:
-            st.caption("Deployment plan and request will be prepared by the deployment graph.")
-
-        confirm = st.checkbox("Confirm Azure deployment for this generated project")
-        disabled = deployment_is_running or deployment_is_completed or not confirm
-        if st.button(
-            "Deploy generated project to Azure", use_container_width=True, disabled=disabled
-        ):
-            try:
-                LOGGER.info("Starting Azure deployment run_dir=%s", run_dir)
-                start_azure_deployment(run_dir)
-            except Exception as exc:  # pragma: no cover - shown in Streamlit
-                st.session_state["last_error"] = str(exc)
-                LOGGER.exception("Azure deployment failed to start run_dir=%s", run_dir)
-            else:
-                st.session_state["last_error"] = None
-                st.session_state["output_view"] = "Live Logs"
-                LOGGER.info("Azure deployment started run_dir=%s", run_dir)
-            st.rerun()
-
-
 def _artifact_language(path: Path) -> str:
     if path.suffix == ".jsonl":
         return "json"
@@ -536,9 +621,9 @@ def _artifact_runtime(filename: str) -> str:
     if filename.startswith(("07-", "codex/")):
         return "L6 Codex Agent"
     if filename.startswith(("13-deployment-summary", "deployment/")):
-        return "L2 Tool Executor"
+        return "L6 Codex Deployment Agent"
     if filename.startswith(("08-", "qa/")):
-        return "L2 Tool Executor"
+        return "L6 Codex QA Agent"
     return "L0 Deterministic"
 
 
@@ -580,7 +665,7 @@ def _render_credentials_panel(run_dir: Path) -> list[str]:
                 key=f"credential-{run_dir.name}-{key}",
             )
 
-        if st.button("Save .env for this run", use_container_width=True):
+        if st.button("Save .env for this run", width="stretch"):
             missing_after_save = missing_required_env_keys(run_dir, values)
             if missing_after_save:
                 LOGGER.warning(
@@ -631,17 +716,53 @@ def _render_timeline(run_dir: Path) -> None:
 
 def _render_summary(run_dir: Path) -> None:
     events = read_events(run_dir)
-    artifact_count = sum(1 for filename, _, _ in ARTIFACTS if (run_dir / filename).exists())
-    completed = any(event.get("event") == "run_completed" for event in events)
+    overview = delivery_overview_for_run(run_dir)
+    artifact_count = sum(len(artifacts) for _, _, artifacts in artifact_groups_for_run(run_dir))
 
-    metric_cols = st.columns(3)
+    metric_cols = st.columns(4)
     metric_cols[0].metric("Artifacts", artifact_count)
     metric_cols[1].metric("Events", len(events))
-    metric_cols[2].metric("Status", "Complete" if completed else "In progress")
+    metric_cols[2].metric("Features", _feature_count_label(overview))
+    metric_cols[3].metric("Status", console_status_label(overview.status))
 
     st.write("Visible stages")
     for label, agents in _visible_stages().items():
         st.write(f"- {label}: {agents}")
+
+
+def _apply_console_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        :root {
+            --agentic-sidebar-width: min(42rem, 90vw);
+        }
+
+        section[data-testid="stSidebar"][aria-expanded="true"] {
+            min-width: var(--agentic-sidebar-width) !important;
+            max-width: var(--agentic-sidebar-width) !important;
+        }
+
+        section[data-testid="stSidebar"][aria-expanded="true"] div[data-testid="stSidebarContent"] {
+            min-width: var(--agentic-sidebar-width) !important;
+            max-width: var(--agentic-sidebar-width) !important;
+        }
+
+        section[data-testid="stSidebar"][aria-expanded="true"]
+        div[data-testid="stSidebarUserContent"] {
+            padding-left: 1.25rem;
+            padding-right: 1.25rem;
+        }
+
+        @media (max-width: 900px) {
+            :root {
+                --agentic-sidebar-width: min(34rem, 92vw);
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _visible_stages() -> dict[str, str]:
@@ -651,8 +772,9 @@ def _visible_stages() -> dict[str, str]:
         "Staffing": "Team Assembler Agent",
         "Plan": "Architecture Agent, PM Agent, Design Agent",
         "Execution": "Fullstack Agent through Codex",
-        "Review": "QA Agent tool checks, Documentation / Handoff Agent",
-        "Deployment": "Deployment Agent deployment-readiness inspection",
+        "Review": "QA Agent autonomous Codex review and evidence",
+        "Deployment": "Deployment Agent automatic Azure delivery",
+        "Handoff": "Documentation / Handoff Agent client release report",
     }
 
 

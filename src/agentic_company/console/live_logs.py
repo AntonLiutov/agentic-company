@@ -65,10 +65,19 @@ def _codex_commentary_entries(events: list[dict[str, object]]) -> list[tuple[str
         event_timestamp = _event_timestamp(event)
         sort_key = event_timestamp or f"9999-codex-{index:05d}"
         display_time = _display_timestamp(event_timestamp)
+        feature = str(event.get("feature_id", ""))
+        agent_id = str(event.get("agent_id", ""))
+        agent_labels = {
+            "qa-codex-agent": "QA Codex",
+            "deployment-codex-agent": "Deployment Codex",
+            "handoff-codex-agent": "Handoff Codex",
+        }
+        agent_label = agent_labels.get(agent_id, "Codex")
+        label = f"{agent_label} ({feature})" if feature else agent_label
         entries.append(
             (
                 sort_key,
-                f"**{display_time} - Codex**\n\n{_indent_multiline_markdown(text)}",
+                f"**{display_time} - {label}**\n\n{_indent_multiline_markdown(text)}",
             )
         )
     return entries
@@ -89,10 +98,22 @@ def _workflow_event_entries(events: list[dict[str, object]]) -> list[tuple[str, 
         "execution_completed": "Fullstack Agent completed",
         "qa_started": "QA started",
         "qa_completed": "QA completed",
-        "deployment_started": "Azure deployment started",
-        "deployment_completed": "Azure deployment completed",
+        "qa_codex_started": "QA Codex started",
+        "qa_codex_attempt_started": "QA Codex attempt started",
+        "qa_codex_attempt_completed": "QA Codex attempt completed",
+        "qa_codex_completed": "QA Codex completed",
+        "deployment_started": "Deployment started",
+        "deployment_completed": "Deployment completed",
+        "deployment_codex_started": "Deployment Codex started",
+        "deployment_codex_attempt_started": "Deployment Codex attempt started",
+        "deployment_codex_attempt_completed": "Deployment Codex attempt completed",
+        "deployment_codex_completed": "Deployment Codex completed",
         "handoff_started": "Handoff started",
-        "handoff_ready": "Handoff ready",
+        "handoff_completed": "Handoff completed",
+        "handoff_codex_started": "Handoff Codex started",
+        "handoff_codex_attempt_started": "Handoff Codex attempt started",
+        "handoff_codex_attempt_completed": "Handoff Codex attempt completed",
+        "handoff_codex_completed": "Handoff Codex completed",
         "fix_request_created": "QA repair request created",
     }
     entries: list[tuple[str, str]] = []
@@ -217,8 +238,12 @@ def _event_suffix(event: dict[str, object]) -> str:
         return f" | node={node}" + (f" status={status}" if status else "")
     status = data.get("status")
     artifact = data.get("artifact")
+    feature_id = data.get("feature_id")
+    feature_suffix = f" | feature={feature_id}" if feature_id else ""
     if status:
-        return f" | status={status}"
+        return f" | status={status}{feature_suffix}"
+    if feature_suffix:
+        return feature_suffix
     if artifact:
         return f" | {artifact}"
     return ""

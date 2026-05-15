@@ -5,112 +5,20 @@ config:
 ---
 graph TD;
 	__start__([<p>__start__</p>]):::first
+	fullstack(fullstack)
+	qa(qa)
+	deployment(deployment)
+	handoff(handoff)
 	__end__([<p>__end__</p>]):::last
-
-	subgraph planning_agent[Planning Agent]
-		planning_agent_entry["Planning Agent"]
-		planning_prepare_context["Prepare Context"]
-		planning_run_planning_pipeline["Run Planning Pipeline"]
-		planning_apply_result["Apply Result"]
-		planning_agent_entry --> planning_prepare_context;
-		planning_prepare_context --> planning_run_planning_pipeline;
-		planning_run_planning_pipeline --> planning_apply_result;
-	end
-
-	subgraph fullstack_agent[Fullstack Agent]
-		fullstack_agent_entry["Fullstack Agent"]
-		fullstack_prepare_context["Prepare Context"]
-		fullstack_run_codex["Run Codex"]
-		fullstack_apply_result["Apply Result"]
-		fullstack_agent_entry --> fullstack_prepare_context;
-		fullstack_prepare_context --> fullstack_run_codex;
-		fullstack_run_codex --> fullstack_apply_result;
-	end
-
-	subgraph quality_agent[QA Agent]
-		quality_agent_entry["QA Agent"]
-		quality_prepare_context["Prepare Context"]
-		quality_check_existing_evidence["Check Existing Evidence"]
-		quality_prepare_evidence["Prepare Evidence"]
-		quality_build_test_plan["Build Test Plan"]
-		quality_artifact_checks["Artifact Checks"]
-		quality_static_security_checks["Static Security Checks"]
-		quality_python_checks["Python Checks"]
-		quality_docker_checks["Docker Checks"]
-		quality_browser_checks["Browser Checks"]
-		quality_summarize_results["Summarize Results"]
-		quality_write_report["Write Report"]
-		quality_apply_result["Apply Result"]
-		quality_agent_entry --> quality_prepare_context;
-		quality_prepare_context --> quality_check_existing_evidence;
-		quality_check_existing_evidence --> quality_prepare_evidence;
-		quality_prepare_evidence --> quality_build_test_plan;
-		quality_build_test_plan --> quality_artifact_checks;
-		quality_artifact_checks --> quality_static_security_checks;
-		quality_static_security_checks --> quality_python_checks;
-		quality_python_checks --> quality_docker_checks;
-		quality_docker_checks --> quality_browser_checks;
-		quality_browser_checks --> quality_summarize_results;
-		quality_summarize_results --> quality_write_report;
-		quality_write_report --> quality_apply_result;
-	end
-
-	subgraph deployment_agent[Deployment Agent]
-		deployment_agent_entry["Deployment Agent"]
-		deployment_prepare_context["Prepare Context"]
-		deployment_write_deployment_plan["Write Deployment Plan"]
-		deployment_write_deployment_request["Write Deployment Request"]
-		deployment_load_deployment_request["Load Deployment Request"]
-		deployment_validate_environment["Validate Environment"]
-		deployment_check_azure_account["Check Azure Account"]
-		deployment_check_docker["Check Docker"]
-		deployment_select_subscription["Select Subscription"]
-		deployment_ensure_resource_group["Ensure Resource Group"]
-		deployment_ensure_registry["Ensure Registry"]
-		deployment_build_and_push_image["Build And Push Image"]
-		deployment_read_registry_credentials["Read Registry Credentials"]
-		deployment_ensure_container_environment["Ensure Container Environment"]
-		deployment_create_or_update_container_app["Create Or Update Container App"]
-		deployment_read_public_url["Read Public Url"]
-		deployment_run_post_deploy_qa["Run Post-Deploy QA"]
-		deployment_write_summary["Write Summary"]
-		deployment_apply_result["Apply Result"]
-		deployment_agent_entry --> deployment_prepare_context;
-		deployment_prepare_context --> deployment_write_deployment_plan;
-		deployment_write_deployment_plan --> deployment_write_deployment_request;
-		deployment_write_deployment_request --> deployment_load_deployment_request;
-		deployment_load_deployment_request --> deployment_validate_environment;
-		deployment_validate_environment --> deployment_check_azure_account;
-		deployment_check_azure_account --> deployment_check_docker;
-		deployment_check_docker --> deployment_select_subscription;
-		deployment_select_subscription --> deployment_ensure_resource_group;
-		deployment_ensure_resource_group --> deployment_ensure_registry;
-		deployment_ensure_registry --> deployment_build_and_push_image;
-		deployment_build_and_push_image --> deployment_read_registry_credentials;
-		deployment_read_registry_credentials --> deployment_ensure_container_environment;
-		deployment_ensure_container_environment --> deployment_create_or_update_container_app;
-		deployment_create_or_update_container_app --> deployment_read_public_url;
-		deployment_read_public_url --> deployment_run_post_deploy_qa;
-		deployment_run_post_deploy_qa --> deployment_write_summary;
-		deployment_write_summary --> deployment_apply_result;
-	end
-
-	subgraph handoff_agent[Handoff Agent]
-		handoff_agent_entry["Handoff Agent"]
-		handoff_prepare_context["Prepare Context"]
-		handoff_write_handoff_summary["Write Handoff Summary"]
-		handoff_apply_result["Apply Result"]
-		handoff_agent_entry --> handoff_prepare_context;
-		handoff_prepare_context --> handoff_write_handoff_summary;
-		handoff_write_handoff_summary --> handoff_apply_result;
-	end
-
-	__start__ --> planning_agent_entry;
-	planning_apply_result --> fullstack_agent_entry;
-	fullstack_apply_result --> quality_agent_entry;
-	quality_apply_result --> deployment_agent_entry;
-	deployment_apply_result --> handoff_agent_entry;
-	handoff_apply_result --> __end__;
+	__start__ --> fullstack;
+	deployment -. &nbsp;end&nbsp; .-> __end__;
+	deployment -.-> handoff;
+	fullstack -. &nbsp;end&nbsp; .-> __end__;
+	fullstack -.-> qa;
+	qa -. &nbsp;end&nbsp; .-> __end__;
+	qa -.-> deployment;
+	qa -.-> fullstack;
+	handoff --> __end__;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc

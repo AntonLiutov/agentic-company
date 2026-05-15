@@ -3,10 +3,14 @@
   "$id": "https://agentic-company.local/agents/planning/schemas/workflow-plan.schema.json",
   "title": "Workflow Plan",
   "type": "object",
-  "required": ["workflow_id", "project_name", "phases"],
+  "required": ["workflow_id", "project_name", "project_archetype", "phases", "feature_queue"],
   "properties": {
     "workflow_id": { "type": "string" },
     "project_name": { "type": "string" },
+    "project_archetype": {
+      "type": "string",
+      "enum": ["single-service-streamlit", "api-web-compose"]
+    },
     "phases": {
       "type": "array",
       "items": {
@@ -16,6 +20,35 @@
           "name": { "type": "string" },
           "owner": { "type": "string" },
           "outputs": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": false
+      }
+    },
+    "feature_queue": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "user_value",
+          "acceptance_criteria",
+          "dependencies",
+          "suggested_owner_agent",
+          "delivery_order",
+          "test_notes",
+          "deployment_notes"
+        ],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "user_value": { "type": "string" },
+          "acceptance_criteria": { "type": "array", "items": { "type": "string" } },
+          "dependencies": { "type": "array", "items": { "type": "string" } },
+          "suggested_owner_agent": { "type": "string" },
+          "delivery_order": { "type": "integer", "minimum": 1 },
+          "test_notes": { "type": "array", "items": { "type": "string" } },
+          "deployment_notes": { "type": "array", "items": { "type": "string" } }
         },
         "additionalProperties": false
       }

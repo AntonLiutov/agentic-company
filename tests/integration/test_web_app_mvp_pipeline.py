@@ -52,6 +52,7 @@ Acceptance criteria:
 
     intake = json.loads((output_dir / "01-intake-brief.json").read_text(encoding="utf-8"))
     staffing = json.loads((output_dir / "03-staffing-decision.json").read_text(encoding="utf-8"))
+    workflow_plan = json.loads((output_dir / "04-workflow-plan.json").read_text(encoding="utf-8"))
     execution_request = json.loads(
         (output_dir / "06-execution-request.json").read_text(encoding="utf-8")
     )
@@ -64,6 +65,9 @@ Acceptance criteria:
     assert intake["project_name"] == "Simple LLM Chat"
     assert intake["required_configuration"] == ["OPENAI_API_KEY", "DEFAULT_MODEL"]
     assert "Fullstack Agent" in staffing["selected_agents"]
+    assert workflow_plan["project_archetype"] == "single-service-streamlit"
+    assert workflow_plan["feature_queue"][0]["id"] == "F1"
+    assert workflow_plan["feature_queue"][0]["suggested_owner_agent"] == "fullstack-agent"
     assert execution_request["agent_id"] == "fullstack-agent"
     assert execution_request["provider"] == "codex"
     assert execution_request["target_project_dir"].endswith("generated-project")

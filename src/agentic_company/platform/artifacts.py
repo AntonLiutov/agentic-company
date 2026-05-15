@@ -63,4 +63,8 @@ def load_execution_request(run_dir: Path) -> ExecutionRequest:
         expected_outputs=list(payload["expected_outputs"]),
         instructions=list(payload["instructions"]),
         constraints=list(payload["constraints"]),
+        project_archetype=str(payload.get("project_archetype", "single-service-streamlit")),
+        feature_queue=list(payload.get("feature_queue", [])),
+        active_feature=payload.get("active_feature"),
+        completed_feature_ids=list(payload.get("completed_feature_ids", [])),
     )

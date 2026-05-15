@@ -69,9 +69,9 @@ class AzureDeploymentRunner:
         self._command_log_path: Path | None = None
 
     def run(self, run_dir: Path) -> AgentRunResult:
-        from agentic_company.agents.deployment.graph import run_deployment_workflow_graph
+        from agentic_company.agents.deployment.codex_cli import DeploymentCodexRunner
 
-        return run_deployment_workflow_graph(run_dir, self)
+        return DeploymentCodexRunner(timeout_seconds=self.timeout_seconds).run(run_dir)
 
     def _run_post_deploy_qa(
         self,
@@ -617,7 +617,7 @@ def _summary_payload(
 ) -> dict[str, object]:
     return {
         "agent_id": "deployment-agent",
-        "runtime": "L2 Tool Executor",
+        "runtime": "Legacy Azure Tool Executor",
         "status": status,
         "target": request.get("target", "azure-container-apps"),
         "target_project_dir": str(target_dir),

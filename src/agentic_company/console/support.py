@@ -25,12 +25,63 @@ _DEPLOYMENT_THREADS: dict[str, threading.Thread] = {}
 DEFAULT_ENV_VALUES = {
     "DEFAULT_MODEL": "gpt-4o-mini",
 }
+DEFAULT_SAMPLE_REQUIREMENTS = "web-app-mvp-chat.md"
 
 
 @dataclass(slots=True)
 class CleanupResult:
     deleted: int
     skipped: list[str]
+
+
+@dataclass(slots=True)
+class FeatureProgress:
+    feature_id: str
+    title: str
+    status: str
+    delivery_order: int
+    active: bool
+    repair_attempts: int
+    owner: str
+
+
+@dataclass(slots=True)
+class DeploymentTarget:
+    label: str
+    url: str
+    service: str = ""
+
+
+@dataclass(slots=True)
+class DeliveryOverview:
+    run_id: str
+    stage: str
+    status: str
+    project_archetype: str
+    active_feature_id: str | None
+    features: list[FeatureProgress]
+    qa_status: str
+    deployment_status: str
+    handoff_status: str
+    topology_summary: str
+    deployment_targets: list[DeploymentTarget]
+    blockers: list[str]
+
+    @property
+    def completed_feature_count(self) -> int:
+        return sum(1 for feature in self.features if feature.status in _FEATURE_DONE_STATUSES)
+
+    @property
+    def total_feature_count(self) -> int:
+        return len(self.features)
+
+
+def console_status_label(value: str) -> str:
+    """Format graph/status tokens for the operator console."""
+
+    if not value:
+        return "Pending"
+    return value.replace("_", " ").strip().title().replace("Qa", "QA")
 
 
 ArtifactSpec = tuple[str, str, str]
@@ -56,9 +107,12 @@ DEPLOYMENT_ARTIFACTS = [
 
 HANDOFF_ARTIFACTS = [
     ("09-handoff-summary.md", "Handoff summary", "Documentation / Handoff Agent"),
+    ("handoff/release-report.html", "Release report", "Documentation / Handoff Agent"),
+    ("handoff/release-evidence.json", "Release evidence", "Documentation / Handoff Agent"),
 ]
 
 DEPLOYMENT_DETAIL_ARTIFACTS = [
+    ("deployment/result.json", "Deployment result", "Deployment Agent"),
     ("11-deployment-plan.md", "Deployment plan", "Deployment Agent"),
     ("11-deployment-plan.json", "Deployment plan data", "Deployment Agent"),
     ("12-deployment-request.md", "Deployment request", "Deployment Agent"),
@@ -96,7 +150,7 @@ ARTIFACT_GROUPS: list[ArtifactGroup] = [
     ),
     (
         "Deployment",
-        "Final Azure deployment result.",
+        "Final Deployment Agent result.",
         DEPLOYMENT_ARTIFACTS,
     ),
     (
@@ -114,7 +168,7 @@ DIAGNOSTIC_ARTIFACT_GROUPS: list[ArtifactGroup] = [
     ),
     (
         "Deployment Internals",
-        "Prepared Azure plan/request files used by the deployment runner.",
+        "Deployment Codex result, plan/request files, and runtime evidence.",
         DEPLOYMENT_DETAIL_ARTIFACTS,
     ),
     (
@@ -133,23 +187,64 @@ RUNTIME_BY_AGENT = {
     "workflow-planner": "L0 Deterministic",
     "tech-lead-agent": "L0 Deterministic",
     "fullstack-agent": "L6 Codex Agent",
-    "qa-agent": "L2 Tool Executor",
-    "documentation-handoff-agent": "L0 Deterministic",
-    "deployment-agent": "L2 Tool Executor",
+    "qa-agent": "L6 Codex QA Agent",
+    "qa-codex-agent": "L6 Codex QA Agent",
+    "deployment-codex-agent": "L6 Codex Deployment Agent",
+    "documentation-handoff-agent": "L6 Codex Handoff Agent",
+    "handoff-codex-agent": "L6 Codex Handoff Agent",
+    "deployment-agent": "L6 Codex Deployment Agent",
 }
+
+AGENT_ARTIFACT_LABELS = {
+    "planning-agent": "Planning Agent",
+    "intake-agent": "Planning Agent",
+    "project-classifier": "Planning Agent",
+    "team-assembler-agent": "Planning Agent",
+    "workflow-planner": "Planning Agent",
+    "tech-lead-agent": "Planning Agent",
+    "fullstack-agent": "Fullstack Agent",
+    "qa-agent": "QA Agent",
+    "qa-codex-agent": "QA Agent",
+    "deployment-codex-agent": "Deployment Agent",
+    "deployment-agent": "Deployment Agent",
+    "documentation-handoff-agent": "Documentation / Handoff Agent",
+    "handoff-codex-agent": "Documentation / Handoff Agent",
+}
+
+AGENT_ARTIFACT_ORDER = [
+    "Documentation / Handoff Agent",
+    "Planning Agent",
+    "Fullstack Agent",
+    "QA Agent",
+    "Deployment Agent",
+]
 
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-def sample_requirements_path(root: Path | None = None) -> Path:
+def list_sample_requirements(root: Path | None = None) -> list[Path]:
     base = root or repo_root()
-    return base / "examples" / "requirements" / "web-app-mvp-chat.md"
+    samples_dir = base / "examples" / "requirements"
+    if not samples_dir.exists():
+        return []
+    return sorted(samples_dir.glob("*.md"))
 
 
-def load_sample_requirements(root: Path | None = None) -> str:
-    return sample_requirements_path(root).read_text(encoding="utf-8")
+def sample_requirements_path(
+    root: Path | None = None,
+    filename: str = DEFAULT_SAMPLE_REQUIREMENTS,
+) -> Path:
+    base = root or repo_root()
+    return base / "examples" / "requirements" / filename
+
+
+def load_sample_requirements(
+    root: Path | None = None,
+    filename: str = DEFAULT_SAMPLE_REQUIREMENTS,
+) -> str:
+    return sample_requirements_path(root, filename).read_text(encoding="utf-8")
 
 
 def create_console_run(requirements_text: str, output_root: Path | None = None) -> Path:
@@ -196,7 +291,7 @@ def start_codex_execution(run_dir: Path) -> int:
 
 def start_azure_deployment(run_dir: Path) -> int:
     if azure_deployment_running(run_dir) or deployment_completed(run_dir):
-        LOGGER.info("Azure deployment start skipped run_dir=%s", run_dir)
+        LOGGER.info("Deployment start skipped run_dir=%s", run_dir)
         return 0
 
     status_path = _deployment_status_path(run_dir)
@@ -210,7 +305,7 @@ def start_azure_deployment(run_dir: Path) -> int:
     _DEPLOYMENT_THREADS[str(run_dir)] = thread
     thread.start()
     status_path.write_text(f"running\nthread={thread.name}\n", encoding="utf-8")
-    LOGGER.info("Started Azure deployment thread=%s run_dir=%s", thread.name, run_dir)
+    LOGGER.info("Started deployment thread=%s run_dir=%s", thread.name, run_dir)
     return thread.ident or 0
 
 
@@ -224,12 +319,15 @@ def codex_execution_running(run_dir: Path) -> bool:
     if status_text.startswith(("failed", "completed", "stopped")):
         return False
     if status_text.startswith(("starting", "running")):
-        return not (execution_completed(run_dir) and review_completed(run_dir))
+        state = _read_delivery_state(run_dir)
+        return not (_delivery_execution_terminal(state) and review_completed(run_dir))
     if execution_completed(run_dir):
         return False
     if (run_dir / "codex" / "execution.log").exists() and not (
         run_dir / "07-execution-summary.md"
     ).exists():
+        return True
+    if _feature_codex_log_paths(run_dir):
         return True
     return False
 
@@ -254,22 +352,55 @@ def deployment_completed(run_dir: Path) -> bool:
 
 
 def review_completed(run_dir: Path) -> bool:
-    return (run_dir / "qa" / "results.json").exists()
+    qa_dir = run_dir / "qa"
+    if not qa_dir.exists():
+        return False
+    return (qa_dir / "results.json").exists() or any(qa_dir.glob("results-*.json"))
+
+
+def _execution_summary_paths(run_dir: Path) -> list[Path]:
+    paths = [run_dir / "07-execution-summary.md"]
+    paths.extend(sorted(run_dir.glob("07-execution-summary-*.md")))
+    return [path for path in paths if path.exists()]
+
+
+def _feature_codex_log_paths(run_dir: Path) -> list[Path]:
+    codex_dir = run_dir / "codex"
+    if not codex_dir.exists():
+        return []
+    return sorted(codex_dir.glob("*/execution.log"))
+
+
+def _read_delivery_state(run_dir: Path) -> dict[str, Any]:
+    state_path = run_dir / ".delivery-state.json"
+    if not state_path.exists():
+        return {}
+    return json.loads(state_path.read_text(encoding="utf-8"))
 
 
 def execution_completed(run_dir: Path) -> bool:
-    summary_path = run_dir / "07-execution-summary.md"
-    if not summary_path.exists():
+    state = _read_delivery_state(run_dir)
+    if _delivery_execution_terminal(state):
+        return True
+    summaries = _execution_summary_paths(run_dir)
+    if not summaries:
         return False
-    summary = summary_path.read_text(encoding="utf-8")
-    return "Status: codex failed" not in summary
+    return all("Status: codex failed" not in path.read_text(encoding="utf-8") for path in summaries)
+
+
+def _delivery_execution_terminal(state: dict[str, Any]) -> bool:
+    status = str(state.get("status", ""))
+    return status in {
+        "fullstack_feature_queue_completed_downstream_paused",
+        "feature_queue_qa_completed_downstream_paused",
+    } or status.startswith("deployment_")
 
 
 def _summary_has_failed(run_dir: Path) -> bool:
-    summary_path = run_dir / "07-execution-summary.md"
-    if not summary_path.exists():
-        return False
-    return "Status: codex failed" in summary_path.read_text(encoding="utf-8")
+    return any(
+        "Status: codex failed" in path.read_text(encoding="utf-8")
+        for path in _execution_summary_paths(run_dir)
+    )
 
 
 def clear_console_runs(output_root: Path | None = None) -> CleanupResult:
@@ -311,6 +442,319 @@ def read_events(run_dir: Path) -> list[dict[str, Any]]:
 
 def read_json_artifact(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+_FEATURE_DONE_STATUSES = {
+    "qa_passed",
+    "done",
+    "delivered",
+    "deployed",
+    "handoff_ready",
+}
+
+
+def delivery_overview_for_run(run_dir: Path) -> DeliveryOverview:
+    """Return a compact, UI-friendly delivery overview for a console run."""
+
+    state = _read_delivery_state(run_dir)
+    deployment_result = _read_optional_json(run_dir / "deployment" / "result.json")
+    feature_queue = _feature_queue_from_state_or_plan(run_dir, state)
+    feature_statuses = _as_dict(state.get("feature_statuses", {}))
+    completed_feature_ids = {
+        str(feature_id) for feature_id in state.get("completed_feature_ids", []) if feature_id
+    }
+    active_feature_id = _optional_str(state.get("active_feature_id"))
+    repair_attempts = _as_dict(state.get("feature_repair_attempts", {}))
+
+    features = [
+        _feature_progress(
+            feature,
+            feature_statuses=feature_statuses,
+            completed_feature_ids=completed_feature_ids,
+            active_feature_id=active_feature_id,
+            repair_attempts=repair_attempts,
+        )
+        for feature in feature_queue
+    ]
+
+    return DeliveryOverview(
+        run_id=str(state.get("run_id") or run_dir.name),
+        stage=str(state.get("stage") or _stage_from_artifacts(run_dir)),
+        status=str(state.get("status") or "planning_ready"),
+        project_archetype=str(state.get("project_archetype") or _project_archetype(run_dir)),
+        active_feature_id=active_feature_id,
+        features=features,
+        qa_status=str(state.get("qa_status") or _feature_queue_qa_status(features, run_dir)),
+        deployment_status=str(
+            state.get("deployment_status") or deployment_result.get("status") or ""
+        ),
+        handoff_status=_handoff_status(run_dir, state),
+        topology_summary=str(deployment_result.get("topology_summary") or ""),
+        deployment_targets=_deployment_targets(deployment_result),
+        blockers=[str(blocker) for blocker in state.get("blockers", []) if blocker],
+    )
+
+
+def _feature_queue_from_state_or_plan(
+    run_dir: Path,
+    state: dict[str, Any],
+) -> list[dict[str, Any]]:
+    state_queue = state.get("feature_queue", [])
+    if isinstance(state_queue, list) and state_queue:
+        return [item for item in state_queue if isinstance(item, dict)]
+
+    workflow = _read_optional_json(run_dir / "04-workflow-plan.json")
+    workflow_queue = workflow.get("feature_queue", [])
+    if isinstance(workflow_queue, list):
+        return [item for item in workflow_queue if isinstance(item, dict)]
+    return []
+
+
+def _feature_progress(
+    feature: dict[str, Any],
+    *,
+    feature_statuses: dict[str, Any],
+    completed_feature_ids: set[str],
+    active_feature_id: str | None,
+    repair_attempts: dict[str, Any],
+) -> FeatureProgress:
+    feature_id = str(feature.get("id") or "")
+    raw_status = str(feature_statuses.get(feature_id) or "")
+    if not raw_status and feature_id in completed_feature_ids:
+        raw_status = "qa_passed"
+    if not raw_status:
+        raw_status = "active" if feature_id == active_feature_id else "pending"
+
+    return FeatureProgress(
+        feature_id=feature_id,
+        title=str(feature.get("title") or feature.get("user_value") or "Untitled feature"),
+        status=raw_status,
+        delivery_order=_int_value(feature.get("delivery_order"), default=0),
+        active=feature_id == active_feature_id,
+        repair_attempts=_int_value(repair_attempts.get(feature_id), default=0),
+        owner=str(feature.get("suggested_owner_agent") or ""),
+    )
+
+
+def _feature_queue_qa_status(features: list[FeatureProgress], run_dir: Path) -> str:
+    if not features:
+        return _qa_status_from_artifact(run_dir / "qa" / "results.json")
+    if any(feature.status.startswith(("qa_failed", "blocked", "failed")) for feature in features):
+        return "failed"
+    if all(feature.status in _FEATURE_DONE_STATUSES for feature in features):
+        return "passed"
+    return ""
+
+
+def _deployment_targets(payload: dict[str, Any]) -> list[DeploymentTarget]:
+    targets = payload.get("deployment_targets", [])
+    if isinstance(targets, list) and targets:
+        normalized: list[DeploymentTarget] = []
+        for target in targets:
+            if not isinstance(target, dict):
+                continue
+            url = str(target.get("public_url") or target.get("url") or "")
+            if not url:
+                continue
+            service = str(target.get("service") or "")
+            label = _target_label(service, url)
+            normalized.append(DeploymentTarget(label=label, url=url, service=service))
+        if normalized:
+            return normalized
+
+    urls = payload.get("public_urls", [])
+    if isinstance(urls, list):
+        return [
+            DeploymentTarget(label=_target_label("", str(url)), url=str(url))
+            for url in urls
+            if str(url).startswith(("http://", "https://"))
+        ]
+    return []
+
+
+def _target_label(service: str, url: str) -> str:
+    service_label = service.strip().upper()
+    if service_label:
+        return service_label
+    if "web" in url:
+        return "WEB"
+    if "api" in url:
+        return "API"
+    return "APP"
+
+
+def _handoff_status(run_dir: Path, state: dict[str, Any]) -> str:
+    status = str(state.get("status") or "")
+    if status.startswith("handoff_"):
+        return status.removeprefix("handoff_")
+    if (run_dir / "handoff" / "release-report.html").exists():
+        return "ready"
+    return ""
+
+
+def _stage_from_artifacts(run_dir: Path) -> str:
+    if (run_dir / "handoff" / "release-report.html").exists():
+        return "handoff"
+    if (run_dir / "13-deployment-summary.md").exists():
+        return "deployment"
+    if list((run_dir / "qa").glob("results-*.json")):
+        return "qa"
+    if _execution_summary_paths(run_dir):
+        return "fullstack"
+    return "planning"
+
+
+def _project_archetype(run_dir: Path) -> str:
+    request = _read_optional_json(run_dir / "06-execution-request.json")
+    return str(request.get("project_archetype") or "")
+
+
+def _read_optional_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _int_value(value: Any, *, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _qa_status_from_artifact(path: Path) -> str:
+    payload = _read_optional_json(path)
+    return str(payload.get("status") or "")
+
+
+def artifact_groups_for_run(run_dir: Path) -> list[ArtifactGroup]:
+    """Build visible artifact groups from delivery state plus planning artifacts."""
+
+    grouped: dict[str, list[ArtifactSpec]] = {}
+    for filename, label, agent in PLANNING_ARTIFACTS:
+        if (run_dir / filename).exists():
+            grouped.setdefault("Planning Agent", []).append((filename, label, agent))
+
+    for artifact in _delivery_state_artifacts(run_dir):
+        path = str(artifact.get("path", ""))
+        if not path or not (run_dir / path).exists():
+            continue
+        owner = str(artifact.get("owner_agent", ""))
+        group = AGENT_ARTIFACT_LABELS.get(owner, _title_agent(owner))
+        label = _artifact_label_from_path(path)
+        agent = AGENT_ARTIFACT_LABELS.get(owner, owner or "Unknown Agent")
+        grouped.setdefault(group, []).append((path, label, agent))
+
+    groups: list[ArtifactGroup] = []
+    ordered_names = [
+        *[name for name in AGENT_ARTIFACT_ORDER if name in grouped],
+        *sorted(name for name in grouped if name not in AGENT_ARTIFACT_ORDER),
+    ]
+    for name in ordered_names:
+        artifacts = _dedupe_artifacts(grouped[name])
+        groups.append((name, _agent_group_description(name), artifacts))
+    return groups
+
+
+def _delivery_state_artifacts(run_dir: Path) -> list[dict[str, Any]]:
+    state = _read_delivery_state(run_dir)
+    artifacts = state.get("artifacts", [])
+    return [artifact for artifact in artifacts if isinstance(artifact, dict)]
+
+
+def _artifact_label_from_path(path: str) -> str:
+    filename = Path(path).name
+    feature = _feature_from_artifact_path(path)
+    if filename == "prompt.md":
+        base = "Codex prompt"
+    elif filename == "execution.log":
+        base = "Codex execution log"
+    elif filename == "events.jsonl":
+        base = "Codex raw events"
+    elif filename == "summary.md":
+        base = "Codex final summary"
+    elif filename.startswith("07-execution-summary"):
+        base = "Execution summary"
+    elif filename.startswith("08-qa-report"):
+        base = "QA report"
+    elif filename.startswith("results-") and filename.endswith(".json"):
+        base = "QA results"
+    elif filename.startswith("10-fix-request"):
+        base = "Fix request"
+    elif filename == "release-report.html":
+        base = "Client release report"
+    elif filename == "release-evidence.json":
+        base = "Release evidence"
+    elif filename == "09-handoff-summary.md":
+        base = "Handoff summary"
+    else:
+        base = filename
+    return f"{feature} - {base}" if feature else base
+
+
+def _feature_from_artifact_path(path: str) -> str:
+    normalized = path.replace("\\", "/")
+    parts = normalized.split("/")
+    for part in parts:
+        if part.startswith("F") and part[1:].isdigit():
+            return part
+    filename = parts[-1]
+    for token in filename.replace(".", "-").split("-"):
+        if token.startswith("F") and token[1:].isdigit():
+            return token
+    return ""
+
+
+def _dedupe_artifacts(artifacts: list[ArtifactSpec]) -> list[ArtifactSpec]:
+    seen: set[str] = set()
+    unique: list[ArtifactSpec] = []
+    for artifact in artifacts:
+        path = artifact[0]
+        if path in seen:
+            continue
+        seen.add(path)
+        unique.append(artifact)
+    return unique
+
+
+def _agent_group_description(name: str) -> str:
+    descriptions = {
+        "Planning Agent": (
+            "Planning intake, classification, staffing, workflow, and handoff requests."
+        ),
+        "Fullstack Agent": (
+            "Feature-scoped implementation summaries, prompts, logs, and generated files."
+        ),
+        "QA Agent": (
+            "Feature-scoped QA reports, structured results, QA Codex attempts, and evidence."
+        ),
+        "Deployment Agent": "Deployment planning, execution, and post-deployment evidence.",
+        "Documentation / Handoff Agent": (
+            "Final user-facing handoff and delivery summary artifacts."
+        ),
+    }
+    return descriptions.get(name, "Artifacts produced by this agent.")
+
+
+def _title_agent(agent_id: str) -> str:
+    if not agent_id:
+        return "Unknown Agent"
+    return agent_id.replace("-", " ").title()
 
 
 def read_required_configuration(run_dir: Path) -> list[str]:
@@ -457,10 +901,10 @@ def _run_console_execution_graph(run_dir: Path) -> dict[str, Any]:
 
 
 def _execution_summary_text(run_dir: Path) -> str:
-    summary_path = run_dir / "07-execution-summary.md"
-    if not summary_path.exists():
+    summaries = _execution_summary_paths(run_dir)
+    if not summaries:
         return ""
-    return summary_path.read_text(encoding="utf-8")
+    return "\n\n".join(f"# {path.name}\n\n{path.read_text(encoding='utf-8')}" for path in summaries)
 
 
 def _run_deployment_in_thread(run_dir: Path) -> None:

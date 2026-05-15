@@ -8,14 +8,23 @@ from agentic_company.agents.planning.models import IntakeBrief, ProjectClassific
 def classify_project(brief: IntakeBrief) -> ProjectClassification:
     stack = {item.lower() for item in brief.preferred_stack}
     feature_count = len(brief.core_features)
+    is_api_web = _is_api_web_project(brief)
 
-    project_type = "web-app-mvp"
-    if "streamlit" in stack:
+    if is_api_web:
+        project_type = "multi-service-web-app-mvp"
+        delivery_mode = "lean-dev-cloud-mvp" if "azure container apps" in stack else "lean-mvp"
+    elif "streamlit" in stack:
+        project_type = "web-app-mvp"
         delivery_mode = "lean-local-mvp"
     else:
+        project_type = "web-app-mvp"
         delivery_mode = "lean-mvp"
 
-    if feature_count <= 6 and "database persistence" in {item.lower() for item in brief.non_goals}:
+    if is_api_web:
+        complexity = "medium"
+    elif feature_count <= 6 and "database persistence" in {
+        item.lower() for item in brief.non_goals
+    }:
         complexity = "low"
     elif feature_count <= 10:
         complexity = "medium"
@@ -32,3 +41,11 @@ def classify_project(brief: IntakeBrief) -> ProjectClassification:
             f"The MVP lists {feature_count} core features.",
         ],
     )
+
+
+def _is_api_web_project(brief: IntakeBrief) -> bool:
+    stack = {item.lower() for item in brief.preferred_stack}
+    text = " ".join([brief.goal, *brief.core_features, *brief.acceptance_criteria]).lower()
+    has_api = "fastapi" in stack or "api service" in text or "api and web" in text
+    has_web = "streamlit" in stack or "web ui" in text or "web service" in text
+    return has_api and has_web

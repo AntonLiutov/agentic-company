@@ -86,7 +86,7 @@ def run_pipeline(requirements_path: Path, output_root: Path, run_id: str | None 
         implementation_brief.name,
     )
 
-    execution_request = build_execution_request(output_dir.name, output_dir)
+    execution_request = build_execution_request(output_dir.name, output_dir, plan)
     _write_json_artifact(
         output_dir,
         event_log,
@@ -114,7 +114,70 @@ def run_pipeline(requirements_path: Path, output_root: Path, run_id: str | None 
     return output_dir
 
 
-def build_execution_request(run_id: str, output_dir: Path) -> ExecutionRequest:
+def build_execution_request(
+    run_id: str,
+    output_dir: Path,
+    plan: object | None = None,
+    *,
+    active_feature_id: str | None = None,
+    completed_feature_ids: list[str] | None = None,
+) -> ExecutionRequest:
+    project_archetype = getattr(plan, "project_archetype", "single-service-streamlit")
+    project_name = str(getattr(plan, "project_name", "generated-app"))
+    app_slug = _docker_app_slug(project_name)
+    feature_queue = [
+        feature.to_dict() if hasattr(feature, "to_dict") else dict(feature)
+        for feature in getattr(plan, "feature_queue", [])
+    ]
+    active_feature = _select_active_feature(feature_queue, active_feature_id)
+    completed_ids = completed_feature_ids or []
+    expected_outputs = [
+        "app.py",
+        "README.md",
+        "pyproject.toml",
+        "uv.lock",
+        "Dockerfile",
+        "docker-compose.yml",
+        ".env.example",
+        ".streamlit/config.toml",
+        "execution-summary.md",
+    ]
+    instructions = [
+        "Read the implementation brief and create the smallest project that satisfies it.",
+        "Work only inside the target project directory.",
+        "Use uv-first project setup when generating Python app instructions.",
+        "Include Docker Compose setup when Docker is not a non-goal.",
+        "Use feature IDs from the workflow plan and implementation brief in the execution summary.",
+        "Write a short execution summary when complete.",
+    ]
+    if project_archetype == "api-web-compose":
+        expected_outputs = [
+            "api/app.py",
+            "web/app.py",
+            "README.md",
+            "pyproject.toml",
+            "uv.lock",
+            "Dockerfile.api",
+            "Dockerfile.web",
+            "docker-compose.yml",
+            ".env.example",
+            "execution-summary.md",
+        ]
+        instructions.extend(
+            [
+                "Generate an API service plus a web UI service for the active feature only.",
+                "Preserve previous completed feature behavior when implementing a later feature.",
+                "Use stable Docker Compose service names exactly: api and web.",
+                f"Use Docker name prefix exactly: agentic-{app_slug}.",
+                f"Use stable Docker image names exactly: agentic-{app_slug}-api:latest "
+                f"and agentic-{app_slug}-web:latest.",
+                f"Use stable container names exactly: agentic-{app_slug}-api and "
+                f"agentic-{app_slug}-web.",
+                "Do not invent additional containers unless the implementation brief explicitly "
+                "asks for them.",
+            ]
+        )
+
     return ExecutionRequest(
         run_id=run_id,
         agent_id="fullstack-agent",
@@ -130,24 +193,8 @@ def build_execution_request(run_id: str, output_dir: Path) -> ExecutionRequest:
             "04-workflow-plan.json",
             "05-implementation-brief.md",
         ],
-        expected_outputs=[
-            "app.py",
-            "README.md",
-            "pyproject.toml",
-            "uv.lock",
-            "Dockerfile",
-            "docker-compose.yml",
-            ".env.example",
-            ".streamlit/config.toml",
-            "execution-summary.md",
-        ],
-        instructions=[
-            "Read the implementation brief and create the smallest project that satisfies it.",
-            "Work only inside the target project directory.",
-            "Use uv-first project setup when generating Python app instructions.",
-            "Include Docker Compose setup when Docker is not a non-goal.",
-            "Write a short execution summary when complete.",
-        ],
+        expected_outputs=expected_outputs,
+        instructions=instructions,
         constraints=[
             "Do not add authentication, database persistence, or external deployment "
             "unless requested.",
@@ -157,8 +204,43 @@ def build_execution_request(run_id: str, output_dir: Path) -> ExecutionRequest:
             "Do not bake secrets into Docker images; read them from local environment or .env.",
             "Do not install uv with pip in Docker; use an official uv image or prebuilt uv binary.",
             "Use Docker layer caching by copying dependency metadata before application code.",
+            "Keep generated service, image, and container names stable across runs.",
         ],
+        project_archetype=project_archetype,
+        feature_queue=feature_queue,
+        active_feature=active_feature,
+        completed_feature_ids=completed_ids,
     )
+
+
+def _select_active_feature(
+    feature_queue: list[dict[str, Any]],
+    active_feature_id: str | None,
+) -> dict[str, Any] | None:
+    if not feature_queue:
+        return None
+    if active_feature_id:
+        for feature in feature_queue:
+            if feature.get("id") == active_feature_id:
+                return feature
+    return sorted(feature_queue, key=lambda feature: int(feature.get("delivery_order", 0)))[0]
+
+
+def _docker_app_slug(value: str) -> str:
+    words = [
+        word
+        for word in _slugify(value).split("-")
+        if word not in {"multi", "service", "services", "web", "app", "mvp", "internal"}
+    ]
+    slug = "-".join(words) or _slugify(value)
+    return slug[:24].strip("-") or "app"
+
+
+def _slugify(value: str) -> str:
+    slug = "".join(character.lower() if character.isalnum() else "-" for character in value)
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug.strip("-") or "generated-app"
 
 
 def main() -> None:

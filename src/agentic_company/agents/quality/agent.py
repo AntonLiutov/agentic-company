@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
-from agentic_company.agents.base import AgentDescriptor, artifact_refs, extend_artifacts
-from agentic_company.agents.quality.graph import run_quality_agent_graph
+from agentic_company.agents.base import AgentDescriptor
+from agentic_company.agents.quality.feature_qa import run_feature_quality_agent
 from agentic_company.platform.models import AgentRunResult
-from agentic_company.platform.state import DeliveryState, mark_node_completed
+from agentic_company.platform.state import DeliveryState
 
 
 class RunnerLike(Protocol):
@@ -22,7 +22,7 @@ class QualityAgent:
     descriptor = AgentDescriptor(
         agent_id="qa-agent",
         name="QA Agent",
-        runtime="L2 Tool Executor",
+        runtime="L6 Codex QA Agent",
         stage="qa",
     )
 
@@ -30,14 +30,4 @@ class QualityAgent:
         self.runner = runner
 
     def run(self, state: DeliveryState) -> DeliveryState:
-        if self.runner is None:
-            return run_quality_agent_graph(state)
-
-        result = self.runner.run(Path(state["run_dir"]))
-        updated = mark_node_completed(state, node_name="qa", stage="qa", status=result.status)
-        updated["qa_status"] = result.status.removeprefix("qa_")
-        extend_artifacts(
-            updated,
-            artifact_refs(result.output_artifacts, kind="qa", owner_agent=result.agent_id),
-        )
-        return updated
+        return run_feature_quality_agent(state, runner=self.runner)

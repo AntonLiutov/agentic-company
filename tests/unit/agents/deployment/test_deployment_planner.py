@@ -1,71 +1,59 @@
 import json
 
 from agentic_company.agents.deployment import write_deployment_plan, write_deployment_request
-from agentic_company.agents.deployment.planner import build_deployment_plan
+from agentic_company.agents.deployment.planner import (
+    build_deployment_plan,
+    build_deployment_request,
+)
 
 
-def test_deployment_plan_detects_container_ready_project(tmp_path):
+def test_deployment_plan_shell_does_not_classify_topology(tmp_path):
     target_dir = tmp_path / "generated-project"
     target_dir.mkdir()
-    (target_dir / "Dockerfile").write_text("FROM python:3.12-slim\n", encoding="utf-8")
-    (target_dir / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
-    (target_dir / ".env.example").write_text("OPENAI_API_KEY=\n", encoding="utf-8")
-    (target_dir / "README.md").write_text("# App\n", encoding="utf-8")
-
-    plan = build_deployment_plan(target_dir)
-
-    assert plan["readiness"] == "ready_for_container_review"
-    assert plan["recommended_target"] == "azure-container-apps"
-    assert plan["blockers"] == []
-    assert "post-deploy smoke test" in " ".join(plan["next_steps"])
-
-
-def test_write_deployment_plan_creates_json_and_markdown(tmp_path):
-    run_dir = tmp_path / "run"
-    target_dir = run_dir / "generated-project"
-    target_dir.mkdir(parents=True)
-
-    artifacts = write_deployment_plan(run_dir, target_dir)
-
-    payload = json.loads((run_dir / "11-deployment-plan.json").read_text(encoding="utf-8"))
-    markdown = (run_dir / "11-deployment-plan.md").read_text(encoding="utf-8")
-
-    assert artifacts == ["11-deployment-plan.json", "11-deployment-plan.md"]
-    assert payload["readiness"] == "not_ready"
-    assert "Dockerfile is missing." in payload["blockers"]
-    assert "# Deployment Plan" in markdown
-
-
-def test_write_deployment_request_creates_azure_request_without_login(tmp_path):
-    run_dir = tmp_path / "run"
-    target_dir = run_dir / "generated-project"
-    target_dir.mkdir(parents=True)
-    (target_dir / "Dockerfile").write_text("FROM python:3.12-slim\n", encoding="utf-8")
-    (target_dir / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
-    (target_dir / ".env.example").write_text(
-        "OPENAI_API_KEY=\nDEFAULT_MODEL=gpt-4o-mini\n",
+    (target_dir / "docker-compose.yml").write_text(
+        "services:\n  random-service:\n    build: .\n",
         encoding="utf-8",
     )
     (target_dir / "README.md").write_text("# App\n", encoding="utf-8")
 
-    artifacts = write_deployment_request(run_dir, target_dir)
+    plan = build_deployment_plan(target_dir)
 
-    payload = json.loads((run_dir / "12-deployment-request.json").read_text(encoding="utf-8"))
-    markdown = (run_dir / "12-deployment-request.md").read_text(encoding="utf-8")
+    assert plan["runtime"] == "L6 Codex Deployment Agent"
+    assert plan["status"] == "codex_required"
+    assert plan["topology_owner"] == "deployment-codex-agent"
+    assert "docker-compose.yml" in plan["observed_files"]
+    assert "topology" not in plan
+    assert "deployment_targets" not in plan
 
-    assert artifacts == ["12-deployment-request.json", "12-deployment-request.md"]
-    assert payload["status"] == "ready"
-    assert payload["deployment_mode"] == "dev_reuse"
-    assert payload["azure_login_required"] is True
-    assert payload["login_required_when"] == "before running the future deployment runner"
-    assert payload["inputs"]["resource_group"] == "rg-agentic-generated-dev"
-    assert payload["inputs"]["container_registry"] == "agenticgenerateddevacr"
-    assert payload["inputs"]["container_app_environment"] == "agentic-generated-dev-env"
-    assert payload["inputs"]["container_app_name"] == "app-generated-project-dev"
-    assert (
-        payload["inputs"]["image"] == "agenticgenerateddevacr.azurecr.io/generated-project:latest"
-    )
-    assert payload["inputs"]["environment_variables"] == ["DEFAULT_MODEL", "OPENAI_API_KEY"]
-    assert "az account show" in " ".join(check["command"] for check in payload["preflight_checks"])
-    assert "az containerapp create" in " ".join(payload["commands"])
-    assert "# Deployment Request" in markdown
+
+def test_deployment_request_shell_keeps_environment_keys_without_commands(tmp_path):
+    target_dir = tmp_path / "generated-project"
+    target_dir.mkdir()
+    (target_dir / ".env.example").write_text("API_BASE_URL=http://api:8000\n", encoding="utf-8")
+
+    request = build_deployment_request(target_dir)
+
+    assert request["runtime"] == "L6 Codex Deployment Agent"
+    assert request["status"] == "codex_required"
+    assert request["topology_owner"] == "deployment-codex-agent"
+    assert request["environment_variables_from_example"] == ["API_BASE_URL"]
+    assert "commands" not in request
+    assert "deployment_targets" not in request
+
+
+def test_write_deployment_shell_artifacts(tmp_path):
+    run_dir = tmp_path / "run"
+    target_dir = run_dir / "generated-project"
+    target_dir.mkdir(parents=True)
+
+    plan_artifacts = write_deployment_plan(run_dir, target_dir)
+    request_artifacts = write_deployment_request(run_dir, target_dir)
+
+    plan = json.loads((run_dir / "11-deployment-plan.json").read_text(encoding="utf-8"))
+    request = json.loads((run_dir / "12-deployment-request.json").read_text(encoding="utf-8"))
+
+    assert plan_artifacts == ["11-deployment-plan.json", "11-deployment-plan.md"]
+    assert request_artifacts == ["12-deployment-request.json", "12-deployment-request.md"]
+    assert plan["status"] == "codex_required"
+    assert request["status"] == "codex_required"
+    assert "does not hardcode" in (run_dir / "11-deployment-plan.md").read_text(encoding="utf-8")

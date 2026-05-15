@@ -1,4 +1,4 @@
-﻿# 03 Architecture Plan
+# 03 Architecture Plan
 
 ## Architecture Agent Output
 

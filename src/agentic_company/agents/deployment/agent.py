@@ -10,6 +10,7 @@ from agentic_company.agents.base import (
     artifact_refs,
     extend_artifacts,
 )
+from agentic_company.agents.deployment.codex_cli import DeploymentCodexRunner
 from agentic_company.agents.deployment.graph import run_deployment_agent_graph
 from agentic_company.platform.models import AgentRunResult
 from agentic_company.platform.state import DeliveryState, mark_node_completed
@@ -21,25 +22,20 @@ class RunnerLike(Protocol):
 
 
 class AzureDeploymentAgent:
-    """Deploy the generated project with the current Azure deployment runner."""
+    """Deploy the generated project through the Codex Deployment Agent."""
 
     descriptor = AgentDescriptor(
         agent_id="deployment-agent",
         name="Deployment Agent",
-        runtime="L2 Tool Executor",
+        runtime="L6 Codex Deployment Agent",
         stage="deployment",
     )
 
     def __init__(self, runner: RunnerLike | None = None) -> None:
-        self._use_graph = runner is None
-        if runner is None:
-            from agentic_company.agents.deployment.runner import AzureDeploymentRunner
-
-            runner = AzureDeploymentRunner()
-        self.runner = runner
+        self.runner = runner or DeploymentCodexRunner()
 
     def run(self, state: DeliveryState) -> DeliveryState:
-        if not self._use_graph:
+        if self.runner is not None and not isinstance(self.runner, DeploymentCodexRunner):
             result = self.runner.run(Path(state["run_dir"]))
             deployment_status = result.status.removeprefix("deployment_")
             updated = mark_node_completed(
@@ -59,4 +55,4 @@ class AzureDeploymentAgent:
             )
             return updated
 
-        return run_deployment_agent_graph(state, self.runner)
+        return run_deployment_agent_graph(state, runner=self.runner)

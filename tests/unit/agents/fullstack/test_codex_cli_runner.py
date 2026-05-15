@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from agentic_company.agents.fullstack import CodexCliRunner
+from agentic_company.agents.fullstack.codex_cli import build_codex_prompt
 from agentic_company.agents.planning import run_pipeline
 from agentic_company.integrations.codex.cli import resolve_codex_binary
 from agentic_company.integrations.codex.events import (
@@ -114,6 +115,42 @@ def test_codex_cli_runner_invokes_codex_exec_with_planning_context(
         event["event"] == "execution_completed" and event["data"]["status"] == "codex_completed"
         for event in events
     )
+
+
+def test_codex_prompt_scopes_active_feature(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "05-implementation-brief.md").write_text(
+        "# Implementation Brief\n\nFeature Queue\n",
+        encoding="utf-8",
+    )
+    request = _execution_request(
+        run_dir,
+        active_feature={
+            "id": "F2",
+            "title": "Mark tasks done",
+            "acceptance_criteria": ["API can mark a task as done"],
+            "delivery_order": 2,
+        },
+        completed_feature_ids=["F1"],
+    )
+
+    prompt = build_codex_prompt(request, run_dir)
+
+    assert "Active feature: `F2` - Mark tasks done" in prompt
+    assert "API can mark a task as done" in prompt
+    assert "Completed features before this run: F1" in prompt
+    assert "Implement only the active feature in this Codex run." in prompt
+    assert "Preserve behavior for completed features" in prompt
+    assert "service names must be exactly `api` and `web`" in prompt
+    assert "agentic-{app-slug}-{service}:latest" in prompt
+    assert "agentic-{app-slug}-{service}" in prompt
+    assert "Workspace ownership:" in prompt
+    assert "Product implementation files belong inside" in prompt
+    assert "Do not write QA, deployment, handoff, or orchestration artifacts" in prompt
+    assert "scripts/`, `tests/`, or a clearly" in prompt
+    assert "project-local `.gitignore` and `.dockerignore`" in prompt
+    assert "platform repository's root `.gitignore`" in prompt
 
 
 def test_codex_cli_runner_records_failure_summary_when_codex_fails(
@@ -336,6 +373,33 @@ def _create_planning_run(tmp_path: Path, write_sample_requirements) -> Path:
     requirements = tmp_path / "requirements.md"
     write_sample_requirements(requirements)
     return run_pipeline(requirements, tmp_path / "runs", run_id="codex-runner-test")
+
+
+def _execution_request(
+    run_dir: Path,
+    *,
+    active_feature: dict[str, object] | None = None,
+    completed_feature_ids: list[str] | None = None,
+):
+    from agentic_company.platform.models import ExecutionRequest
+
+    return ExecutionRequest(
+        run_id=run_dir.name,
+        agent_id="fullstack-agent",
+        agent_version="0.1.0",
+        maturity_level="L6 Codex Agent",
+        provider="codex",
+        model="gpt-5.5",
+        target_project_dir=str(run_dir / "generated-project"),
+        input_artifacts=["05-implementation-brief.md"],
+        expected_outputs=["api/app.py"],
+        instructions=["Build the active feature."],
+        constraints=["Keep names stable."],
+        project_archetype="api-web-compose",
+        feature_queue=[active_feature] if active_feature else [],
+        active_feature=active_feature,
+        completed_feature_ids=completed_feature_ids or [],
+    )
 
 
 def _read_events(run_dir: Path) -> list[dict[str, object]]:

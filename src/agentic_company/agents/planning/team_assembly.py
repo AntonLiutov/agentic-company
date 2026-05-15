@@ -10,10 +10,24 @@ LEAN_WEB_APP_TEAM = [
     "Documentation / Handoff Agent",
 ]
 
+MULTI_SERVICE_WEB_APP_TEAM = [
+    "Product Manager Agent",
+    "Tech Lead Agent",
+    "Fullstack Agent",
+    "QA Agent",
+    "Deployment Agent",
+    "Documentation / Handoff Agent",
+]
+
 
 def assemble_team(classification: ProjectClassification) -> StaffingDecision:
     """Select the smallest useful team for the classified project."""
     optional_agents: list[str] = []
+    selected_agents = (
+        MULTI_SERVICE_WEB_APP_TEAM
+        if classification.project_type == "multi-service-web-app-mvp"
+        else LEAN_WEB_APP_TEAM
+    )
     if classification.complexity in {"medium", "high"}:
         optional_agents.extend(
             [
@@ -26,7 +40,7 @@ def assemble_team(classification: ProjectClassification) -> StaffingDecision:
         project_type=classification.project_type,
         complexity=classification.complexity,
         delivery_mode=classification.delivery_mode,
-        selected_agents=LEAN_WEB_APP_TEAM,
+        selected_agents=selected_agents,
         optional_agents=optional_agents,
         rationale=[
             "Use one compact product/technical delivery team for the first MVP.",

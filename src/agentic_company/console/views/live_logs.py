@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import streamlit as st
-
 from agentic_company.console.live_logs import friendly_log_entries
 from agentic_company.console.support import read_events
 from agentic_company.integrations.codex.events import (
@@ -19,13 +17,13 @@ from agentic_company.platform.security import redact_sensitive_output
 def render_live_logs(run_dir: Path) -> None:
     """Render one friendly log stream plus collapsible raw developer evidence."""
 
+    st = _streamlit()
     events = read_events(run_dir)
     event_lines = [
         f"{event.get('timestamp', '')} {event.get('agent_id', '')} {event.get('event', '')}"
         for event in events
     ]
-    codex_events_path = run_dir / "codex" / "events.jsonl"
-    codex_events = _read_jsonl(codex_events_path)
+    codex_events = _read_codex_events(run_dir)
     codex_sections = parse_codex_event_sections(codex_events)
     raw_codex = (
         redact_sensitive_output(render_raw_codex_events(codex_events)) if codex_events else ""
@@ -33,7 +31,7 @@ def render_live_logs(run_dir: Path) -> None:
     qa_log = run_dir / "qa" / "commands.log"
     docker_log = run_dir / "qa" / "docker" / "runtime-command.log"
     deployment_log = run_dir / "deployment" / "commands.log"
-    codex_log = run_dir / "codex" / "execution.log"
+    codex_log_text = _tail_codex_logs(run_dir, 180)
     friendly_entries = friendly_log_entries(
         events,
         codex_events,
@@ -44,7 +42,7 @@ def render_live_logs(run_dir: Path) -> None:
         _log_section("Workflow events", "\n".join(event_lines)),
         _log_section(
             "Codex commands",
-            redact_sensitive_output(codex_sections["command"] or _tail_text(codex_log, 180)),
+            redact_sensitive_output(codex_sections["command"] or codex_log_text),
         ),
         _log_section("QA commands", redact_sensitive_output(_tail_text(qa_log, 240))),
         _log_section("Docker runtime", redact_sensitive_output(_tail_text(docker_log, 180))),
@@ -72,13 +70,21 @@ def render_live_logs(run_dir: Path) -> None:
 
 
 def _render_scrollable_markdown(text: str, *, height: int) -> None:
+    st = _streamlit()
     with st.container(height=height, border=True, autoscroll=True):
         st.markdown(text)
 
 
 def _render_scrollable_text(text: str, *, height: int) -> None:
+    st = _streamlit()
     with st.container(height=height, border=True, autoscroll=True):
         st.code(text, language="text")
+
+
+def _streamlit():
+    import streamlit as st
+
+    return st
 
 
 def _log_section(title: str, body: str) -> str:
@@ -93,6 +99,102 @@ def _tail_text(path: Path, max_lines: int) -> str:
         return ""
     lines = path.read_text(encoding="utf-8").splitlines()
     return "\n".join(lines[-max_lines:])
+
+
+def _tail_codex_logs(run_dir: Path, max_lines: int) -> str:
+    parts: list[str] = []
+    for path in _codex_log_paths(run_dir):
+        tail = _tail_text(path, max_lines)
+        if tail:
+            parts.append(f"## {path.relative_to(run_dir)}\n{tail}")
+    return "\n\n".join(parts)
+
+
+def _read_codex_events(run_dir: Path) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for path in _codex_event_paths(run_dir):
+        feature_id = _codex_feature_id(run_dir, path)
+        agent_id = _codex_agent_id(run_dir, path)
+        for event in _read_jsonl(path):
+            if agent_id:
+                event = {**event, "agent_id": agent_id}
+            if feature_id:
+                event = {**event, "feature_id": feature_id}
+            events.append(event)
+    return events
+
+
+def _codex_event_paths(run_dir: Path) -> list[Path]:
+    paths: list[Path] = []
+    codex_dir = run_dir / "codex"
+    if codex_dir.exists():
+        paths.append(codex_dir / "events.jsonl")
+        paths.extend(sorted(codex_dir.glob("*/events.jsonl")))
+    qa_codex_dir = run_dir / "qa" / "codex"
+    if qa_codex_dir.exists():
+        paths.extend(sorted(qa_codex_dir.rglob("events.jsonl")))
+    deployment_codex_dir = run_dir / "deployment" / "codex"
+    if deployment_codex_dir.exists():
+        paths.extend(sorted(deployment_codex_dir.rglob("events.jsonl")))
+    handoff_codex_dir = run_dir / "handoff" / "codex"
+    if handoff_codex_dir.exists():
+        paths.extend(sorted(handoff_codex_dir.rglob("events.jsonl")))
+    return [path for path in paths if path.exists()]
+
+
+def _codex_log_paths(run_dir: Path) -> list[Path]:
+    paths: list[Path] = []
+    codex_dir = run_dir / "codex"
+    if codex_dir.exists():
+        paths.append(codex_dir / "execution.log")
+        paths.extend(sorted(codex_dir.glob("*/execution.log")))
+    qa_codex_dir = run_dir / "qa" / "codex"
+    if qa_codex_dir.exists():
+        paths.extend(sorted(qa_codex_dir.rglob("execution.log")))
+    deployment_codex_dir = run_dir / "deployment" / "codex"
+    if deployment_codex_dir.exists():
+        paths.extend(sorted(deployment_codex_dir.rglob("execution.log")))
+    handoff_codex_dir = run_dir / "handoff" / "codex"
+    if handoff_codex_dir.exists():
+        paths.extend(sorted(handoff_codex_dir.rglob("execution.log")))
+    return [path for path in paths if path.exists()]
+
+
+def _codex_feature_id(run_dir: Path, path: Path) -> str:
+    relative = _relative_codex_event_path(run_dir, path)
+    if len(relative.parts) >= 2:
+        return relative.parts[0]
+    return ""
+
+
+def _codex_agent_id(run_dir: Path, path: Path) -> str:
+    try:
+        path.relative_to(run_dir / "qa" / "codex")
+    except ValueError:
+        try:
+            path.relative_to(run_dir / "deployment" / "codex")
+        except ValueError:
+            try:
+                path.relative_to(run_dir / "handoff" / "codex")
+            except ValueError:
+                return ""
+            return "handoff-codex-agent"
+        return "deployment-codex-agent"
+    return "qa-codex-agent"
+
+
+def _relative_codex_event_path(run_dir: Path, path: Path) -> Path:
+    for root in [
+        run_dir / "codex",
+        run_dir / "qa" / "codex",
+        run_dir / "deployment" / "codex",
+        run_dir / "handoff" / "codex",
+    ]:
+        try:
+            return path.relative_to(root)
+        except ValueError:
+            continue
+    return Path()
 
 
 def _read_jsonl(path: Path) -> list[dict[str, object]]:
