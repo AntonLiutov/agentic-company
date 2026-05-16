@@ -27,6 +27,7 @@ ENV/
 .env
 .env.*
 !.env.example
+!.env.template
 
 # IDEs
 .idea/
@@ -41,3 +42,4 @@ Thumbs.db
 tmp/
 temp/
 runs/
+mlruns/

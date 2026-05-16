@@ -1,0 +1,48 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+    platform["Platform Graph Runner"]
+    state[(".delivery-state.json<br/>events.jsonl")]
+    head["Head Agent<br/>company coordinator"]
+    ba["Business Analyst<br/>Codex worker"]
+    architect["Architect<br/>Codex worker"]
+    pm["Project Manager<br/>Codex worker"]
+    review["Codex Review<br/>read-only"]
+
+    tl["Team Lead<br/>delivery coordinator"]
+    fs["Fullstack<br/>Codex worker"]
+    qa["QA<br/>Codex worker"]
+    deploy["Deployment<br/>Codex worker"]
+    handoff["Handoff<br/>Codex worker"]
+
+    platform -->|"active node"| head
+    platform -.->|"persists"| state
+    head -->|"request_business_analysis"| ba
+    ba -->|"agent_response"| head
+    head -->|"request_architecture"| architect
+    architect -->|"agent_response"| head
+    head -->|"request_project_management"| pm
+    pm -->|"agent_response"| head
+    head -.->|"internal quality review"| review
+    review -.->|"quality report / feedback"| head
+    head -->|"request_sprint_delivery"| tl
+    head -->|"persists planning state"| state
+    tl -->|"delegate_feature"| fs
+    fs -->|"agent_response"| tl
+    tl -->|"request_qa"| qa
+    qa -->|"agent_response"| tl
+    tl -->|"request_deployment"| deploy
+    deploy -->|"agent_response"| tl
+    tl -->|"request_handoff"| handoff
+    handoff -->|"agent_response"| tl
+    tl -->|"sprint result"| state
+
+    classDef active fill:#e8f7ee,stroke:#2e7d32,color:#15351f
+    classDef paused fill:#fff6df,stroke:#b7791f,color:#3d2b00,stroke-dasharray:5 3
+    classDef platform fill:#eef2ff,stroke:#4f46e5,color:#1e1b4b
+    classDef artifact fill:#f7f7f8,stroke:#6b7280,color:#111827
+    class platform,state platform
+    class head,ba,architect,pm,review,tl,fs,qa,deploy,handoff active

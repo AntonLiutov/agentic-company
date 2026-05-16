@@ -13,12 +13,20 @@ from pathlib import Path
 from typing import Any
 
 from agentic_company.integrations.codex import (
+    DEFAULT_CODEX_SANDBOX,
     build_codex_exec_command,
     stream_codex_exec_to_log,
     write_structured_codex_artifacts,
 )
-from agentic_company.platform.artifacts import load_execution_request
+from agentic_company.platform.artifacts import load_execution_request, read_text_artifact
 from agentic_company.platform.events import write_event
+from agentic_company.platform.executions import (
+    build_agent_execution_id,
+    build_codex_execution_id,
+    execution_artifact_dir,
+    extract_codex_thread_id,
+)
+from agentic_company.platform.messages import render_incoming_messages_for_prompt
 from agentic_company.platform.models import AgentRunResult, ExecutionRequest
 
 LOGGER = logging.getLogger(__name__)
@@ -43,7 +51,7 @@ class QualityCodexRunner:
     """
 
     codex_binary: str | None = None
-    sandbox: str = "workspace-write"
+    sandbox: str = DEFAULT_CODEX_SANDBOX
     timeout_seconds: int = 3600
     contract_attempts: int = 2
     command_executor: CommandExecutor | None = None
@@ -57,30 +65,38 @@ class QualityCodexRunner:
         report_artifact = f"08-qa-report-{feature_id}.md"
         results_artifact = f"qa/results-{feature_id}.json"
         event_log = run_dir / "events.jsonl"
+        execution_id = _execution_id(request, feature_id)
 
         write_event(
             event_log,
             request.run_id,
             QUALITY_CODEX_AGENT_ID,
             "qa_codex_started",
-            {"feature_id": feature_id, "target_project_dir": request.target_project_dir},
+            {
+                "feature_id": feature_id,
+                "target_project_dir": request.target_project_dir,
+                "execution_id": execution_id,
+            },
         )
 
         structured_artifacts: list[str] = []
         summary = ""
         returncode = 1
         contract_errors: list[str] = []
+        codex_thread_id = ""
         for attempt in range(1, self.contract_attempts + 1):
             attempt_artifacts = self._run_attempt(
                 run_dir,
                 request,
                 feature,
                 attempt=attempt,
+                execution_id=execution_id,
                 previous_summary=summary,
                 previous_contract_errors=contract_errors,
             )
             summary = attempt_artifacts["summary"]
             returncode = int(attempt_artifacts["returncode"])
+            codex_thread_id = str(attempt_artifacts.get("codex_thread_id") or codex_thread_id)
             structured_artifacts.extend(attempt_artifacts["artifacts"])
             contract = _read_qa_contract(run_dir, request, feature_id, summary)
             if returncode == 0 and contract["contract_valid"]:
@@ -119,6 +135,8 @@ class QualityCodexRunner:
                 "feature_id": feature_id,
                 "status": status,
                 "artifact": report_artifact,
+                "execution_id": execution_id,
+                "codex_thread_id": codex_thread_id,
             },
         )
         return AgentRunResult(
@@ -126,6 +144,11 @@ class QualityCodexRunner:
             status=f"qa_{status}",
             output_artifacts=output_artifacts,
             summary=summary,
+            execution_id=execution_id,
+            codex_thread_id=codex_thread_id,
+            blocking_findings=_qa_blocking_findings(run_dir, feature_id, status),
+            fix_request_artifacts=_fix_request_artifacts(run_dir, feature_id),
+            recommended_next_action=_qa_recommended_next_action(status),
         )
 
     def _run_attempt(
@@ -135,11 +158,21 @@ class QualityCodexRunner:
         feature: dict[str, Any],
         *,
         attempt: int,
+        execution_id: str,
         previous_summary: str,
         previous_contract_errors: Sequence[str],
     ) -> dict[str, Any]:
         feature_id = str(feature.get("id") or "full-run")
-        attempt_dir = run_dir / "qa" / "codex" / feature_id / f"attempt-{attempt}"
+        attempt_dir = execution_artifact_dir(
+            root=run_dir / "qa" / "codex" / feature_id,
+            execution_id=execution_id,
+            attempt=attempt,
+        )
+        codex_execution_id = build_codex_execution_id(
+            execution_id=execution_id,
+            codex_agent_id=QUALITY_CODEX_AGENT_ID,
+            attempt=attempt,
+        )
         attempt_dir.mkdir(parents=True, exist_ok=True)
         summary_path = attempt_dir / "summary.md"
         prompt_path = attempt_dir / "prompt.md"
@@ -163,6 +196,7 @@ class QualityCodexRunner:
             target_project_dir=request.target_project_dir,
             run_dir=run_dir,
             summary_path=summary_path,
+            resume_session_id=request.codex_resume_thread_id,
         )
         prompt_path.write_text(prompt, encoding="utf-8")
         log_path.write_text(
@@ -170,6 +204,8 @@ class QualityCodexRunner:
             f"timeout_seconds={self.timeout_seconds}\n"
             f"agent_id={QUALITY_CODEX_AGENT_ID}\n"
             f"feature_id={feature_id}\n"
+            f"execution_id={execution_id}\n"
+            f"codex_execution_id={codex_execution_id}\n"
             f"attempt={attempt}\n\n"
             "QA Codex execution is starting...\n",
             encoding="utf-8",
@@ -179,10 +215,21 @@ class QualityCodexRunner:
             request.run_id,
             QUALITY_CODEX_AGENT_ID,
             "qa_codex_attempt_started",
-            {"feature_id": feature_id, "attempt": attempt},
+            {
+                "feature_id": feature_id,
+                "attempt": attempt,
+                "execution_id": execution_id,
+                "codex_execution_id": codex_execution_id,
+            },
         )
         try:
-            completed = self._execute(command, prompt, log_path, raw_events_path)
+            completed = self._execute(
+                command,
+                prompt,
+                log_path,
+                raw_events_path,
+                codex_execution_id=codex_execution_id,
+            )
         except FileNotFoundError:
             LOGGER.exception("QA Codex CLI missing run_id=%s", request.run_id)
             summary_path.write_text(
@@ -197,10 +244,9 @@ class QualityCodexRunner:
             raw_events_filename=raw_events_path.relative_to(run_dir).as_posix(),
         )
         summary = (
-            summary_path.read_text(encoding="utf-8")
-            if summary_path.exists()
-            else completed.stdout.strip()
+            read_text_artifact(summary_path) if summary_path.exists() else completed.stdout.strip()
         )
+        codex_thread_id = extract_codex_thread_id(raw_events_path) or request.codex_resume_thread_id
         write_event(
             run_dir / "events.jsonl",
             request.run_id,
@@ -211,11 +257,15 @@ class QualityCodexRunner:
                 "attempt": attempt,
                 "returncode": completed.returncode,
                 "summary": summary_path.relative_to(run_dir).as_posix(),
+                "execution_id": execution_id,
+                "codex_execution_id": codex_execution_id,
+                "codex_thread_id": codex_thread_id,
             },
         )
         return {
             "summary": summary,
             "returncode": completed.returncode,
+            "codex_thread_id": codex_thread_id,
             "artifacts": [
                 summary_path.relative_to(run_dir).as_posix(),
                 prompt_path.relative_to(run_dir).as_posix(),
@@ -230,6 +280,8 @@ class QualityCodexRunner:
         prompt: str,
         log_path: Path,
         raw_events_path: Path,
+        *,
+        codex_execution_id: str,
     ) -> subprocess.CompletedProcess[str]:
         if self.command_executor:
             return self.command_executor(
@@ -245,6 +297,7 @@ class QualityCodexRunner:
             self.timeout_seconds,
             log_path,
             raw_events_path,
+            codex_execution_id=codex_execution_id,
         )
 
 
@@ -264,6 +317,7 @@ def build_quality_codex_prompt(
     completed = ", ".join(request.completed_feature_ids) or "none"
     input_artifacts = "\n".join(f"- {artifact}" for artifact in request.input_artifacts)
     expected_outputs = "\n".join(f"- {artifact}" for artifact in request.expected_outputs)
+    upstream_messages = render_incoming_messages_for_prompt(run_dir, to_agent="qa-agent")
     report_path = run_dir / f"08-qa-report-{feature_id}.md"
     fallback_report_path = run_dir / "qa" / f"08-qa-report-{feature_id}.md"
     generated_fallback_report_path = (
@@ -299,14 +353,17 @@ Generated project directory:
 Planning run directory:
 {run_dir}
 
+Platform execution id:
+{request.execution_id or "(not provided)"}
+
+Execution intent:
+{request.execution_intent or "(not provided)"}
+
 Input artifacts:
 {input_artifacts or "- None"}
 
 Expected implementation outputs from planning:
 {expected_outputs or "- None"}
-
-Project archetype:
-{request.project_archetype}
 
 Active feature:
 - ID: {feature_id}
@@ -317,14 +374,32 @@ Acceptance criteria:
 
 Completed features that must not regress: {completed}
 
+Upstream agent messages:
+{upstream_messages}
+
 Your job:
 - Inspect the requirements, planning artifacts, generated project, and previous
   feature evidence.
+- Use the active feature acceptance criteria, canonical work item packet, and
+  referenced artifacts as the QA source of truth. Treat coordinator free-text as
+  routing/context unless it is supported by those sources.
+- Do not fail a feature solely on a stricter requirement introduced only by a
+  coordinator paraphrase. If coordinator text conflicts with the canonical work
+  item or artifacts, report the contract mismatch and validate the canonical
+  acceptance criteria.
+- Treat `{run_dir}` as the delivery run workspace and
+  `{request.target_project_dir}` as the generated product project.
+- You may use network-backed tools when needed for QA evidence, including
+  package indexes, browser/tool downloads, documentation lookup, Docker, and
+  local runtime checks.
 - Decide independently what QA evidence is required for this feature.
 - Generate any QA scripts, temporary data, browser checks, runtime checks, or
   other evidence you need.
 - Execute the QA work yourself from the generated project workspace.
 - Do not rely on a hidden platform checklist. There is none.
+- Do not modify files outside `{run_dir}`. In particular, do not modify the
+  platform repository source, root configuration, user home files, or unrelated
+  projects.
 - Do not modify product implementation files. If you need QA-only helper files,
   put them under `{run_dir}\\qa`.
 - If a safe runtime configuration file is needed only to run QA, you may create
@@ -508,6 +583,56 @@ def _recover_misplaced_qa_contract_artifacts(
 def _parse_status(summary: str) -> str | None:
     match = QA_STATUS_PATTERN.search(summary)
     return match.group(1).lower() if match else None
+
+
+def _execution_id(request: ExecutionRequest, feature_id: str) -> str:
+    if request.execution_id:
+        return request.execution_id
+    return build_agent_execution_id(
+        run_id=request.run_id,
+        agent_id=QUALITY_CODEX_AGENT_ID,
+        target=feature_id,
+        intent=request.execution_intent or "qa",
+    )
+
+
+def _fix_request_artifacts(run_dir: Path, feature_id: str) -> list[str]:
+    return [
+        path.relative_to(run_dir).as_posix()
+        for path in [
+            run_dir / f"10-fix-request-{feature_id}.md",
+            run_dir / f"10-fix-request-{feature_id}.json",
+        ]
+        if path.exists()
+    ]
+
+
+def _qa_blocking_findings(run_dir: Path, feature_id: str, status: str) -> list[str]:
+    if status == "passed":
+        return []
+    fix_json = run_dir / f"10-fix-request-{feature_id}.json"
+    if not fix_json.exists():
+        return [f"QA failed for feature {feature_id}."]
+    try:
+        payload = json.loads(fix_json.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return [f"QA failed for feature {feature_id}; fix request JSON is invalid."]
+    findings = payload.get("blocking_findings")
+    if isinstance(findings, list):
+        rendered = []
+        for finding in findings:
+            if isinstance(finding, dict):
+                rendered.append(str(finding.get("summary") or finding.get("evidence") or finding))
+            else:
+                rendered.append(str(finding))
+        return rendered or [str(payload.get("summary") or f"QA failed for feature {feature_id}.")]
+    return [str(payload.get("summary") or f"QA failed for feature {feature_id}.")]
+
+
+def _qa_recommended_next_action(status: str) -> str:
+    if status == "passed":
+        return "Proceed to the next delivery step."
+    return "Send the exact QA fix request artifacts to the owning implementation agent."
 
 
 def _write_contract_failure_artifacts(

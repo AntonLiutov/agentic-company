@@ -28,5 +28,5 @@ jobs:
       - name: Run lint
         run: ruff check .
 
-      - name: Run tests
-        run: pytest
+      - name: Run tests with coverage
+        run: pytest --cov=agentic_company --cov-report=term-missing --cov-report=xml --cov-fail-under=75

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agentic_company.orchestration.graphs.rendering import (
+    render_company_agent_map_mermaid,
     render_delivery_graph_mermaid,
 )
 from agentic_company.orchestration.graphs.routing import CONSOLE_EXECUTION_NODE_ORDER
@@ -40,6 +41,13 @@ def graph_artifact_specs() -> list[GraphArtifactSpec]:
                 "src/agentic_company/orchestration/graphs/delivery-graph.mmd",
             ),
             render=lambda: render_delivery_graph_mermaid(node_order=CONSOLE_EXECUTION_NODE_ORDER),
+        ),
+        GraphArtifactSpec(
+            name="company-agent-map",
+            relative_path=Path(
+                "src/agentic_company/orchestration/graphs/company-agent-map.mmd",
+            ),
+            render=render_company_agent_map_mermaid,
         ),
     ]
 

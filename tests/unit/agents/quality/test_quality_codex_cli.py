@@ -202,7 +202,9 @@ def _create_run(tmp_path: Path) -> Path:
         "acceptance_criteria": ["API can create a task", "API can list tasks"],
         "delivery_order": 1,
     }
-    (run_dir / "06-execution-request.json").write_text(
+    request_path = run_dir / "delivery/execution-request.json"
+    request_path.parent.mkdir(parents=True, exist_ok=True)
+    request_path.write_text(
         json.dumps(
             {
                 "run_id": run_dir.name,
@@ -216,7 +218,6 @@ def _create_run(tmp_path: Path) -> Path:
                 "expected_outputs": ["README.md"],
                 "instructions": ["Build the active feature."],
                 "constraints": ["Keep names stable."],
-                "project_archetype": "api-web-compose",
                 "feature_queue": [feature],
                 "active_feature": feature,
                 "completed_feature_ids": [],

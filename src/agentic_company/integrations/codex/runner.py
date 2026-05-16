@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -9,6 +11,17 @@ from pathlib import Path
 from agentic_company.integrations.codex.cli import resolve_codex_binary
 from agentic_company.integrations.codex.events import append_raw_codex_event
 from agentic_company.integrations.commands import StreamedCommand, stream_command
+
+CODEX_SANDBOX_ENV = "AGENTIC_CODEX_SANDBOX"
+CODEX_INHERIT_ENV_ENV = "AGENTIC_CODEX_INHERIT_ENV"
+CODEX_UV_CACHE_DIR_ENV = "AGENTIC_CODEX_UV_CACHE_DIR"
+CODEX_DENO_DIR_ENV = "AGENTIC_CODEX_DENO_DIR"
+CODEX_NPM_CACHE_ENV = "AGENTIC_CODEX_NPM_CACHE"
+CODEX_REASONING_EFFORT_ENV = "AGENTIC_CODEX_REASONING_EFFORT"
+DEFAULT_CODEX_SANDBOX = "danger-full-access"
+DEFAULT_CODEX_REASONING_EFFORT = "high"
+VALID_CODEX_SANDBOXES = {"read-only", "workspace-write", "danger-full-access"}
+VALID_CODEX_REASONING_EFFORTS = {"low", "medium", "high", "xhigh"}
 
 
 def build_codex_exec_command(
@@ -19,27 +32,45 @@ def build_codex_exec_command(
     target_project_dir: str,
     run_dir: Path,
     summary_path: Path,
+    force_sandbox: bool = False,
+    resume_session_id: str = "",
 ) -> list[str]:
     """Build the low-level `codex exec` command."""
 
     binary = codex_binary or resolve_codex_binary()
-    return [
+    effective_sandbox = (
+        sandbox or DEFAULT_CODEX_SANDBOX
+        if force_sandbox
+        else codex_sandbox_from_env(sandbox or DEFAULT_CODEX_SANDBOX)
+    )
+    command = [
         binary,
         "exec",
+        *codex_exec_config_args_from_env(),
         "--model",
         model,
         "--sandbox",
-        sandbox,
+        effective_sandbox,
         "--cd",
         target_project_dir,
         "--add-dir",
         str(run_dir),
-        "--skip-git-repo-check",
-        "--json",
-        "--output-last-message",
-        str(summary_path),
-        "-",
     ]
+    for extra_dir in _codex_host_tool_dirs():
+        command.extend(["--add-dir", extra_dir])
+    command.extend(
+        [
+            "--skip-git-repo-check",
+            "--json",
+            "--output-last-message",
+            str(summary_path),
+        ]
+    )
+    if resume_session_id:
+        command.extend(["resume", resume_session_id, "-"])
+    else:
+        command.append("-")
+    return command
 
 
 def stream_codex_exec_to_log(
@@ -48,11 +79,14 @@ def stream_codex_exec_to_log(
     timeout_seconds: int,
     log_path: Path,
     raw_events_path: Path,
+    env: dict[str, str] | None = None,
+    codex_execution_id: str = "",
 ) -> subprocess.CompletedProcess[str]:
     """Run Codex while streaming command output and raw JSON events to artifacts."""
 
     raw_events_path.write_text("", encoding="utf-8")
     log_path.write_text(f"timeout_seconds={timeout_seconds}\n\n", encoding="utf-8")
+    command_env = env or build_codex_exec_environment(_target_project_dir_from_command(command))
     return stream_command(
         StreamedCommand(
             command=command,
@@ -60,6 +94,155 @@ def stream_codex_exec_to_log(
             timeout_seconds=timeout_seconds,
             log_path=log_path,
             input_text=prompt,
-            on_stdout_line=lambda line: append_raw_codex_event(raw_events_path, line),
+            env=command_env,
+            on_stdout_line=lambda line: append_raw_codex_event(
+                raw_events_path,
+                line,
+                metadata={"codex_execution_id": codex_execution_id},
+            ),
+            terminal_output_predicate=_is_codex_terminal_event,
         )
     )
+
+
+def codex_sandbox_from_env(default: str) -> str:
+    configured = os.getenv(CODEX_SANDBOX_ENV, "").strip()
+    if not configured:
+        return default
+    if configured not in VALID_CODEX_SANDBOXES:
+        allowed = ", ".join(sorted(VALID_CODEX_SANDBOXES))
+        raise ValueError(f"{CODEX_SANDBOX_ENV} must be one of: {allowed}")
+    return configured
+
+
+def codex_exec_config_args_from_env() -> list[str]:
+    config_args = [
+        "--config",
+        f'model_reasoning_effort="{codex_reasoning_effort_from_env()}"',
+    ]
+    inherit_env = os.getenv(CODEX_INHERIT_ENV_ENV, "1").strip().lower()
+    if inherit_env in {"0", "false", "no", "off"}:
+        return config_args
+    return [
+        *config_args,
+        "--config",
+        "shell_environment_policy.inherit=all",
+    ]
+
+
+def codex_reasoning_effort_from_env() -> str:
+    configured = os.getenv(CODEX_REASONING_EFFORT_ENV, DEFAULT_CODEX_REASONING_EFFORT).strip()
+    if not configured:
+        return DEFAULT_CODEX_REASONING_EFFORT
+    if configured not in VALID_CODEX_REASONING_EFFORTS:
+        allowed = ", ".join(sorted(VALID_CODEX_REASONING_EFFORTS))
+        raise ValueError(f"{CODEX_REASONING_EFFORT_ENV} must be one of: {allowed}")
+    return configured
+
+
+def build_codex_exec_environment(target_project_dir: Path) -> dict[str, str]:
+    """Build the environment inherited by Codex specialist subprocesses."""
+
+    env = _codex_subprocess_env()
+    env.setdefault(
+        "UV_CACHE_DIR",
+        env.get(CODEX_UV_CACHE_DIR_ENV, str(target_project_dir / ".uv-cache")),
+    )
+    env.setdefault(
+        "DENO_DIR",
+        env.get(CODEX_DENO_DIR_ENV, str(target_project_dir / ".deno-cache")),
+    )
+    env.setdefault(
+        "npm_config_cache",
+        env.get(CODEX_NPM_CACHE_ENV, str(target_project_dir / ".npm-cache")),
+    )
+    return env
+
+
+def _codex_subprocess_env() -> dict[str, str]:
+    """Build host-tool environment inherited by Codex specialist subprocesses."""
+
+    env = dict(os.environ)
+    if "AZURE_CONFIG_DIR" not in env:
+        azure_config = Path.home() / ".azure"
+        if azure_config.exists():
+            env["AZURE_CONFIG_DIR"] = str(azure_config)
+
+    plugin_dirs = _docker_plugin_dirs()
+    if plugin_dirs and "DOCKER_CLI_PLUGIN_EXTRA_DIRS" not in env:
+        env["DOCKER_CLI_PLUGIN_EXTRA_DIRS"] = os.pathsep.join(plugin_dirs)
+
+    return env
+
+
+def _codex_host_tool_dirs() -> list[str]:
+    """Directories Codex workers need for host CLI auth/plugins."""
+
+    candidates = [
+        Path.home() / ".azure",
+        Path.home() / ".docker",
+        *_docker_plugin_dirs_as_paths(),
+    ]
+    host_dirs: list[str] = []
+    for candidate in candidates:
+        if candidate.exists() and str(candidate) not in host_dirs:
+            host_dirs.append(str(candidate))
+    return host_dirs
+
+
+def _docker_plugin_dirs() -> list[str]:
+    plugin_dirs: list[str] = []
+    for candidate in _docker_plugin_dirs_as_paths():
+        if candidate and candidate.exists() and str(candidate) not in plugin_dirs:
+            plugin_dirs.append(str(candidate))
+    return plugin_dirs
+
+
+def _docker_plugin_dirs_as_paths() -> list[Path]:
+    return [
+        *_docker_plugin_dirs_from_config(),
+        Path(os.environ.get("LOCALAPPDATA", ""))
+        / "Programs"
+        / "Rancher Desktop"
+        / "resources"
+        / "resources"
+        / "win32"
+        / "docker-cli-plugins",
+        Path.home() / ".docker" / "cli-plugins",
+    ]
+
+
+def _docker_plugin_dirs_from_config() -> list[Path]:
+    config_path = Path.home() / ".docker" / "config.json"
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    dirs = config.get("cliPluginsExtraDirs", [])
+    if not isinstance(dirs, list):
+        return []
+    return [Path(item) for item in dirs if isinstance(item, str) and item.strip()]
+
+
+def _target_project_dir_from_command(command: Sequence[str]) -> Path:
+    command_parts = list(command)
+    try:
+        cd_index = command_parts.index("--cd")
+    except ValueError:
+        return Path.cwd()
+    try:
+        return Path(command_parts[cd_index + 1])
+    except IndexError:
+        return Path.cwd()
+
+
+def _is_codex_terminal_event(line: str) -> bool:
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(event, dict):
+        return False
+    event_type = str(event.get("type") or event.get("method") or "").replace("/", ".")
+    return event_type == "turn.completed"

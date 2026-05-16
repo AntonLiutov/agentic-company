@@ -13,12 +13,20 @@ from pathlib import Path
 from typing import Any
 
 from agentic_company.integrations.codex import (
+    DEFAULT_CODEX_SANDBOX,
     build_codex_exec_command,
     stream_codex_exec_to_log,
     write_structured_codex_artifacts,
 )
-from agentic_company.platform.artifacts import load_execution_request
+from agentic_company.platform.artifacts import load_execution_request, read_text_artifact
 from agentic_company.platform.events import write_event
+from agentic_company.platform.executions import (
+    build_agent_execution_id,
+    build_codex_execution_id,
+    execution_artifact_dir,
+    extract_codex_thread_id,
+)
+from agentic_company.platform.messages import render_incoming_messages_for_prompt
 from agentic_company.platform.models import AgentRunResult, ExecutionRequest
 
 LOGGER = logging.getLogger(__name__)
@@ -53,7 +61,7 @@ class DeploymentCodexRunner:
     """
 
     codex_binary: str | None = None
-    sandbox: str = "workspace-write"
+    sandbox: str = DEFAULT_CODEX_SANDBOX
     timeout_seconds: int = 3600
     contract_attempts: int = 2
     command_executor: CommandExecutor | None = None
@@ -61,28 +69,32 @@ class DeploymentCodexRunner:
     def run(self, run_dir: Path) -> AgentRunResult:
         request = load_execution_request(run_dir)
         event_log = run_dir / "events.jsonl"
+        execution_id = _execution_id(request)
         write_event(
             event_log,
             request.run_id,
             DEPLOYMENT_CODEX_AGENT_ID,
             "deployment_codex_started",
-            {"target_project_dir": request.target_project_dir},
+            {"target_project_dir": request.target_project_dir, "execution_id": execution_id},
         )
 
         structured_artifacts: list[str] = []
         summary = ""
         returncode = 1
         contract_errors: list[str] = []
+        codex_thread_id = ""
         for attempt in range(1, self.contract_attempts + 1):
             attempt_artifacts = self._run_attempt(
                 run_dir,
                 request,
                 attempt=attempt,
+                execution_id=execution_id,
                 previous_summary=summary,
                 previous_contract_errors=contract_errors,
             )
             summary = attempt_artifacts["summary"]
             returncode = int(attempt_artifacts["returncode"])
+            codex_thread_id = str(attempt_artifacts.get("codex_thread_id") or codex_thread_id)
             structured_artifacts.extend(attempt_artifacts["artifacts"])
             contract = read_deployment_contract(run_dir, Path(request.target_project_dir), summary)
             if returncode == 0 and contract["contract_valid"]:
@@ -120,13 +132,26 @@ class DeploymentCodexRunner:
             request.run_id,
             DEPLOYMENT_CODEX_AGENT_ID,
             "deployment_codex_completed",
-            {"status": status, "artifact": DEPLOYMENT_SUMMARY_MARKDOWN},
+            {
+                "status": status,
+                "artifact": DEPLOYMENT_SUMMARY_MARKDOWN,
+                "execution_id": execution_id,
+                "codex_thread_id": codex_thread_id,
+            },
         )
         return AgentRunResult(
             agent_id=DEPLOYMENT_CODEX_AGENT_ID,
             status=f"deployment_{status}",
             output_artifacts=output_artifacts,
             summary=summary,
+            execution_id=execution_id,
+            codex_thread_id=codex_thread_id,
+            blocking_findings=[] if status == "deployed" else [summary.strip()[:500]],
+            recommended_next_action=(
+                "Proceed to post-deploy QA."
+                if status == "deployed"
+                else "Resolve deployment findings or environment blockers."
+            ),
         )
 
     def _run_attempt(
@@ -135,10 +160,20 @@ class DeploymentCodexRunner:
         request: ExecutionRequest,
         *,
         attempt: int,
+        execution_id: str,
         previous_summary: str,
         previous_contract_errors: Sequence[str],
     ) -> dict[str, Any]:
-        attempt_dir = run_dir / "deployment" / "codex" / f"attempt-{attempt}"
+        attempt_dir = execution_artifact_dir(
+            root=run_dir / "deployment" / "codex",
+            execution_id=execution_id,
+            attempt=attempt,
+        )
+        codex_execution_id = build_codex_execution_id(
+            execution_id=execution_id,
+            codex_agent_id=DEPLOYMENT_CODEX_AGENT_ID,
+            attempt=attempt,
+        )
         attempt_dir.mkdir(parents=True, exist_ok=True)
         summary_path = attempt_dir / "summary.md"
         prompt_path = attempt_dir / "prompt.md"
@@ -161,12 +196,15 @@ class DeploymentCodexRunner:
             target_project_dir=request.target_project_dir,
             run_dir=run_dir,
             summary_path=summary_path,
+            resume_session_id=request.codex_resume_thread_id,
         )
         prompt_path.write_text(prompt, encoding="utf-8")
         log_path.write_text(
             f"$ {' '.join(command)}\n"
             f"timeout_seconds={self.timeout_seconds}\n"
             f"agent_id={DEPLOYMENT_CODEX_AGENT_ID}\n"
+            f"execution_id={execution_id}\n"
+            f"codex_execution_id={codex_execution_id}\n"
             f"attempt={attempt}\n\n"
             "Deployment Codex execution is starting...\n",
             encoding="utf-8",
@@ -176,10 +214,20 @@ class DeploymentCodexRunner:
             request.run_id,
             DEPLOYMENT_CODEX_AGENT_ID,
             "deployment_codex_attempt_started",
-            {"attempt": attempt},
+            {
+                "attempt": attempt,
+                "execution_id": execution_id,
+                "codex_execution_id": codex_execution_id,
+            },
         )
         try:
-            completed = self._execute(command, prompt, log_path, raw_events_path)
+            completed = self._execute(
+                command,
+                prompt,
+                log_path,
+                raw_events_path,
+                codex_execution_id=codex_execution_id,
+            )
         except FileNotFoundError:
             LOGGER.exception("Deployment Codex CLI missing run_id=%s", request.run_id)
             summary_path.write_text(
@@ -194,10 +242,9 @@ class DeploymentCodexRunner:
             raw_events_filename=raw_events_path.relative_to(run_dir).as_posix(),
         )
         summary = (
-            summary_path.read_text(encoding="utf-8")
-            if summary_path.exists()
-            else completed.stdout.strip()
+            read_text_artifact(summary_path) if summary_path.exists() else completed.stdout.strip()
         )
+        codex_thread_id = extract_codex_thread_id(raw_events_path) or request.codex_resume_thread_id
         write_event(
             run_dir / "events.jsonl",
             request.run_id,
@@ -207,11 +254,15 @@ class DeploymentCodexRunner:
                 "attempt": attempt,
                 "returncode": completed.returncode,
                 "summary": summary_path.relative_to(run_dir).as_posix(),
+                "execution_id": execution_id,
+                "codex_execution_id": codex_execution_id,
+                "codex_thread_id": codex_thread_id,
             },
         )
         return {
             "summary": summary,
             "returncode": completed.returncode,
+            "codex_thread_id": codex_thread_id,
             "artifacts": [
                 summary_path.relative_to(run_dir).as_posix(),
                 prompt_path.relative_to(run_dir).as_posix(),
@@ -226,6 +277,8 @@ class DeploymentCodexRunner:
         prompt: str,
         log_path: Path,
         raw_events_path: Path,
+        *,
+        codex_execution_id: str,
     ) -> subprocess.CompletedProcess[str]:
         if self.command_executor:
             return self.command_executor(
@@ -241,6 +294,7 @@ class DeploymentCodexRunner:
             self.timeout_seconds,
             log_path,
             raw_events_path,
+            codex_execution_id=codex_execution_id,
         )
 
 
@@ -267,6 +321,7 @@ def build_deployment_codex_prompt(
         )
     )
     target_dir = Path(request.target_project_dir)
+    upstream_messages = render_incoming_messages_for_prompt(run_dir, to_agent="deployment-agent")
     result_path = run_dir / DEPLOYMENT_RESULT_JSON
     plan_json_path = run_dir / DEPLOYMENT_PLAN_JSON
     plan_markdown_path = run_dir / DEPLOYMENT_PLAN_MARKDOWN
@@ -302,14 +357,17 @@ Generated project directory:
 Planning run directory:
 {run_dir}
 
+Platform execution id:
+{request.execution_id or "(not provided)"}
+
+Execution intent:
+{request.execution_intent or "(not provided)"}
+
 Input artifacts:
 {input_artifacts or "- None"}
 
 Expected implementation outputs from planning:
 {expected_outputs or "- None"}
-
-Project archetype from planning:
-{request.project_archetype}
 
 Completed implementation features in this release batch: {completed_features}
 
@@ -318,7 +376,19 @@ Deployment release scope: {release_scope}
 Feature queue:
 {feature_queue or "- None"}
 
+Upstream agent messages:
+{upstream_messages}
+
 Workspace ownership:
+- Treat `{run_dir}` as the delivery run workspace and
+  `{request.target_project_dir}` as the generated product project.
+- You may use network-backed tools needed for delivery, including package
+  indexes, documentation lookup, Docker daemon access, registry push/pull,
+  Azure CLI, HTTP smoke tests, and browser checks.
+- Do not modify files outside `{run_dir}`. In particular, do not modify the
+  platform repository source, root configuration, user home files, or unrelated
+  projects. Reading authenticated tool profiles is allowed when Docker or Azure
+  need them for this deployment.
 - Treat `{request.target_project_dir}` as the generated product project. Read it
   deeply, but do not rewrite product implementation files unless a deployment
   runtime config file is required and safe.
@@ -568,6 +638,17 @@ def public_urls_from_deployment_result(run_dir: Path) -> list[str]:
 def _parse_status(summary: str) -> str | None:
     match = DEPLOYMENT_STATUS_PATTERN.search(summary)
     return match.group(1).lower() if match else None
+
+
+def _execution_id(request: ExecutionRequest) -> str:
+    if request.execution_id:
+        return request.execution_id
+    return build_agent_execution_id(
+        run_id=request.run_id,
+        agent_id=DEPLOYMENT_CODEX_AGENT_ID,
+        target=request.active_feature.get("id") if request.active_feature else "sprint",
+        intent=request.execution_intent or "deployment",
+    )
 
 
 def _write_contract_failure_artifacts(

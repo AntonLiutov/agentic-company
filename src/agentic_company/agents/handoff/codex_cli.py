@@ -13,12 +13,23 @@ from pathlib import Path
 from typing import Any
 
 from agentic_company.integrations.codex import (
+    DEFAULT_CODEX_SANDBOX,
     build_codex_exec_command,
     stream_codex_exec_to_log,
     write_structured_codex_artifacts,
 )
-from agentic_company.platform.artifacts import load_execution_request
+from agentic_company.platform.artifacts import load_execution_request, read_text_artifact
 from agentic_company.platform.events import write_event
+from agentic_company.platform.executions import (
+    build_agent_execution_id,
+    build_codex_execution_id,
+    execution_artifact_dir,
+    extract_codex_thread_id,
+)
+from agentic_company.platform.messages import (
+    AgentMessageStore,
+    render_incoming_messages_for_prompt,
+)
 from agentic_company.platform.models import AgentRunResult, ExecutionRequest
 
 LOGGER = logging.getLogger(__name__)
@@ -32,11 +43,21 @@ HANDOFF_STATUSES = {"ready", "blocked", "failed", "unknown"}
 HANDOFF_SUMMARY_MARKDOWN = "09-handoff-summary.md"
 HANDOFF_REPORT_HTML = "handoff/release-report.html"
 HANDOFF_EVIDENCE_JSON = "handoff/release-evidence.json"
+SPRINT_SCOPE_PATTERN = re.compile(r"\bsprint[-_\s]?\d+\b", re.IGNORECASE)
 
 CommandExecutor = Callable[
     [Sequence[str], str, int, Path, Path],
     subprocess.CompletedProcess[str],
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class HandoffContractPaths:
+    """Canonical handoff artifact paths for one handoff scope."""
+
+    summary: str
+    html: str
+    evidence: str
 
 
 @dataclass(slots=True)
@@ -49,43 +70,58 @@ class HandoffCodexRunner:
     """
 
     codex_binary: str | None = None
-    sandbox: str = "workspace-write"
+    sandbox: str = DEFAULT_CODEX_SANDBOX
     timeout_seconds: int = 1800
-    contract_attempts: int = 2
+    contract_attempts: int = 1
     command_executor: CommandExecutor | None = None
 
     def run(self, run_dir: Path) -> AgentRunResult:
         request = load_execution_request(run_dir)
+        contract_paths = handoff_contract_paths(request, run_dir)
         event_log = run_dir / "events.jsonl"
+        execution_id = _execution_id(request)
         write_event(
             event_log,
             request.run_id,
             HANDOFF_CODEX_AGENT_ID,
             "handoff_codex_started",
-            {"target_project_dir": request.target_project_dir},
+            {"target_project_dir": request.target_project_dir, "execution_id": execution_id},
         )
 
         structured_artifacts: list[str] = []
         summary = ""
         returncode = 1
         contract_errors: list[str] = []
+        codex_thread_id = ""
         for attempt in range(1, self.contract_attempts + 1):
             attempt_artifacts = self._run_attempt(
                 run_dir,
                 request,
                 attempt=attempt,
+                execution_id=execution_id,
                 previous_summary=summary,
                 previous_contract_errors=contract_errors,
             )
             summary = attempt_artifacts["summary"]
             returncode = int(attempt_artifacts["returncode"])
+            codex_thread_id = str(attempt_artifacts.get("codex_thread_id") or codex_thread_id)
             structured_artifacts.extend(attempt_artifacts["artifacts"])
-            contract = read_handoff_contract(run_dir, Path(request.target_project_dir), summary)
+            contract = read_handoff_contract(
+                run_dir,
+                Path(request.target_project_dir),
+                summary,
+                paths=contract_paths,
+            )
             if returncode == 0 and contract["contract_valid"]:
                 break
             contract_errors = list(contract["contract_errors"])
 
-        contract = read_handoff_contract(run_dir, Path(request.target_project_dir), summary)
+        contract = read_handoff_contract(
+            run_dir,
+            Path(request.target_project_dir),
+            summary,
+            paths=contract_paths,
+        )
         if returncode != 0:
             status = "failed"
             summary = summary or "Handoff Codex exited non-zero."
@@ -95,15 +131,16 @@ class HandoffCodexRunner:
                 run_dir,
                 summary,
                 contract["contract_errors"],
+                paths=contract_paths,
             )
         else:
             status = str(contract["status"])
 
         output_artifacts = _unique_artifacts(
             [
-                HANDOFF_SUMMARY_MARKDOWN,
-                HANDOFF_REPORT_HTML,
-                HANDOFF_EVIDENCE_JSON,
+                contract_paths.summary,
+                contract_paths.html,
+                contract_paths.evidence,
                 *structured_artifacts,
             ]
         )
@@ -112,13 +149,26 @@ class HandoffCodexRunner:
             request.run_id,
             HANDOFF_CODEX_AGENT_ID,
             "handoff_codex_completed",
-            {"status": status, "artifact": HANDOFF_SUMMARY_MARKDOWN},
+            {
+                "status": status,
+                "artifact": contract_paths.summary,
+                "execution_id": execution_id,
+                "codex_thread_id": codex_thread_id,
+            },
         )
         return AgentRunResult(
             agent_id=HANDOFF_CODEX_AGENT_ID,
             status=f"handoff_{status}",
             output_artifacts=output_artifacts,
             summary=summary,
+            execution_id=execution_id,
+            codex_thread_id=codex_thread_id,
+            blocking_findings=[] if status == "ready" else [summary.strip()[:500]],
+            recommended_next_action=(
+                "Proceed to Team Lead handoff review."
+                if status == "ready"
+                else "Revise handoff package using returned findings."
+            ),
         )
 
     def _run_attempt(
@@ -127,10 +177,20 @@ class HandoffCodexRunner:
         request: ExecutionRequest,
         *,
         attempt: int,
+        execution_id: str,
         previous_summary: str,
         previous_contract_errors: Sequence[str],
     ) -> dict[str, Any]:
-        attempt_dir = run_dir / "handoff" / "codex" / f"attempt-{attempt}"
+        attempt_dir = execution_artifact_dir(
+            root=run_dir / "handoff" / "codex",
+            execution_id=execution_id,
+            attempt=attempt,
+        )
+        codex_execution_id = build_codex_execution_id(
+            execution_id=execution_id,
+            codex_agent_id=HANDOFF_CODEX_AGENT_ID,
+            attempt=attempt,
+        )
         attempt_dir.mkdir(parents=True, exist_ok=True)
         summary_path = attempt_dir / "summary.md"
         prompt_path = attempt_dir / "prompt.md"
@@ -153,12 +213,15 @@ class HandoffCodexRunner:
             target_project_dir=request.target_project_dir,
             run_dir=run_dir,
             summary_path=summary_path,
+            resume_session_id=request.codex_resume_thread_id,
         )
         prompt_path.write_text(prompt, encoding="utf-8")
         log_path.write_text(
             f"$ {' '.join(command)}\n"
             f"timeout_seconds={self.timeout_seconds}\n"
             f"agent_id={HANDOFF_CODEX_AGENT_ID}\n"
+            f"execution_id={execution_id}\n"
+            f"codex_execution_id={codex_execution_id}\n"
             f"attempt={attempt}\n\n"
             "Handoff Codex execution is starting...\n",
             encoding="utf-8",
@@ -168,10 +231,20 @@ class HandoffCodexRunner:
             request.run_id,
             HANDOFF_CODEX_AGENT_ID,
             "handoff_codex_attempt_started",
-            {"attempt": attempt},
+            {
+                "attempt": attempt,
+                "execution_id": execution_id,
+                "codex_execution_id": codex_execution_id,
+            },
         )
         try:
-            completed = self._execute(command, prompt, log_path, raw_events_path)
+            completed = self._execute(
+                command,
+                prompt,
+                log_path,
+                raw_events_path,
+                codex_execution_id=codex_execution_id,
+            )
         except FileNotFoundError:
             LOGGER.exception("Handoff Codex CLI missing run_id=%s", request.run_id)
             summary_path.write_text(
@@ -186,10 +259,9 @@ class HandoffCodexRunner:
             raw_events_filename=raw_events_path.relative_to(run_dir).as_posix(),
         )
         summary = (
-            summary_path.read_text(encoding="utf-8")
-            if summary_path.exists()
-            else completed.stdout.strip()
+            read_text_artifact(summary_path) if summary_path.exists() else completed.stdout.strip()
         )
+        codex_thread_id = extract_codex_thread_id(raw_events_path) or request.codex_resume_thread_id
         write_event(
             run_dir / "events.jsonl",
             request.run_id,
@@ -199,11 +271,15 @@ class HandoffCodexRunner:
                 "attempt": attempt,
                 "returncode": completed.returncode,
                 "summary": summary_path.relative_to(run_dir).as_posix(),
+                "execution_id": execution_id,
+                "codex_execution_id": codex_execution_id,
+                "codex_thread_id": codex_thread_id,
             },
         )
         return {
             "summary": summary,
             "returncode": completed.returncode,
+            "codex_thread_id": codex_thread_id,
             "artifacts": [
                 summary_path.relative_to(run_dir).as_posix(),
                 prompt_path.relative_to(run_dir).as_posix(),
@@ -218,6 +294,8 @@ class HandoffCodexRunner:
         prompt: str,
         log_path: Path,
         raw_events_path: Path,
+        *,
+        codex_execution_id: str,
     ) -> subprocess.CompletedProcess[str]:
         if self.command_executor:
             return self.command_executor(
@@ -233,6 +311,7 @@ class HandoffCodexRunner:
             self.timeout_seconds,
             log_path,
             raw_events_path,
+            codex_execution_id=codex_execution_id,
         )
 
 
@@ -247,13 +326,17 @@ def build_handoff_codex_prompt(
     """Build the Handoff Codex Agent prompt without templating the report."""
 
     target_dir = Path(request.target_project_dir)
-    summary_path = run_dir / HANDOFF_SUMMARY_MARKDOWN
-    html_path = run_dir / HANDOFF_REPORT_HTML
-    evidence_path = run_dir / HANDOFF_EVIDENCE_JSON
-    fallback_dir = target_dir / "handoff"
-    fallback_summary_path = fallback_dir / HANDOFF_SUMMARY_MARKDOWN
-    fallback_html_path = fallback_dir / "release-report.html"
-    fallback_evidence_path = fallback_dir / "release-evidence.json"
+    contract_paths = handoff_contract_paths(request, run_dir)
+    summary_path = run_dir / contract_paths.summary
+    html_path = run_dir / contract_paths.html
+    evidence_path = run_dir / contract_paths.evidence
+    fallback_summary_path = target_dir / contract_paths.summary
+    fallback_html_path = target_dir / contract_paths.html
+    fallback_evidence_path = target_dir / contract_paths.evidence
+    upstream_messages = render_incoming_messages_for_prompt(
+        run_dir,
+        to_agent="documentation-handoff-agent",
+    )
     repair_note = ""
     if attempt > 1:
         contract_error_lines = "\n".join(f"- {error}" for error in (previous_contract_errors or []))
@@ -280,106 +363,58 @@ Generated project directory:
 Planning run directory:
 {run_dir}
 
-Project archetype:
-{request.project_archetype}
+Platform execution id:
+{request.execution_id or "(not provided)"}
+
+Execution intent:
+{request.execution_intent or "(not provided)"}
 
 Release context:
-- Feature queue and acceptance criteria are in planning artifacts such as
-  `01-intake-brief.json`, `04-workflow-plan.json`, and `05-implementation-brief.md`.
+- Feature queue and acceptance criteria are in upstream planning artifacts and
+  the current delivery execution request.
 - Fullstack summaries and Codex logs describe what was built.
 - QA reports/results describe feature validation.
 - Deployment artifacts describe public URLs, cloud resources, risks, and
   post-deploy targets.
 - `.delivery-state.json` is the orchestration state of record.
 
+Upstream agent messages:
+{upstream_messages}
+
 Your job:
-- Inspect the planning, implementation, QA, deployment, graph state, and generated
-  project evidence.
-- Write for this reader persona:
-  - A client sponsor, product owner, operations lead, business user, or
-    non-technical decision-maker.
-  - They are smart, but they do not know Docker, local setup, Azure internals,
-    API routes, package files, test harnesses, or source-code layout.
-  - They want to know what is ready, where to click, what value it provides,
-    how confident we are, what is still limited, and what decision/action is
-    expected from them next.
-  - Explain technical outcomes in plain business language. For example, say
-    "The app was published to a review environment and passed basic live checks"
-    instead of naming container apps, registries, ports, revisions, or smoke-test
-    commands.
-  - Keep the tone professional, calm, direct, and client-ready. Do not sound like an
-    internal developer log, CI report, README, or incident ticket.
-- Write directly to the client. Use wording like "Your task tracker is ready",
-  "Open the app", "What you can do now", and "Recommended next decisions".
-  Do not write about the client in the third person.
-- Keep the report simple, clear, complete, and non-repetitive. Do not duplicate
-  the same status, value statement, limitation, validation result, or next step
-  across multiple sections. Prefer one concise section over several overlapping
-  cards/tables.
-- Do not use internal/meta framing such as "stakeholder review", "business
-  review", "review environment", "handoff", "technical evidence", "developer
-  artifacts", "engineering follow-up", or "prepared by handoff-codex-agent" in
-  the main HTML report.
-- Decide what a non-technical client or business user needs to understand
-  this release.
-- Produce a clear release handoff package that can be shared externally.
-- Treat `{html_path}` as the primary client-facing artifact. It must read like a
-  business release report, not an engineering handoff, runbook, or developer
-  evidence dump.
-- Keep the HTML focused on: what was delivered, why it matters, how the client
-  can use or try it, current status, business-facing limitations, and recommended
-  business next steps.
-- Make the release/sprint results concrete and specific. Name the delivered
-  capabilities in client language and explain the user-visible behavior, but do
-  not expose implementation mechanics.
-- Assume the client may only read the HTML report and click one review link.
-  The HTML must stand alone without requiring the reader to open technical
-  artifacts.
-- Do not include local developer setup, Docker Compose commands, package names,
-  implementation file paths, raw artifact filenames, container/image names,
-  Azure resource names, revision IDs, ports, health endpoint internals, or
-  low-level API route details in the main HTML report unless a client explicitly
-  needs that detail to review the release.
-- If technical details are useful for engineers, place them in the Markdown
-  summary and structured evidence JSON, not in the main client HTML.
-- Public URLs are client-friendly and should be prominent. Explain them in plain
-  language, for example "Open the app here" rather than "Streamlit container app
-  on port 8501".
-- In the main HTML, show only links a business stakeholder should actually
-  click. Usually that means the primary app link. Put technical
-  service URLs, integration URLs, API URLs, health URLs, docs URLs, and endpoint
-  references into evidence JSON or Markdown unless the release is explicitly a
-  technical API handoff for developer stakeholders.
-- Do not add sections named "Technical integration", "Technical reviewer",
-  "API details", "Developer setup", or similar in the main HTML business
-  report.
-- Make the HTML report print-friendly so a user can save it as PDF from a browser.
-- Make the HTML report display correctly when embedded in Streamlit and when
-  opened directly in a browser. Use self-contained CSS with explicit foreground
-  and background colors for the page and every major section/card/table.
-- Do not rely on transparent backgrounds or inherited Streamlit theme colors.
-  Avoid white text on white/light backgrounds, black text on black/dark
-  backgrounds, or any low-contrast text. If a section uses white text, that
-  exact section must set a dark background. If a section uses a white/light
-  background, it must use dark text.
-- Prefer a clean light report theme for PDF export: white or near-white page
-  background, dark readable body text, bordered cards/tables, and accessible
-  link colors. If you add dark header bands, keep all text inside them
-  high-contrast and do not leak that text color into light sections.
-- Use client-friendly visual hierarchy: executive summary, open/use the app,
-  what is included, validation confidence, remaining decisions/risks, and next steps.
-  Avoid dense technical tables in the HTML unless they are rewritten for a
-  business reader.
-- Include useful links, instructions, evidence references, limitations, risks,
-  and next steps based on the actual artifacts.
-- If public URLs exist, make them prominent and explain what each one is for.
-- If deployment or QA is blocked/failed/unknown, say that clearly instead of
-  presenting the release as completed.
-- If network/search tools are available and genuinely useful, you may use them
-  to check public documentation or references. This is optional and
-  non-exhaustive; do not depend on network access for local evidence.
+- Inspect the current sprint/request, upstream planning artifacts, delivery
+  state, downstream agent messages, implementation summaries, QA evidence, and
+  deployment evidence when it exists.
+- Decide what the recipient of the handoff needs to know from the actual
+  artifacts. Do not follow a fixed section template when the sprint context
+  calls for something simpler.
+- Write a clear handoff package:
+  - a Markdown summary for internal/team reading;
+  - a client-facing HTML report for the delivered sprint/release;
+  - a structured JSON evidence manifest for downstream automation.
+- In the HTML, explain what was delivered, what was validated, what is limited,
+  how to try or review it when a usable URL/instruction exists, and what decision
+  or next step is expected.
+- Keep technical details proportional to the audience and the request. If this
+  is a business handoff, translate implementation details into business impact.
+  If this is a technical/API handoff, include enough technical detail to be
+  useful.
+- Do not overclaim. If deployment, QA, public URLs, security, persistence, or
+  production readiness are absent/blocked/not in scope, say that plainly.
+- Keep the HTML readable, self-contained, and usable in a browser or Streamlit
+  preview.
+- You may use network/search tools only when they help explain external
+  references; local run artifacts are the source of truth.
 
 Workspace ownership:
+- Treat `{run_dir}` as the delivery run workspace and
+  `{request.target_project_dir}` as the generated product project.
+- You may use network-backed tools for evidence lookup or documentation checks
+  when they help explain the release, but keep authored artifacts inside the
+  run workspace.
+- Do not modify files outside `{run_dir}`. In particular, do not modify the
+  platform repository source, root configuration, user home files, or unrelated
+  projects.
 - Handoff-owned contract artifacts belong at these exact planning-run paths:
   - `{summary_path}`
   - `{html_path}`
@@ -387,7 +422,7 @@ Workspace ownership:
 - Handoff-owned helper files, screenshots, transcripts, or source evidence
   belong under `{run_dir}\\handoff`.
 - If the sandbox only allows writing inside the generated project, mirror the
-  same handoff package under `{fallback_dir}`:
+  same handoff package under the generated project at these exact paths:
   - `{fallback_summary_path}`
   - `{fallback_html_path}`
   - `{fallback_evidence_path}`
@@ -400,13 +435,14 @@ Workspace ownership:
 - Do not delete generated project caches or stop runtime processes. Handoff is
   an evidence-packaging role and should not perform cleanup.
 
-Required output contract:
+Minimal output contract:
 - Write `{summary_path}` as Markdown.
 - Write `{html_path}` as a print-friendly HTML report.
 - Write `{evidence_path}` as valid structured JSON.
-- If those exact paths are blocked by sandbox policy, write equivalent files
-  under `{fallback_dir}`. The platform will recover those fallback artifacts.
-- End your final message with exactly one status line:
+- If those exact planning-run paths are blocked by sandbox policy, write
+  equivalent files under the generated project at the fallback paths listed
+  above. The platform will recover those fallback artifacts.
+- End your final message with a short status when useful, for example
   `HANDOFF_STATUS: ready`, `HANDOFF_STATUS: blocked`,
   `HANDOFF_STATUS: failed`, or `HANDOFF_STATUS: unknown`.
 
@@ -436,57 +472,101 @@ The evidence JSON must be valid JSON and include at least:
 ```
 
 If the handoff is ready, the Markdown and HTML should be understandable by a
-non-engineering stakeholder. If blocked, failed, or unknown, explain exactly
-which evidence prevents client-ready handoff and what should happen next.
+non-engineering stakeholder. If this is a sprint handoff, keep it scoped to that
+sprint. If this is a project/final handoff, consolidate the completed sprint
+handoffs and project-level evidence. If blocked, failed, or unknown, explain
+exactly which evidence prevents client-ready handoff and what should happen
+next.
 {repair_note}
 """
 
 
-def read_handoff_contract(run_dir: Path, target_dir: Path, summary: str) -> dict[str, Any]:
-    _recover_misplaced_handoff_contract_artifacts(run_dir, target_dir)
-    status = _parse_status(summary)
-    errors: list[str] = []
-    if status is None:
-        errors.append(
-            "Handoff Codex final message did not include "
-            "HANDOFF_STATUS: ready|blocked|failed|unknown."
+def handoff_contract_paths(request: ExecutionRequest, run_dir: Path) -> HandoffContractPaths:
+    """Return scoped handoff artifact paths for the current Handoff request."""
+
+    message = (
+        AgentMessageStore(run_dir).get(request.parent_message_id)
+        if request.parent_message_id
+        else None
+    )
+    explicit_scope_text = " ".join(
+        part
+        for part in [
+            request.execution_intent,
+            request.active_feature.get("id") if request.active_feature else "",
+            message.correlation_id if message else "",
+        ]
+        if part
+    )
+    if SPRINT_SCOPE_PATTERN.search(explicit_scope_text):
+        sprint_id = _handoff_sprint_id(explicit_scope_text, request)
+        return HandoffContractPaths(
+            summary=f"handoff/sprints/{sprint_id}/09-handoff-summary.md",
+            html=f"handoff/sprints/{sprint_id}/release-report.html",
+            evidence=f"handoff/sprints/{sprint_id}/release-evidence.json",
         )
 
-    for relative_path in [
-        HANDOFF_SUMMARY_MARKDOWN,
-        HANDOFF_REPORT_HTML,
-        HANDOFF_EVIDENCE_JSON,
-    ]:
+    normalized = explicit_scope_text.lower()
+    if any(token in normalized for token in ("project handoff", "final handoff", "whole project")):
+        return HandoffContractPaths(
+            summary="handoff/project/09-handoff-summary.md",
+            html="handoff/project/release-report.html",
+            evidence="handoff/project/release-evidence.json",
+        )
+
+    sprint_id = _handoff_sprint_id(explicit_scope_text, request)
+    return HandoffContractPaths(
+        summary=f"handoff/sprints/{sprint_id}/09-handoff-summary.md",
+        html=f"handoff/sprints/{sprint_id}/release-report.html",
+        evidence=f"handoff/sprints/{sprint_id}/release-evidence.json",
+    )
+
+
+def read_handoff_contract(
+    run_dir: Path,
+    target_dir: Path,
+    summary: str,
+    *,
+    paths: HandoffContractPaths | None = None,
+) -> dict[str, Any]:
+    contract_paths = paths or HandoffContractPaths(
+        summary=HANDOFF_SUMMARY_MARKDOWN,
+        html=HANDOFF_REPORT_HTML,
+        evidence=HANDOFF_EVIDENCE_JSON,
+    )
+    _recover_misplaced_handoff_contract_artifacts(run_dir, target_dir, paths=contract_paths)
+    errors: list[str] = []
+
+    for relative_path in [contract_paths.summary, contract_paths.html, contract_paths.evidence]:
         if not (run_dir / relative_path).exists():
             errors.append(f"Missing required handoff artifact: {relative_path}.")
 
-    payload, payload_errors = _load_json_object(run_dir / HANDOFF_EVIDENCE_JSON)
+    payload, payload_errors = _load_json_object(run_dir / contract_paths.evidence)
     errors.extend(payload_errors)
+    status = _parse_status(summary)
     if payload:
         result_status = str(payload.get("status", "")).lower()
-        if result_status not in HANDOFF_STATUSES:
+        if result_status in HANDOFF_STATUSES:
+            status = status or result_status
+        elif result_status:
             errors.append("Handoff evidence JSON must include ready|blocked|failed|unknown.")
-        elif status and result_status != status:
-            errors.append("Handoff evidence JSON status does not match final status line.")
-    if status == "ready":
-        errors.extend(_client_html_contract_errors(run_dir / HANDOFF_REPORT_HTML))
+    if status is None and not errors:
+        status = "ready"
 
     return {
-        "status": status or str(payload.get("status") or "unknown").lower(),
+        "status": status or "failed",
         "contract_valid": not errors,
         "contract_errors": errors,
     }
 
 
-def _recover_misplaced_handoff_contract_artifacts(run_dir: Path, target_dir: Path) -> None:
-    for source, destination in [
-        (target_dir / "handoff" / HANDOFF_SUMMARY_MARKDOWN, run_dir / HANDOFF_SUMMARY_MARKDOWN),
-        (target_dir / "handoff" / "release-report.html", run_dir / HANDOFF_REPORT_HTML),
-        (target_dir / "handoff" / "release-evidence.json", run_dir / HANDOFF_EVIDENCE_JSON),
-        (target_dir / HANDOFF_SUMMARY_MARKDOWN, run_dir / HANDOFF_SUMMARY_MARKDOWN),
-        (target_dir / HANDOFF_REPORT_HTML, run_dir / HANDOFF_REPORT_HTML),
-        (target_dir / HANDOFF_EVIDENCE_JSON, run_dir / HANDOFF_EVIDENCE_JSON),
-    ]:
+def _recover_misplaced_handoff_contract_artifacts(
+    run_dir: Path,
+    target_dir: Path,
+    *,
+    paths: HandoffContractPaths,
+) -> None:
+    for source, destination in _handoff_recovery_candidates(target_dir, run_dir, paths):
         if not source.exists():
             continue
         if destination.exists() and source.stat().st_mtime <= destination.stat().st_mtime:
@@ -500,9 +580,20 @@ def _parse_status(summary: str) -> str | None:
     return match.group(1).lower() if match else None
 
 
+def _execution_id(request: ExecutionRequest) -> str:
+    if request.execution_id:
+        return request.execution_id
+    return build_agent_execution_id(
+        run_id=request.run_id,
+        agent_id=HANDOFF_CODEX_AGENT_ID,
+        target=request.active_feature.get("id") if request.active_feature else "sprint",
+        intent=request.execution_intent or "handoff",
+    )
+
+
 def _load_json_object(path: Path) -> tuple[dict[str, Any], list[str]]:
     if not path.exists():
-        return {}, [f"Missing required handoff evidence JSON: {HANDOFF_EVIDENCE_JSON}."]
+        return {}, [f"Missing required handoff evidence JSON: {path.as_posix()}."]
     try:
         loaded = json.loads(path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as exc:
@@ -512,51 +603,15 @@ def _load_json_object(path: Path) -> tuple[dict[str, Any], list[str]]:
     return loaded, []
 
 
-def _client_html_contract_errors(path: Path) -> list[str]:
-    if not path.exists():
-        return []
-    html = path.read_text(encoding="utf-8", errors="ignore").lower()
-    developer_terms = {
-        "docker compose": "Docker Compose/local developer commands",
-        "localhost": "localhost developer URLs",
-        "resource group": "cloud resource names",
-        "container registry": "cloud registry internals",
-        "revision": "deployment revision internals",
-        "generated-project": "generated project file paths",
-        ".delivery-state": "orchestration artifact names",
-        ".json": "raw JSON artifact names",
-        ".md": "raw Markdown artifact names",
-        "technical integration": "technical integration links",
-        "stakeholder": "third-person stakeholder framing",
-        "business review": "internal review framing",
-        "review environment": "internal review-environment framing",
-        "dev review": "internal dev-environment framing",
-        "technical reviewer": "technical reviewer content",
-        "developer setup": "developer setup content",
-        "handoff-codex-agent": "internal agent identity",
-        "technical references": "technical evidence references",
-        "evidence file": "technical evidence references",
-        "engineering follow-up": "engineering follow-up content",
-        "developer artifacts": "developer artifact references",
-        "api details": "API implementation details",
-        "pyproject": "package metadata",
-        "port 8501": "container port details",
-        "port 8000": "container port details",
-    }
-    return [
-        f"Client HTML contains developer-facing detail: {description}."
-        for term, description in developer_terms.items()
-        if term in html
-    ]
-
-
 def _write_contract_failure_artifacts(
     run_dir: Path,
     summary: str,
     errors: list[str],
+    *,
+    paths: HandoffContractPaths,
 ) -> str:
-    handoff_dir = run_dir / "handoff"
-    handoff_dir.mkdir(parents=True, exist_ok=True)
+    for relative_path in (paths.summary, paths.html, paths.evidence):
+        (run_dir / relative_path).parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "status": "failed",
         "project": {"name": "", "goal": ""},
@@ -570,7 +625,7 @@ def _write_contract_failure_artifacts(
         "artifact_references": [],
         "contract_errors": errors,
     }
-    (run_dir / HANDOFF_EVIDENCE_JSON).write_text(
+    (run_dir / paths.evidence).write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
@@ -594,13 +649,45 @@ def _write_contract_failure_artifacts(
             "",
         ]
     )
-    (run_dir / HANDOFF_SUMMARY_MARKDOWN).write_text(report, encoding="utf-8")
-    (run_dir / HANDOFF_REPORT_HTML).write_text(
+    (run_dir / paths.summary).write_text(report, encoding="utf-8")
+    (run_dir / paths.html).write_text(
         "<!doctype html><html><body><h1>Handoff Failed</h1>"
         "<p>The Handoff Codex Agent did not satisfy the output contract.</p></body></html>\n",
         encoding="utf-8",
     )
     return f"{report}\nHANDOFF_STATUS: failed\n"
+
+
+def _handoff_sprint_id(scope_text: str, request: ExecutionRequest) -> str:
+    match = SPRINT_SCOPE_PATTERN.search(scope_text)
+    if match:
+        return match.group(0).lower().replace("_", "-").replace(" ", "-")
+    for feature in request.feature_queue:
+        sprint_id = str(feature.get("sprint_id") or "").strip()
+        if sprint_id:
+            return sprint_id
+    return "sprint-01"
+
+
+def _handoff_recovery_candidates(
+    target_dir: Path,
+    run_dir: Path,
+    paths: HandoffContractPaths,
+) -> list[tuple[Path, Path]]:
+    scoped = [
+        (target_dir / paths.summary, run_dir / paths.summary),
+        (target_dir / paths.html, run_dir / paths.html),
+        (target_dir / paths.evidence, run_dir / paths.evidence),
+    ]
+    legacy = [
+        (target_dir / "handoff" / HANDOFF_SUMMARY_MARKDOWN, run_dir / paths.summary),
+        (target_dir / "handoff" / "release-report.html", run_dir / paths.html),
+        (target_dir / "handoff" / "release-evidence.json", run_dir / paths.evidence),
+        (target_dir / HANDOFF_SUMMARY_MARKDOWN, run_dir / paths.summary),
+        (target_dir / HANDOFF_REPORT_HTML, run_dir / paths.html),
+        (target_dir / HANDOFF_EVIDENCE_JSON, run_dir / paths.evidence),
+    ]
+    return scoped + legacy
 
 
 def _unique_artifacts(paths: list[str]) -> list[str]:

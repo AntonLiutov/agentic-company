@@ -337,7 +337,9 @@ def _create_run(tmp_path: Path) -> Path:
     run_dir = tmp_path / "runs" / "deployment-codex"
     target_dir = run_dir / "generated-project"
     target_dir.mkdir(parents=True)
-    (run_dir / "06-execution-request.json").write_text(
+    request_path = run_dir / "delivery/execution-request.json"
+    request_path.parent.mkdir(parents=True, exist_ok=True)
+    request_path.write_text(
         json.dumps(
             {
                 "run_id": run_dir.name,
@@ -351,7 +353,6 @@ def _create_run(tmp_path: Path) -> Path:
                 "expected_outputs": ["README.md", "docker-compose.yml"],
                 "instructions": ["Build the release batch."],
                 "constraints": ["Keep names stable."],
-                "project_archetype": "api-web-compose",
                 "feature_queue": [{"id": "F1", "title": "Create tasks", "delivery_order": 1}],
                 "active_feature": None,
                 "completed_feature_ids": ["F1"],

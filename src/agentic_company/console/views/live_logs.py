@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from agentic_company.console.live_logs import friendly_log_entries
@@ -116,8 +117,9 @@ def _read_codex_events(run_dir: Path) -> list[dict[str, object]]:
         feature_id = _codex_feature_id(run_dir, path)
         agent_id = _codex_agent_id(run_dir, path)
         for event in _read_jsonl(path):
-            if agent_id:
-                event = {**event, "agent_id": agent_id}
+            event_agent_id = _codex_agent_id_from_event(event) or agent_id
+            if event_agent_id:
+                event = {**event, "agent_id": event_agent_id}
             if feature_id:
                 event = {**event, "feature_id": feature_id}
             events.append(event)
@@ -128,8 +130,9 @@ def _codex_event_paths(run_dir: Path) -> list[Path]:
     paths: list[Path] = []
     codex_dir = run_dir / "codex"
     if codex_dir.exists():
-        paths.append(codex_dir / "events.jsonl")
-        paths.extend(sorted(codex_dir.glob("*/events.jsonl")))
+        paths.extend(sorted(codex_dir.rglob("events.jsonl")))
+    for upstream_codex_dir in _upstream_planning_codex_roots(run_dir):
+        paths.extend(sorted(upstream_codex_dir.rglob("events.jsonl")))
     qa_codex_dir = run_dir / "qa" / "codex"
     if qa_codex_dir.exists():
         paths.extend(sorted(qa_codex_dir.rglob("events.jsonl")))
@@ -139,15 +142,19 @@ def _codex_event_paths(run_dir: Path) -> list[Path]:
     handoff_codex_dir = run_dir / "handoff" / "codex"
     if handoff_codex_dir.exists():
         paths.extend(sorted(handoff_codex_dir.rglob("events.jsonl")))
-    return [path for path in paths if path.exists()]
+    team_lead_codex_dir = run_dir / "team-lead" / "codex-review"
+    if team_lead_codex_dir.exists():
+        paths.extend(sorted(team_lead_codex_dir.rglob("events.jsonl")))
+    return sorted({path for path in paths if path.exists()})
 
 
 def _codex_log_paths(run_dir: Path) -> list[Path]:
     paths: list[Path] = []
     codex_dir = run_dir / "codex"
     if codex_dir.exists():
-        paths.append(codex_dir / "execution.log")
-        paths.extend(sorted(codex_dir.glob("*/execution.log")))
+        paths.extend(sorted(codex_dir.rglob("execution.log")))
+    for upstream_codex_dir in _upstream_planning_codex_roots(run_dir):
+        paths.extend(sorted(upstream_codex_dir.rglob("execution.log")))
     qa_codex_dir = run_dir / "qa" / "codex"
     if qa_codex_dir.exists():
         paths.extend(sorted(qa_codex_dir.rglob("execution.log")))
@@ -157,10 +164,26 @@ def _codex_log_paths(run_dir: Path) -> list[Path]:
     handoff_codex_dir = run_dir / "handoff" / "codex"
     if handoff_codex_dir.exists():
         paths.extend(sorted(handoff_codex_dir.rglob("execution.log")))
-    return [path for path in paths if path.exists()]
+    team_lead_codex_dir = run_dir / "team-lead" / "codex-review"
+    if team_lead_codex_dir.exists():
+        paths.extend(sorted(team_lead_codex_dir.rglob("execution.log")))
+    return sorted({path for path in paths if path.exists()})
 
 
 def _codex_feature_id(run_dir: Path, path: Path) -> str:
+    try:
+        path.relative_to(run_dir / "team-lead" / "codex-review")
+    except ValueError:
+        pass
+    else:
+        return ""
+    try:
+        _relative_to_upstream_planning_codex_root(run_dir, path)
+    except ValueError:
+        pass
+    else:
+        return ""
+
     relative = _relative_codex_event_path(run_dir, path)
     if len(relative.parts) >= 2:
         return relative.parts[0]
@@ -172,15 +195,98 @@ def _codex_agent_id(run_dir: Path, path: Path) -> str:
         path.relative_to(run_dir / "qa" / "codex")
     except ValueError:
         try:
-            path.relative_to(run_dir / "deployment" / "codex")
+            _relative_to_upstream_planning_codex_root(run_dir, path)
         except ValueError:
             try:
-                path.relative_to(run_dir / "handoff" / "codex")
+                path.relative_to(run_dir / "deployment" / "codex")
             except ValueError:
-                return ""
-            return "handoff-codex-agent"
-        return "deployment-codex-agent"
+                try:
+                    path.relative_to(run_dir / "handoff" / "codex")
+                except ValueError:
+                    try:
+                        path.relative_to(run_dir / "team-lead" / "codex-review")
+                    except ValueError:
+                        return ""
+                    return "team-lead-codex-review"
+                return "handoff-codex-agent"
+            return "deployment-codex-agent"
+        return _upstream_planning_codex_agent_id(run_dir, path)
     return "qa-codex-agent"
+
+
+def _upstream_planning_codex_agent_id(run_dir: Path, path: Path) -> str:
+    try:
+        relative = _relative_to_upstream_planning_codex_root(run_dir, path)
+    except ValueError:
+        return ""
+    detected = _agent_id_from_parts([*path.parts, *relative.parts])
+    if detected:
+        return detected
+    log_path = path.with_name("execution.log")
+    if log_path.exists():
+        log_text = log_path.read_text(encoding="utf-8", errors="replace")
+        detected = _agent_id_from_text(log_text)
+        if detected:
+            return detected
+    return ""
+
+
+def _upstream_planning_codex_roots(run_dir: Path) -> list[Path]:
+    upstream_dir = run_dir / "upstream-planning"
+    roots = [upstream_dir / "codex"]
+    if upstream_dir.exists():
+        roots.extend(path / "codex" for path in upstream_dir.iterdir() if path.is_dir())
+    return [path for path in roots if path.exists()]
+
+
+def _relative_to_upstream_planning_codex_root(run_dir: Path, path: Path) -> Path:
+    for root in _upstream_planning_codex_roots(run_dir):
+        try:
+            return path.relative_to(root)
+        except ValueError:
+            continue
+    raise ValueError
+
+
+def _codex_agent_id_from_event(event: dict[str, object]) -> str:
+    execution_id = str(event.get("codex_execution_id") or "")
+    return _agent_id_from_text(execution_id)
+
+
+def _agent_id_from_parts(parts: list[str]) -> str:
+    aliases = _agent_aliases()
+    for part in parts:
+        normalized = part.lower()
+        for alias, agent_id in aliases.items():
+            if alias == normalized or agent_id == normalized or agent_id in normalized:
+                return agent_id
+    return ""
+
+
+def _agent_id_from_text(text: str) -> str:
+    normalized = text.lower()
+    for match in re.findall(r"agent_id=([a-z0-9-]+)", normalized):
+        if match in _known_agent_ids():
+            return match
+    for alias, agent_id in _agent_aliases().items():
+        if agent_id in normalized or alias in normalized:
+            return agent_id
+    return ""
+
+
+def _agent_aliases() -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for agent_id in _known_agent_ids():
+        aliases[agent_id] = agent_id
+        if agent_id.endswith("-agent"):
+            aliases[agent_id.removesuffix("-agent")] = agent_id
+    return aliases
+
+
+def _known_agent_ids() -> set[str]:
+    from agentic_company.agents.registry import active_agents
+
+    return {descriptor.agent_id for descriptor in active_agents()}
 
 
 def _relative_codex_event_path(run_dir: Path, path: Path) -> Path:
@@ -189,11 +295,16 @@ def _relative_codex_event_path(run_dir: Path, path: Path) -> Path:
         run_dir / "qa" / "codex",
         run_dir / "deployment" / "codex",
         run_dir / "handoff" / "codex",
+        run_dir / "team-lead" / "codex-review",
     ]:
         try:
             return path.relative_to(root)
         except ValueError:
             continue
+    try:
+        return _relative_to_upstream_planning_codex_root(run_dir, path)
+    except ValueError:
+        pass
     return Path()
 
 

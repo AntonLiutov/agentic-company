@@ -1,8 +1,8 @@
 """Generic deployment artifact helpers.
 
-These helpers exist for legacy callers and artifact rendering only. They do not
-detect topology or choose deployment commands. The Codex Deployment Agent owns
-those decisions during Sprint 4.
+These helpers render non-prescriptive request shells. They do not detect
+topology or choose deployment commands; the Deployment Agent owns those
+decisions from project evidence at runtime.
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ def build_deployment_plan(target_dir: Path) -> dict[str, object]:
 
 
 def build_deployment_request(target_dir: Path) -> dict[str, object]:
-    """Build a non-prescriptive request shell for compatibility."""
+    """Build a non-prescriptive request shell for deployment execution."""
 
     return {
         "agent_id": "deployment-agent",

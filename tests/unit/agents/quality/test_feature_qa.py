@@ -2,7 +2,8 @@ import json
 from pathlib import Path
 
 from agentic_company.agents.quality.agent import QualityAgent
-from agentic_company.agents.quality.feature_qa import run_feature_quality_agent
+from agentic_company.agents.quality.graph import run_quality_agent_graph
+from agentic_company.platform.agent_runtime import DirectSpecialistAgentExecutor
 from agentic_company.platform.models import AgentRunResult
 from agentic_company.platform.state import DeliveryState, initial_delivery_state
 
@@ -10,7 +11,11 @@ from agentic_company.platform.state import DeliveryState, initial_delivery_state
 def test_feature_qa_marks_active_feature_passed_and_selects_next(tmp_path):
     run_dir, state = _create_feature_run(tmp_path)
 
-    result = run_feature_quality_agent(state, runner=FakeQaRunner("qa_passed"))
+    result = run_quality_agent_graph(
+        state,
+        runner=FakeQaRunner("qa_passed"),
+        agent_executor=DirectSpecialistAgentExecutor(),
+    )
 
     assert result["stage"] == "qa"
     assert result["status"] == "qa_feature_passed_next_feature_ready"
@@ -22,28 +27,16 @@ def test_feature_qa_marks_active_feature_passed_and_selects_next(tmp_path):
     assert _event_names(run_dir).count("qa_completed") == 1
 
 
-def test_quality_agent_routes_to_codex_owned_feature_qa(tmp_path, monkeypatch):
+def test_quality_agent_routes_to_codex_owned_graph(tmp_path):
     _run_dir, state = _create_feature_run(tmp_path)
-    calls: list[DeliveryState] = []
 
-    def fake_feature_qa(
-        delivery_state: DeliveryState,
-        *,
-        runner=None,
-    ) -> DeliveryState:
-        calls.append(delivery_state)
-        return {**delivery_state, "stage": "qa", "active_feature_id": "F2"}
-
-    monkeypatch.setattr(
-        "agentic_company.agents.quality.agent.run_feature_quality_agent",
-        fake_feature_qa,
-    )
-
-    result = QualityAgent().run(state)
+    result = QualityAgent(
+        runner=FakeQaRunner("qa_passed"),
+        agent_executor=DirectSpecialistAgentExecutor(),
+    ).run(state)
 
     assert result["stage"] == "qa"
     assert result["active_feature_id"] == "F2"
-    assert calls == [state]
 
 
 def test_feature_qa_marks_deployment_ready_after_final_feature_passes(tmp_path):
@@ -52,7 +45,11 @@ def test_feature_qa_marks_deployment_ready_after_final_feature_passes(tmp_path):
     state["completed_feature_ids"] = ["F1"]
     state["feature_statuses"] = {"F1": "qa_passed"}
 
-    result = run_feature_quality_agent(state, runner=FakeQaRunner("qa_passed"))
+    result = run_quality_agent_graph(
+        state,
+        runner=FakeQaRunner("qa_passed"),
+        agent_executor=DirectSpecialistAgentExecutor(),
+    )
 
     assert result["status"] == "feature_queue_qa_completed_deployment_ready"
     assert result["completed_feature_ids"] == ["F1", "F2"]
@@ -64,7 +61,11 @@ def test_feature_qa_marks_deployment_ready_after_final_feature_passes(tmp_path):
 def test_feature_qa_requests_repair_within_active_feature_scope(tmp_path):
     _run_dir, state = _create_feature_run(tmp_path)
 
-    result = run_feature_quality_agent(state, runner=FakeQaRunner("qa_failed"))
+    result = run_quality_agent_graph(
+        state,
+        runner=FakeQaRunner("qa_failed"),
+        agent_executor=DirectSpecialistAgentExecutor(),
+    )
 
     assert result["status"] == "qa_feature_failed_repair_ready"
     assert result["active_feature_id"] == "F1"
@@ -76,13 +77,17 @@ def test_feature_qa_requests_repair_within_active_feature_scope(tmp_path):
 
 def test_feature_qa_blocks_after_max_repairs(tmp_path):
     _run_dir, state = _create_feature_run(tmp_path)
-    state["feature_repair_attempts"] = {"F1": 2}
+    state["feature_repair_attempts"] = {"F1": 4}
 
-    result = run_feature_quality_agent(state, runner=FakeQaRunner("qa_failed"))
+    result = run_quality_agent_graph(
+        state,
+        runner=FakeQaRunner("qa_failed"),
+        agent_executor=DirectSpecialistAgentExecutor(),
+    )
 
     assert result["status"] == "qa_feature_failed_blocked"
-    assert result["feature_repair_attempts"] == {"F1": 3}
-    assert result["blockers"] == ["QA failed feature F1 after 3 attempts."]
+    assert result["feature_repair_attempts"] == {"F1": 5}
+    assert result["blockers"] == ["QA failed feature F1 after 5 attempts."]
 
 
 def _create_feature_run(tmp_path: Path) -> tuple[Path, DeliveryState]:
@@ -103,7 +108,9 @@ def _create_feature_run(tmp_path: Path) -> tuple[Path, DeliveryState]:
             "delivery_order": 2,
         },
     ]
-    (run_dir / "06-execution-request.json").write_text(
+    request_path = run_dir / "delivery/execution-request.json"
+    request_path.parent.mkdir(parents=True, exist_ok=True)
+    request_path.write_text(
         json.dumps(
             {
                 "run_id": run_dir.name,
@@ -117,7 +124,6 @@ def _create_feature_run(tmp_path: Path) -> tuple[Path, DeliveryState]:
                 "expected_outputs": ["README.md"],
                 "instructions": ["Build the active feature."],
                 "constraints": ["Keep names stable."],
-                "project_archetype": "api-web-compose",
                 "feature_queue": feature_queue,
                 "active_feature": feature_queue[0],
                 "completed_feature_ids": [],
@@ -128,7 +134,6 @@ def _create_feature_run(tmp_path: Path) -> tuple[Path, DeliveryState]:
         encoding="utf-8",
     )
     state = initial_delivery_state(run_id=run_dir.name, run_dir=run_dir)
-    state["project_archetype"] = "api-web-compose"
     state["feature_queue"] = feature_queue
     state["active_feature_id"] = "F1"
     return run_dir, state

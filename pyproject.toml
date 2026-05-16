@@ -9,7 +9,10 @@ description = "Core orchestration and delivery primitives for an agentic IT comp
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "langchain>=1.0.0",
+    "langchain-openai>=1.0.0",
     "langgraph>=1.1.9",
+    "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -19,11 +22,10 @@ app = [
 ]
 dev = [
     "pytest>=8.0.0",
+    "pytest-cov>=6.0.0",
     "ruff>=0.8.0",
 ]
-
 [project.scripts]
-agentic-run-pipeline = "agentic_company.agents.planning.run:main"
 agentic-run-codex = "agentic_company.agents.fullstack.codex_cli:main"
 
 [tool.setuptools]
@@ -35,6 +37,13 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.coverage.run]
+source = ["agentic_company"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
 
 [tool.ruff]
 line-length = 100

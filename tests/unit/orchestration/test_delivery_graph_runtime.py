@@ -41,11 +41,8 @@ def test_delivery_graph_runtime_starts_graph_and_persists_state(tmp_path):
 
     runtime = DeliveryGraphRuntime(
         nodes=DeliveryGraphNodes(
-            planning=node("planning"),
-            fullstack=node("fullstack"),
-            qa=node("qa"),
-            deployment=node("deployment"),
-            handoff=node("handoff"),
+            head=node("head"),
+            team_lead=node("team_lead"),
         )
     )
 
@@ -56,8 +53,8 @@ def test_delivery_graph_runtime_starts_graph_and_persists_state(tmp_path):
     assert visited == DELIVERY_GRAPH_NODE_ORDER
     assert result["run_id"] == "runtime-test"
     assert result["requirements_path"] == str(requirements_path)
-    assert result["stage"] == "handoff"
-    assert result["status"] == "handoff_completed"
+    assert result["stage"] == "head"
+    assert result["status"] == "head_completed"
     assert persisted == result
     assert runtime.load_state(run_dir) == result
 
@@ -74,18 +71,15 @@ def test_delivery_graph_runtime_loads_existing_state_before_running(tmp_path):
         )
     ]
     runtime = DeliveryGraphRuntime(
+        node_order=("head",),
         nodes=DeliveryGraphNodes(
-            planning=lambda state: {
+            head=lambda state: {
                 **state,
-                "stage": "planning",
-                "status": "planning_completed",
-                "completed_nodes": [*state["completed_nodes"], "planning"],
+                "stage": "head",
+                "status": "head_delivery_completed",
+                "completed_nodes": [*state["completed_nodes"], "head"],
             },
-            fullstack=lambda state: state,
-            qa=lambda state: state,
-            deployment=lambda state: state,
-            handoff=lambda state: state,
-        )
+        ),
     )
     runtime.save_state(run_dir, starting_state)
 
@@ -96,8 +90,8 @@ def test_delivery_graph_runtime_loads_existing_state_before_running(tmp_path):
     )
 
     assert result["run_id"] == "existing-state"
-    assert result["max_repair_attempts"] == 3
-    assert result["completed_nodes"] == ["planning"]
+    assert result["max_repair_attempts"] == 5
+    assert result["completed_nodes"] == ["head"]
     assert result["artifacts"] == starting_state["artifacts"]
 
 
@@ -126,11 +120,8 @@ def test_delivery_graph_runtime_writes_graph_events(tmp_path):
     runtime = DeliveryGraphRuntime(
         node_order=CONSOLE_EXECUTION_NODE_ORDER,
         nodes=DeliveryGraphNodes(
-            planning=node("planning"),
-            fullstack=node("fullstack"),
-            qa=node("qa"),
-            deployment=node("deployment"),
-            handoff=node("handoff"),
+            head=node("head"),
+            team_lead=node("team_lead"),
         ),
     )
 
@@ -160,7 +151,9 @@ def test_delivery_graph_runtime_hydrates_feature_queue_from_existing_execution_r
         {"id": "F1", "title": "Create", "delivery_order": 1},
         {"id": "F2", "title": "Update", "delivery_order": 2},
     ]
-    (run_dir / "06-execution-request.json").write_text(
+    request_path = run_dir / "delivery/execution-request.json"
+    request_path.parent.mkdir(parents=True, exist_ok=True)
+    request_path.write_text(
         json.dumps(
             {
                 "run_id": "hydrated",
@@ -174,7 +167,6 @@ def test_delivery_graph_runtime_hydrates_feature_queue_from_existing_execution_r
                 "expected_outputs": [],
                 "instructions": [],
                 "constraints": [],
-                "project_archetype": "api-web-compose",
                 "feature_queue": feature_queue,
                 "active_feature": feature_queue[0],
                 "completed_feature_ids": [],
@@ -184,22 +176,20 @@ def test_delivery_graph_runtime_hydrates_feature_queue_from_existing_execution_r
     )
     seen: dict[str, object] = {}
 
-    def fullstack(state: DeliveryState) -> DeliveryState:
-        seen["project_archetype"] = state["project_archetype"]
+    def team_lead(state: DeliveryState) -> DeliveryState:
         seen["feature_queue"] = state["feature_queue"]
         seen["active_feature_id"] = state["active_feature_id"]
         seen["feature_statuses"] = state["feature_statuses"]
         seen["feature_repair_attempts"] = state["feature_repair_attempts"]
-        return {**state, "stage": "fullstack", "status": "seen"}
+        return {**state, "stage": "team_lead", "status": "seen"}
 
     runtime = DeliveryGraphRuntime(
-        node_order=CONSOLE_EXECUTION_NODE_ORDER,
-        nodes=DeliveryGraphNodes(fullstack=fullstack, qa=lambda state: state),
+        node_order=("team_lead",),
+        nodes=DeliveryGraphNodes(team_lead=team_lead),
     )
 
     runtime.start(run_dir)
 
-    assert seen["project_archetype"] == "api-web-compose"
     assert seen["feature_queue"] == feature_queue
     assert seen["active_feature_id"] == "F1"
     assert seen["feature_statuses"] == {}
@@ -208,76 +198,44 @@ def test_delivery_graph_runtime_hydrates_feature_queue_from_existing_execution_r
 
 def test_delivery_graph_runtime_checkpoints_state_between_nodes(tmp_path):
     run_dir = tmp_path / "runs" / "checkpointed"
-    seen_by_deployment: dict[str, object] = {}
 
-    def fullstack(state: DeliveryState) -> DeliveryState:
+    def team_lead(state: DeliveryState) -> DeliveryState:
         return {
             **state,
-            "stage": "fullstack",
-            "status": "fullstack_feature_implemented",
-            "completed_nodes": [*state["completed_nodes"], "fullstack"],
-        }
-
-    def qa(state: DeliveryState) -> DeliveryState:
-        return {
-            **state,
-            "stage": "qa",
-            "status": "feature_queue_qa_completed_deployment_ready",
+            "stage": "team_lead",
+            "status": "team_lead_sprint_handoff_ready",
             "active_feature_id": None,
             "completed_feature_ids": ["F1", "F2"],
             "feature_statuses": {"F1": "qa_passed", "F2": "qa_passed"},
-            "project_archetype": "api-web-compose",
             "qa_status": "passed",
-            "completed_nodes": [*state["completed_nodes"], "qa:F2"],
-        }
-
-    def deployment(state: DeliveryState) -> DeliveryState:
-        persisted = json.loads((run_dir / DEFAULT_STATE_FILENAME).read_text(encoding="utf-8"))
-        seen_by_deployment["completed_feature_ids"] = persisted["completed_feature_ids"]
-        return {
-            **state,
-            "stage": "deployment",
-            "status": "deployment_deployed",
             "deployment_status": "deployed",
-            "completed_nodes": [*state["completed_nodes"], "deployment"],
-        }
-
-    def handoff(state: DeliveryState) -> DeliveryState:
-        return {
-            **state,
-            "stage": "handoff",
-            "status": "handoff_ready",
-            "completed_nodes": [*state["completed_nodes"], "handoff"],
+            "completed_nodes": [*state["completed_nodes"], "team_lead"],
         }
 
     runtime = DeliveryGraphRuntime(
-        node_order=CONSOLE_EXECUTION_NODE_ORDER,
+        node_order=("team_lead",),
         nodes=DeliveryGraphNodes(
-            fullstack=fullstack,
-            qa=qa,
-            deployment=deployment,
-            handoff=handoff,
+            team_lead=team_lead,
         ),
     )
 
     result = runtime.start(run_dir)
 
-    assert seen_by_deployment["completed_feature_ids"] == ["F1", "F2"]
     assert result["completed_feature_ids"] == ["F1", "F2"]
 
 
 def test_delivery_graph_runtime_skips_downstream_nodes_when_state_has_blockers(tmp_path):
-    run_dir = tmp_path / "runs" / "blocked-after-planning"
+    run_dir = tmp_path / "runs" / "blocked-after-business-analysis"
     visited: list[str] = []
 
-    def planning(state: DeliveryState) -> DeliveryState:
-        visited.append("planning")
+    def business_analyst(state: DeliveryState) -> DeliveryState:
+        visited.append("business_analyst")
         return {
             **state,
-            "stage": "planning",
-            "status": "planning_verified_downstream_paused",
+            "stage": "business_analysis",
+            "status": "business_analysis_verified_downstream_paused",
             "blockers": ["Downstream agents are intentionally paused."],
-            "completed_nodes": [*state["completed_nodes"], "planning"],
+            "completed_nodes": [*state["completed_nodes"], "business_analyst"],
         }
 
     def downstream(name: str):
@@ -288,13 +246,11 @@ def test_delivery_graph_runtime_skips_downstream_nodes_when_state_has_blockers(t
         return run
 
     runtime = DeliveryGraphRuntime(
+        node_order=("business_analyst", "team_lead"),
         nodes=DeliveryGraphNodes(
-            planning=planning,
-            fullstack=downstream("fullstack"),
-            qa=downstream("qa"),
-            deployment=downstream("deployment"),
-            handoff=downstream("handoff"),
-        )
+            business_analyst=business_analyst,
+            team_lead=downstream("team_lead"),
+        ),
     )
 
     result = runtime.start(run_dir)
@@ -305,13 +261,8 @@ def test_delivery_graph_runtime_skips_downstream_nodes_when_state_has_blockers(t
     ]
     skipped = [event for event in events if event["event"] == "delivery_graph_node_skipped"]
 
-    assert visited == ["planning"]
-    assert result["stage"] == "planning"
-    assert result["status"] == "planning_verified_downstream_paused"
+    assert visited == ["business_analyst"]
+    assert result["stage"] == "business_analysis"
+    assert result["status"] == "business_analysis_verified_downstream_paused"
     assert result["blockers"] == ["Downstream agents are intentionally paused."]
-    assert [event["data"]["node"] for event in skipped] == [
-        "fullstack",
-        "qa",
-        "deployment",
-        "handoff",
-    ]
+    assert [event["data"]["node"] for event in skipped] == ["team_lead"]

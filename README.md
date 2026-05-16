@@ -1,192 +1,269 @@
 # agentic-company
 
-Core operating system for an agentic IT company.
+Control plane for an agentic software delivery company.
 
-This repository is intended to hold the reusable building blocks that power delivery across multiple client projects and internal PoCs:
+This repository contains the control plane that turns requirements into a planned,
+implemented, tested, deployed, and handed-off prototype. Generated application code lives in
+run-local `runs/<run-id>/generated-project/` folders; this repo owns the agents, platform graph
+runtime, contracts, console, and integrations that create and operate those projects.
 
-- agent role definitions
-- team assembly logic
-- workflow orchestration
-- shared platform contracts
-- reusable templates
-- delivery documentation
+## Current Status
 
-## Status
+The platform is an early PoC. The current default sample is a multi-service task tracker:
 
-This is an early but working PoC control plane. The current vertical slice can plan a simple
-web-app MVP, execute a Codex-backed Fullstack Agent run, QA the generated app locally and through
-Docker/browser checks, deploy the generated app to Azure Container Apps after explicit confirmation,
-run post-deployment browser QA, and then write a handoff summary.
+```text
+examples/requirements/multi-service-task-tracker.md
+```
 
-The platform is still not a general autonomous software company. The strongest implemented roles are
-Fullstack, QA, Deployment, and Handoff. Product, BA, Architecture, Design, Security, Memory,
-and Support remain mostly deterministic, documented, or future-facing.
+This branch connects upstream planning to delivery through Head Agent. The active console graph is:
 
-## Goals
+```text
+Head Agent -> END
+```
 
-- Standardize how work is received, scoped, staffed, delivered, and handed off
-- Reuse the same agent patterns across multiple projects
-- Keep delivery repositories separate from orchestration and company logic
+The platform graph runtime invokes Head Agent. Head coordinates planning and delivery through
+specialist tools:
 
-## Suggested Early Scope
+```text
+Head Agent <-> Business Analyst
+Head Agent <-> Architect
+Head Agent <-> Project Manager
+Head Agent <-> Team Lead
+```
 
-- Keep the master agent catalog and maturity model up to date.
-- Harden the one working delivery lane before adding many project types.
-- Add the Fullstack <-> QA repair loop so failed generated projects can be fixed and retested.
-- Clean the artifact/run model so business users see a simple handoff while developers keep full
-  evidence.
-- Generalize beyond the current Streamlit LLM chat archetype.
+The Business Analyst agent reads `00-requirements.md`, receives the Head Agent request message,
+runs a scoped Codex worker, and writes:
+
+- `upstream-planning/business-analysis.md`
+- `upstream-planning/business-analysis.json`
+- `upstream-planning/business-analysis-request.json`
+
+The Architect agent reads the Business Analyst artifacts and the Head Agent request message, runs a
+scoped Codex worker, and writes:
+
+- `upstream-planning/architecture.md`
+- `upstream-planning/architecture.json`
+- `upstream-planning/architecture.mmd`
+- `upstream-planning/architecture-request.json`
+
+The Project Manager agent reads the Business Analyst and Architect artifacts plus the Head Agent
+request message, runs a scoped Codex worker, and writes:
+
+- `upstream-planning/project-management/release-plan.md`
+- `upstream-planning/project-management/release-plan.json`
+- `upstream-planning/project-management/candidate-feature-queue.json`
+- `upstream-planning/project-management/risks-and-dependencies.md`
+- `upstream-planning/project-management/roadmap.csv`
+- `upstream-planning/project-management/sprint-XX-plan.json`
+- `upstream-planning/project-management-request.json`
+
+Team Lead is no longer a platform graph node; it is a downstream specialist tool owned by Head
+Agent, the same way BA, Architect, and Project Manager are coordinated.
+
+## Runtime Shape
+
+The platform is moving toward one common agent architecture:
+
+```text
+BaseDeliveryAgent
+  -> AgentCapabilities + AgentCommunicationPolicy
+  -> LangGraph shell
+    -> prepare context
+    -> LangChain create_agent executor
+      -> allowed tools
+      -> optional Codex worker tool
+    -> apply result to delivery state
+```
+
+Head Agent, Business Analyst, Architect, Project Manager, Team Lead, Fullstack, QA, Deployment, and
+Handoff use this shape or the same platform contracts. Head Agent and Team Lead coordinate through
+specialist tools and do not get direct `codex_exec` permission. Business Analyst, Architect,
+Project Manager, Fullstack, QA, Deployment, and Handoff each run a scoped AgentExecutor with
+`codex_exec` as the specialist worker tool, then apply the result through their agent-owned graph
+logic.
+
+Agent communication is modeled as a platform primitive through `AgentMessage` and a run-local
+message store. Communication remains policy-scoped: the platform can support agent-to-agent
+messages, but each role receives explicit route and tool permissions.
 
 ## Repository Layout
 
-- `docs/` - business and architectural documentation
-- `src/agentic_company/platform/` - shared delivery state, artifact, event, and security contracts
-- `src/agentic_company/integrations/` - reusable tool integrations used by agents
-- `src/agentic_company/agents/` - specialist agent modules and agent-local graphs
-- `src/agentic_company/orchestration/` - top-level LangGraph delivery runtime and routing
-- `src/agentic_company/console/` - Streamlit web console, views, and local run services
-- `agents/` - role definitions in both `README.md` and `agent.yaml` form
-- `workflows/` - delivery flows by project type
-- `templates/` - reusable templates for briefs, ADRs, QA reports, handoffs
+- `examples/requirements/` - sample requirement documents for console and CLI runs
+- `docs/` - milestones, architecture notes, roadmap, and agent contracts
+- `src/agentic_company/agents/` - agent wrappers, agent-local graphs, and runtimes
+- `src/agentic_company/platform/` - shared state, messages, artifacts, events, and security
+- `src/agentic_company/integrations/` - Codex and command streaming helpers
+- `src/agentic_company/orchestration/` - platform LangGraph runner and graph persistence
+- `src/agentic_company/console/` - Streamlit operator console
 - `tests/unit/` - fast unit tests grouped by architecture layer
-- `tests/integration/` - artifact and workflow integration tests
-
-## Agent Registry
-
-The starting company roster contains 20 agents:
-
-1. `Intake Agent`
-2. `Team Assembler Agent`
-3. `Sales / Discovery Agent`
-4. `Product Manager Agent`
-5. `Business Analyst Agent`
-6. `Project / Delivery Manager Agent`
-7. `UX / Product Designer Agent`
-8. `Solution Architect Agent`
-9. `Tech Lead Agent`
-10. `Frontend Engineer Agent`
-11. `Backend Engineer Agent`
-12. `Fullstack Agent`
-13. `AI / LLM Engineer Agent`
-14. `Data Engineer Agent`
-15. `DevOps / Platform Agent`
-16. `QA Agent`
-17. `Security Review Agent`
-18. `Documentation / Handoff Agent`
-19. `Support / Customer Success Agent`
-20. `Knowledge / Memory Agent`
-
-See [docs/agent-catalog.md](docs/agent-catalog.md) for the summarized catalog and `agents/` for full definitions.
+- `tests/integration/` - slower end-to-end checks when present
+- `runs/` - ignored local run output
 
 ## Quick Start
 
+Install dependencies with `uv`:
+
 ```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -e .[dev]
+uv sync --extra dev --extra app
 ```
 
-## Development
-
-Run the test suite:
+Run checks:
 
 ```powershell
-uv run --extra dev ruff format .
 uv run --extra dev ruff check .
 uv run --extra dev pytest
+uv run --extra dev pytest --cov=agentic_company --cov-report=term-missing --cov-fail-under=75
 ```
 
-The package currently targets Python 3.11+ and uses `setuptools` for packaging.
-
-## Implemented Vertical Slice
-
-The first useful milestone is now implemented for one narrow project type:
-
-1. Accept an intake brief
-2. Classify project type, complexity, and delivery mode
-3. Assemble the smallest effective agent team
-4. Select a workflow
-5. Produce an implementation brief and execution request
-6. Execute the generated project with Codex
-7. Run QA with command, Docker, browser, screenshot, and transcript evidence
-8. Prepare Azure deployment artifacts
-9. Deploy the generated project to Azure Container Apps after explicit user confirmation
-10. Run post-deploy browser QA and then write the final handoff
-
-Run the Planning Agent:
-
-```powershell
-uv run --extra dev agentic-run-pipeline examples/requirements/web-app-mvp-chat.md
-```
-
-If you are using an already activated environment, install the package first with `pip install -e .[dev]`, then run `python -m agentic_company.agents.planning.run examples/requirements/web-app-mvp-chat.md`.
-
-The command writes structured artifacts to `runs/<run-id>/`. The planning loop remains
-framework-light and file-based on purpose. LangGraph now coordinates the active Planning,
-Fullstack, QA, Deployment, and Handoff agents while some older deterministic internals are still
-being moved behind those specialist boundaries.
-Planning-owned JSON Schema contracts live with the Planning Agent under
-`src/agentic_company/agents/planning/schemas/`; future cross-agent contracts should live under
-`platform/` instead of a generic root bucket.
-
-Each run also writes `events.jsonl`, an append-only trace of planning and artifact events.
-
-Run the current execution request with the real Codex CLI:
-
-```powershell
-uv run --extra dev agentic-run-codex runs\<run-id>
-```
-
-The Codex runner reads `06-execution-request.json`, passes the planning artifacts to
-`codex exec`, works inside the run's `generated-project/` directory, and writes
-`07-execution-summary.md`. Successful executions continue into QA and deployment readiness:
-`08-qa-report.md` records local/Docker/browser QA, while `11-deployment-plan.*` and
-`12-deployment-request.*` prepare the Azure Container Apps deployment. Final handoff is written only
-after an explicit deployment succeeds and post-deployment QA passes.
-
-QA evidence is kept under `qa/test-plan.json`, `qa/results.json`, and `qa/commands.log`. The QA
-agent checks generated artifacts, obvious secret leaks, README operability, dependency sync, Python
-compilation, Streamlit AppTest coverage for missing/configured credentials, Docker Compose config,
-Docker runtime E2E, and required Playwright live chat E2E checks that launch the generated app,
-send a real message, wait for an assistant response, and record browser screenshots plus
-transcripts. Docker runtime QA also writes `qa/docker/build-summary.json` and
-`qa/docker/runtime-command.log` so slow image builds can be inspected by step. If QA fails, the
-review runner writes `10-fix-request.json` and `10-fix-request.md` as the structured input for the
-next Fullstack Agent / Codex repair pass.
-
-When explicitly confirmed in the console, the Azure Deployment Runner deploys the generated app,
-writes `13-deployment-summary.md`, runs post-deployment Playwright chatbot QA against the public
-Azure URL, and only then writes `09-handoff-summary.md`. Dev deployments reuse stable Azure
-resources by default so repeated runs update the existing dev Container App instead of creating new
-infrastructure each time. Docker QA uses a stable dev Compose project name for the same reason, so
-repeated local QA runs reuse/replace the same generated-project image namespace.
-
-Codex telemetry is kept under `codex/prompt.md`, `codex/execution.log`, and `codex/events.jsonl`.
-The console has one `Live Logs` view that combines Codex commentary, workflow events, QA command
-logs, deployment command logs, diff/file summaries, and raw evidence. The console starts Codex and
-deployment work in background threads and refreshes while they are running, so logs become visible
-before each stage completes. QA, deployment, and Codex command output share the same streaming
-primitive in `agentic_company.integrations.commands`, so new agents can add live developer logs
-without inventing another log format.
-
-## Local Planning Console
-
-Launch the local Streamlit web console:
+Launch the local operator console:
 
 ```powershell
 uv run --extra app streamlit run src/agentic_company/console/app.py --server.port 8502
 ```
 
-The console lets you paste requirements, load the sample requirements, run the deterministic
-Planning Agent, inspect generated artifacts, and read the `events.jsonl` timeline without
-opening a terminal. It can also generate a deterministic Streamlit chat starter in the run's
-`generated-project/` folder or run the real Codex CLI execution path after explicit confirmation.
-When the intake artifact lists required configuration such as `OPENAI_API_KEY`, the console can
-write those values to the run-local `generated-project/.env` before execution; saved values are not
-shown again and stay under ignored `runs/` output.
-The current planning runtime is intentionally shown as `L0 Deterministic`; execution is represented
-as `L6 Codex Agent` once the handoff reaches the Fullstack Agent.
-It uses port `8502` so generated demo apps can keep their default development ports free.
+The console lets you load the default multi-service sample, create an upstream planning run,
+inspect the generated Head/BA/architecture/PM artifacts, and follow live Codex logs.
 
-Console and runner logs are written to the terminal. Set `AGENTIC_COMPANY_LOG_LEVEL=DEBUG` before
-launching the console or CLI commands when you want more detailed local diagnostics.
+## CLI Usage
+
+The Fullstack Codex CLI entry point exists for runs that contain
+`delivery/execution-request.json`:
+
+```powershell
+uv run --extra dev agentic-run-codex runs\<run-id>
+```
+
+The active console flow writes artifacts under `runs/<run-id>/`, including:
+
+- `00-requirements.md`
+- Head Agent coordination artifacts under `head/`
+- Business Analyst and Architect artifacts under `upstream-planning/`
+- agent-owned Codex execution workspaces such as
+  `upstream-planning/business-analyst/codex/` and `upstream-planning/architect/codex/`
+- `.delivery-state.json`
+- `events.jsonl`
+
+## Environment Notes
+
+Codex-backed workers may need access to local development tools and credentials:
+
+- `OPENAI_API_KEY` for LangChain/OpenAI agent decisions;
+- Docker or Rancher Desktop for local image/build checks;
+- Azure CLI credentials for Azure Container Apps deployment;
+- run-local generated project caches such as `.uv-cache`, `.npm-cache`, and `.deno-cache`.
+
+The console can write run-local generated project `.env` files when a sample declares required
+application configuration. The default multi-service sample does not require app-level OpenAI
+credentials.
+
+### Codex Worker Requirements
+
+Business Analyst, Architect, Project Manager, Fullstack, QA, Deployment, and Handoff use Codex CLI
+workers. Codex must be installed and available on `PATH`, or configured explicitly:
+
+```powershell
+$env:CODEX_BINARY="C:\path\to\codex.exe"
+```
+
+Business Analyst, Architect, and Project Manager use workspace-write Codex runs scoped to the run
+directory and are prompted to write only their upstream planning artifacts. Their Codex prompts,
+logs, raw events, and summaries live in agent-owned workspaces under
+`upstream-planning/<agent>/codex/` so planning agents do not share one growing execution folder.
+Engineering delivery workers run inside the generated project directory and receive the run
+directory as an additional readable/writable context. For local prototype delivery the
+engineering-worker default sandbox is:
+
+```text
+AGENTIC_CODEX_SANDBOX=danger-full-access
+```
+
+That default is intentional for trusted local runs that need dependency installation, Docker builds,
+Azure CLI access, and deployment checks. It is not meant for untrusted code or untrusted
+requirements. You can override it:
+
+```powershell
+$env:AGENTIC_CODEX_SANDBOX="workspace-write"
+```
+
+Allowed values:
+
+```text
+read-only
+workspace-write
+danger-full-access
+```
+
+By default, Codex subprocesses also inherit the shell environment:
+
+```text
+AGENTIC_CODEX_INHERIT_ENV=true
+```
+
+Set it to `false`, `0`, `no`, or `off` to skip passing
+`shell_environment_policy.inherit=all`.
+
+Codex reasoning effort defaults to high for platform agents:
+
+```text
+AGENTIC_CODEX_REASONING_EFFORT=high
+```
+
+Allowed values:
+
+```text
+low
+medium
+high
+xhigh
+```
+
+The runner keeps dependency caches inside the generated project unless overridden:
+
+```text
+UV_CACHE_DIR      -> generated-project/.uv-cache
+DENO_DIR          -> generated-project/.deno-cache
+npm_config_cache  -> generated-project/.npm-cache
+```
+
+Optional overrides:
+
+```text
+AGENTIC_CODEX_UV_CACHE_DIR
+AGENTIC_CODEX_DENO_DIR
+AGENTIC_CODEX_NPM_CACHE
+```
+
+For host tooling, the runner attempts to expose existing user-level Docker and Azure configuration
+to Codex workers:
+
+```text
+~/.azure
+~/.docker
+Docker CLI plugin directories, including Rancher Desktop plugin paths on Windows
+```
+
+This is the current pragmatic local-dev policy. Longer term, these permissions should move behind
+agent/runtime policy configuration rather than living as delivery-worker defaults.
+
+## Documentation
+
+Useful starting points:
+
+- [Docs index](docs/README.md)
+- [MSD-002 Team Lead, BA, Architect, and PM](docs/msd-002-team-lead-ba-arch-pm/README.md)
+- [Multi-Service Delivery Milestone](docs/multi-service-delivery-milestone/README.md)
+- [Platform Rearchitecture](docs/platform-rearchitecture/README.md)
+- [Agent Catalog](docs/agent-catalog.md)
+
+## Development Notes
+
+Keep changes small and agent-by-agent. The current migration path is:
+
+1. keep Team Lead and specialist agents on the shared AgentExecutor runtime;
+2. improve specialist tool registries beyond the initial `codex_exec` worker tool;
+3. add Product/Project Manager on top of the same policy/message model;
+4. add durable checkpointer/resume support for long-running handoffs between agents.
+
+Do not put generated projects or local run artifacts into source control. Keep durable platform
+contracts in `platform/`, and keep agent-specific behavior inside each agent module.
+
