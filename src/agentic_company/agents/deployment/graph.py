@@ -2,30 +2,50 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import NotRequired, Protocol, TypedDict, cast
 
-from langgraph.graph import END, START, StateGraph
-
-from agentic_company.agents.base import artifact_refs, extend_artifacts
 from agentic_company.agents.deployment.codex_cli import (
+    DEPLOYMENT_CODEX_AGENT_ID,
     DeploymentCodexRunner,
     public_urls_from_deployment_result,
 )
+from agentic_company.platform.agent_contracts import (
+    append_downstream_response,
+    artifact_refs,
+    extend_artifacts,
+)
+from agentic_company.platform.agent_runtime import (
+    AGENT_EXECUTOR_GRAPH_NODE_ORDER,
+    SpecialistAgentExecutor,
+    SpecialistAgentRequest,
+    agent_env_value,
+    build_agent_executor_graph,
+)
+from agentic_company.platform.artifacts import (
+    build_execution_request_payload,
+    update_execution_request_context,
+    write_execution_request,
+)
 from agentic_company.platform.events import write_event
 from agentic_company.platform.models import AgentRunResult
-from agentic_company.platform.state import DeliveryState, mark_node_completed
+from agentic_company.platform.state import (
+    DeliveryState,
+    codex_resume_thread_id,
+    mark_node_completed,
+)
 
 DEPLOYMENT_AGENT_ID = "deployment-agent"
 
-DEPLOYMENT_AGENT_GRAPH_NODE_ORDER: tuple[str, ...] = (
-    "prepare_context",
-    "codex_deployment_execution",
-    "parse_deployment_contract",
-    "normalize_deployment_contract",
-    "apply_deployment_result",
-)
+DEPLOYMENT_AGENT_GRAPH_NODE_ORDER = AGENT_EXECUTOR_GRAPH_NODE_ORDER
+DEPLOYMENT_AGENT_SYSTEM_PROMPT = """You are the Deployment Agent for agentic-company.
+
+You own deployment work only through the available tools. Call `codex_exec` to
+run the Codex deployment worker for the current run. Do not claim deployment is
+complete without calling a tool.
+"""
 
 
 class DeploymentRunner(Protocol):
@@ -48,6 +68,7 @@ class DeploymentAgentGraphState(TypedDict):
 def build_deployment_agent_graph(
     runner: DeploymentRunner | None = None,
     *,
+    agent_executor: SpecialistAgentExecutor,
     node_order: Sequence[str] | None = None,
 ):
     """Build the Deployment Agent internal graph.
@@ -61,28 +82,25 @@ def build_deployment_agent_graph(
     if not order:
         raise ValueError("Deployment agent graph requires at least one node.")
 
-    graph = StateGraph(DeploymentAgentGraphState)
     node_map = {
         "prepare_context": _prepare_context,
-        "codex_deployment_execution": _codex_deployment_execution(runner),
-        "parse_deployment_contract": _parse_deployment_contract,
-        "normalize_deployment_contract": _normalize_deployment_contract,
-        "apply_deployment_result": _apply_deployment_result,
+        "run_agent_executor": _run_agent_executor(runner, agent_executor),
+        "apply_result": _apply_deployment_result,
     }
-    for name in order:
-        graph.add_node(name, node_map[name])
-
-    graph.add_edge(START, order[0])
-    for current, next_node in zip(order, order[1:], strict=False):
-        graph.add_edge(current, next_node)
-    graph.add_edge(order[-1], END)
-    return graph.compile()
+    return build_agent_executor_graph(
+        DeploymentAgentGraphState,
+        prepare_node=node_map[order[0]],
+        run_agent_executor_node=node_map[order[1]],
+        apply_result_node=node_map[order[2]],
+        node_order=tuple(order),
+    )
 
 
 def run_deployment_agent_graph(
     delivery_state: DeliveryState,
     *,
     runner: DeploymentRunner | None = None,
+    agent_executor: SpecialistAgentExecutor,
 ) -> DeliveryState:
     """Run the Deployment Agent subgraph and return updated delivery state."""
 
@@ -90,7 +108,7 @@ def run_deployment_agent_graph(
         "delivery_state": delivery_state,
         "run_dir": delivery_state["run_dir"],
     }
-    result = build_deployment_agent_graph(runner).invoke(graph_state)
+    result = build_deployment_agent_graph(runner, agent_executor=agent_executor).invoke(graph_state)
     return cast(DeliveryState, result["delivery_state"])
 
 
@@ -102,7 +120,10 @@ def render_deployment_agent_graph_mermaid() -> str:
             raise RuntimeError("Runner is not available in graph rendering.")
 
     return (
-        build_deployment_agent_graph(cast(DeploymentRunner, NoopRunner()))
+        build_deployment_agent_graph(
+            cast(DeploymentRunner, NoopRunner()),
+            agent_executor=cast(SpecialistAgentExecutor, object()),
+        )
         .get_graph()
         .draw_mermaid()
     )
@@ -110,7 +131,17 @@ def render_deployment_agent_graph_mermaid() -> str:
 
 def _prepare_context(state: DeploymentAgentGraphState) -> DeploymentAgentGraphState:
     delivery_state = state["delivery_state"]
-    event_log = Path(state["run_dir"]) / "events.jsonl"
+    run_dir = Path(state["run_dir"])
+    _write_deployment_execution_request(run_dir, delivery_state)
+    update_execution_request_context(
+        run_dir,
+        execution_id=str(delivery_state.get("agent_execution_id") or ""),
+        execution_intent=str(delivery_state.get("agent_execution_intent") or ""),
+        parent_message_id=str(delivery_state.get("agent_call_message_id") or ""),
+        codex_resume_thread_id=codex_resume_thread_id(delivery_state, DEPLOYMENT_CODEX_AGENT_ID),
+    )
+    event_log = run_dir / "events.jsonl"
+    event_log.parent.mkdir(parents=True, exist_ok=True)
     write_event(
         event_log,
         delivery_state["run_id"],
@@ -121,37 +152,95 @@ def _prepare_context(state: DeploymentAgentGraphState) -> DeploymentAgentGraphSt
     return state
 
 
-def _codex_deployment_execution(runner: DeploymentRunner | None):
+def _write_deployment_execution_request(run_dir: Path, delivery_state: DeliveryState) -> None:
+    """Write the Codex execution envelope required by the Deployment runner."""
+
+    active_feature = _active_feature(delivery_state)
+    request = build_execution_request_payload(
+        delivery_state,
+        agent_id=DEPLOYMENT_AGENT_ID,
+        model=(
+            agent_env_value("DEPLOYMENT_CODEX_MODEL", delivery_state)
+            or agent_env_value("AGENT_CODEX_MODEL", delivery_state)
+            or "gpt-5.5"
+        ),
+        input_artifacts=_deployment_input_artifacts(delivery_state),
+        expected_outputs=[
+            "deployment/result.json",
+            "11-deployment-plan.json",
+            "11-deployment-plan.md",
+            "12-deployment-request.json",
+            "12-deployment-request.md",
+            "13-deployment-summary.md",
+        ],
+        instructions=[
+            "Inspect the current run artifacts, generated project, and deployment assignment.",
+            "Use available Azure/Docker configuration when present.",
+            "Deploy only when the current assignment and evidence support deployment.",
+            "If required privileged inputs are missing, return an evidence-backed blocker.",
+        ],
+        constraints=[
+            "Do not invent Azure resource names, credentials, or public URLs.",
+            "Do not commit or print secrets.",
+            "Do not delete cloud resources.",
+            "Return explicit artifact refs and deployment status.",
+        ],
+        active_feature=active_feature,
+        codex_resume_thread_id=codex_resume_thread_id(delivery_state, DEPLOYMENT_CODEX_AGENT_ID),
+    )
+    write_execution_request(run_dir, request)
+
+
+def _deployment_input_artifacts(delivery_state: DeliveryState) -> list[str]:
+    paths = [
+        "00-requirements.md",
+        *[
+            str(artifact.get("path"))
+            for artifact in delivery_state.get("artifacts", [])
+            if artifact.get("path") and "/codex/" not in str(artifact.get("path"))
+        ],
+    ]
+    return _unique_paths(paths)
+
+
+def _active_feature(delivery_state: DeliveryState) -> dict[str, object] | None:
+    active_feature_id = str(delivery_state.get("active_feature_id") or "")
+    for feature in delivery_state.get("feature_queue", []):
+        if str(feature.get("id") or "") == active_feature_id:
+            return dict(feature)
+    return None
+
+
+def _unique_paths(paths: list[str]) -> list[str]:
+    unique: list[str] = []
+    for path in paths:
+        if path and path not in unique:
+            unique.append(path)
+    return unique
+
+
+def _run_agent_executor(runner: DeploymentRunner | None, agent_executor: SpecialistAgentExecutor):
     def run(state: DeploymentAgentGraphState) -> DeploymentAgentGraphState:
-        result = (runner or DeploymentCodexRunner()).run(Path(state["run_dir"]))
-        return {**state, "result": result}
+        run_dir = Path(state["run_dir"])
+        result = agent_executor.run(
+            SpecialistAgentRequest(
+                agent_id=DEPLOYMENT_AGENT_ID,
+                agent_name="Deployment Agent",
+                stage="deployment",
+                system_prompt=DEPLOYMENT_AGENT_SYSTEM_PROMPT,
+                user_prompt=_deployment_user_prompt(state["delivery_state"]),
+                runner=runner or DeploymentCodexRunner(),
+                run_dir=run_dir,
+                delivery_state=state["delivery_state"],
+            )
+        )
+        status = _normalize_deployment_status(result.status)
+        public_urls = public_urls_from_deployment_result(run_dir)
+        if status == "deployed" and not public_urls:
+            status = "unknown"
+        return {**state, "result": result, "status": status, "public_urls": public_urls}
 
     return run
-
-
-def _parse_deployment_contract(state: DeploymentAgentGraphState) -> DeploymentAgentGraphState:
-    result = state.get("result")
-    if result is None:
-        return state
-    status = _normalize_deployment_status(result.status)
-    public_urls = public_urls_from_deployment_result(Path(state["run_dir"]))
-    return {**state, "status": status, "public_urls": public_urls}
-
-
-def _normalize_deployment_contract(state: DeploymentAgentGraphState) -> DeploymentAgentGraphState:
-    """Reconcile Deployment Agent status with structured target evidence.
-
-    This is intentionally a graph node rather than hidden parser logic. It is the
-    future swap point for an LLM/AgentExecutor contract-normalizer. Today it
-    performs a conservative evidence-based normalization: deployed requires
-    usable public URL evidence; blocked/failed/unknown remain explicit statuses.
-    """
-
-    status = state.get("status")
-    public_urls = state.get("public_urls", [])
-    if status == "deployed" and not public_urls:
-        return {**state, "status": "unknown"}
-    return state
 
 
 def _apply_deployment_result(state: DeploymentAgentGraphState) -> DeploymentAgentGraphState:
@@ -192,9 +281,29 @@ def _apply_deployment_result(state: DeploymentAgentGraphState) -> DeploymentAgen
         updated,
         artifact_refs(result.output_artifacts, kind="deployment", owner_agent=result.agent_id),
     )
+    append_downstream_response(
+        updated,
+        from_agent=DEPLOYMENT_AGENT_ID,
+        result=result,
+        default_correlation_id=str(updated.get("team_lead_sprint_id") or ""),
+    )
     return {**state, "delivery_state": updated}
 
 
 def _normalize_deployment_status(status: str) -> str:
     normalized = status.removeprefix("deployment_").removeprefix("codex_")
     return normalized if normalized in {"deployed", "blocked", "failed", "unknown"} else "unknown"
+
+
+def _deployment_user_prompt(state: DeliveryState) -> str:
+    return json.dumps(
+        {
+            "task": "Run the assigned Deployment Codex task.",
+            "run_dir": state["run_dir"],
+            "deployment_status": state.get("deployment_status"),
+            "public_urls": state.get("public_urls", []),
+            "agent_call_message_id": state.get("agent_call_message_id"),
+        },
+        indent=2,
+        sort_keys=True,
+    )

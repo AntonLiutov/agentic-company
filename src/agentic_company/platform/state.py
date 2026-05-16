@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import time
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
+from uuid import uuid4
 
 from agentic_company.platform.artifacts import ArtifactRef
 
@@ -20,18 +23,27 @@ class DeliveryState(TypedDict):
     qa_status: NotRequired[str | None]
     deployment_status: NotRequired[str | None]
     public_url: NotRequired[str | None]
+    public_urls: NotRequired[list[str]]
+    post_deploy_qa_status: NotRequired[str | None]
+    post_deploy_repair_attempts: NotRequired[int]
     repair_attempts: int
     max_repair_attempts: int
     artifacts: list[ArtifactRef]
     blockers: list[str]
     auto_confirmations: list[str]
     completed_nodes: list[str]
-    project_archetype: NotRequired[str]
     feature_queue: NotRequired[list[dict[str, Any]]]
+    candidate_feature_queue: NotRequired[list[dict[str, Any]]]
+    work_items: NotRequired[list[dict[str, Any]]]
     active_feature_id: NotRequired[str | None]
     completed_feature_ids: NotRequired[list[str]]
     feature_statuses: NotRequired[dict[str, str]]
     feature_repair_attempts: NotRequired[dict[str, int]]
+    work_board: NotRequired[dict[str, Any]]
+    team_lead_sprint_id: NotRequired[str]
+    agent_call_message_id: NotRequired[str | None]
+    agent_call_correlation_id: NotRequired[str | None]
+    codex_threads_by_agent: NotRequired[dict[str, str]]
 
 
 def initial_delivery_state(
@@ -40,7 +52,7 @@ def initial_delivery_state(
     run_dir: str | Path,
     requirements_path: str | Path | None = None,
     target_project_dir: str | Path | None = None,
-    max_repair_attempts: int = 3,
+    max_repair_attempts: int = 5,
 ) -> DeliveryState:
     """Build a complete initial state for the delivery graph."""
 
@@ -54,18 +66,24 @@ def initial_delivery_state(
         "qa_status": None,
         "deployment_status": None,
         "public_url": None,
+        "public_urls": [],
+        "post_deploy_qa_status": None,
+        "post_deploy_repair_attempts": 0,
         "repair_attempts": 0,
         "max_repair_attempts": max_repair_attempts,
         "artifacts": [],
         "blockers": [],
         "auto_confirmations": [],
         "completed_nodes": [],
-        "project_archetype": "single-service-streamlit",
         "feature_queue": [],
+        "work_items": [],
         "active_feature_id": None,
         "completed_feature_ids": [],
         "feature_statuses": {},
         "feature_repair_attempts": {},
+        "work_board": {},
+        "team_lead_sprint_id": "sprint-01",
+        "codex_threads_by_agent": {},
     }
 
 
@@ -83,3 +101,43 @@ def mark_node_completed(
     updated["status"] = status
     updated["completed_nodes"] = [*state.get("completed_nodes", []), node_name]
     return updated
+
+
+def codex_resume_thread_id(state: DeliveryState, agent_id: str) -> str:
+    """Return the latest Codex thread id recorded for an agent role."""
+
+    threads = state.get("codex_threads_by_agent", {})
+    if not isinstance(threads, dict):
+        return ""
+    return str(threads.get(agent_id) or "")
+
+
+def record_codex_thread(state: DeliveryState, agent_id: str, thread_id: str) -> None:
+    """Record the latest Codex thread id for a resumable agent role."""
+
+    if not thread_id:
+        return
+    threads = dict(state.get("codex_threads_by_agent", {}))
+    threads[agent_id] = thread_id
+    state["codex_threads_by_agent"] = threads
+
+
+def write_delivery_state(state: DeliveryState, path: str | Path | None = None) -> Path:
+    """Persist delivery state atomically so live UI readers never see partial JSON."""
+
+    state_path = Path(path) if path is not None else Path(state["run_dir"]) / ".delivery-state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = state_path.with_name(f"{state_path.name}.{uuid4().hex}.tmp")
+    payload = json.dumps(state, indent=2, sort_keys=True) + "\n"
+    temp_path.write_text(payload, encoding="utf-8")
+    for attempt in range(5):
+        try:
+            temp_path.replace(state_path)
+            break
+        except PermissionError:
+            if attempt == 4:
+                state_path.write_text(payload, encoding="utf-8")
+                temp_path.unlink(missing_ok=True)
+                break
+            time.sleep(0.05 * (attempt + 1))
+    return state_path

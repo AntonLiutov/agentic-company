@@ -19,10 +19,13 @@ class ExecutionRequest:
     expected_outputs: list[str]
     instructions: list[str]
     constraints: list[str]
-    project_archetype: str = "single-service-streamlit"
     feature_queue: list[dict[str, Any]] = field(default_factory=list)
     active_feature: dict[str, Any] | None = None
     completed_feature_ids: list[str] = field(default_factory=list)
+    execution_id: str = ""
+    execution_intent: str = ""
+    parent_message_id: str = ""
+    codex_resume_thread_id: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -34,6 +37,11 @@ class AgentRunResult:
     status: str
     output_artifacts: list[str]
     summary: str
+    execution_id: str = ""
+    codex_thread_id: str = ""
+    blocking_findings: list[str] = field(default_factory=list)
+    fix_request_artifacts: list[str] = field(default_factory=list)
+    recommended_next_action: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)

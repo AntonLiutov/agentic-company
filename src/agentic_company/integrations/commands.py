@@ -6,13 +6,15 @@ import queue
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from os import PathLike
 from pathlib import Path
 
 Redactor = Callable[[str], str]
 LineCallback = Callable[[str], None]
+LinePredicate = Callable[[str], bool]
 
 
 @dataclass(slots=True)
@@ -29,6 +31,9 @@ class StreamedCommand:
     sensitive_output: bool = False
     redactor: Redactor | None = None
     on_stdout_line: LineCallback | None = None
+    terminal_output_predicate: LinePredicate | None = None
+    terminal_grace_seconds: float = 5.0
+    env: Mapping[str, str | PathLike[str]] | None = None
 
 
 def stream_command(spec: StreamedCommand) -> subprocess.CompletedProcess[str]:
@@ -51,6 +56,9 @@ def stream_command(spec: StreamedCommand) -> subprocess.CompletedProcess[str]:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            env={str(key): str(value) for key, value in spec.env.items()}
+            if spec.env is not None
+            else None,
         )
     except FileNotFoundError as exc:
         message = f"{exc.filename or command[0]} was not found on PATH."
@@ -59,10 +67,20 @@ def stream_command(spec: StreamedCommand) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(command, 127, stdout="", stderr=message)
 
     if process.stdin and spec.input_text is not None:
-        process.stdin.write(spec.input_text)
-        process.stdin.close()
+        try:
+            process.stdin.write(spec.input_text)
+            process.stdin.close()
+        except (BrokenPipeError, OSError) as exc:
+            message = f"Process closed stdin before input could be written: {exc}"
+            output_parts.append(message + "\n")
+            log.write_output(message)
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
 
     output_queue: queue.Queue[str | None] = queue.Queue()
+    terminal_seen_at: float | None = None
 
     def read_output() -> None:
         assert process.stdout is not None
@@ -86,6 +104,23 @@ def stream_command(spec: StreamedCommand) -> subprocess.CompletedProcess[str]:
             log.write_output(line.rstrip())
             if spec.on_stdout_line:
                 spec.on_stdout_line(line)
+            if spec.terminal_output_predicate and spec.terminal_output_predicate(line):
+                terminal_seen_at = time.monotonic()
+
+        if (
+            terminal_seen_at is not None
+            and process.poll() is None
+            and time.monotonic() - terminal_seen_at > spec.terminal_grace_seconds
+        ):
+            reason = (
+                "Terminal output was observed, but the process did not exit before "
+                f"the {spec.terminal_grace_seconds:g}s grace period elapsed."
+            )
+            output_parts.append(reason + "\n")
+            log.write_output(reason)
+            _terminate_process(process)
+            log.write_exit(0)
+            return subprocess.CompletedProcess(command, 0, stdout="".join(output_parts), stderr="")
 
         if time.monotonic() - started_at > spec.timeout_seconds:
             process.kill()
@@ -102,6 +137,17 @@ def stream_command(spec: StreamedCommand) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(
         command, return_code, stdout="".join(output_parts), stderr=""
     )
+
+
+def _terminate_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
 
 
 def append_completed_command_log(

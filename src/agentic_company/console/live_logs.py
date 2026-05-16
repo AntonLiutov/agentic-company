@@ -68,9 +68,14 @@ def _codex_commentary_entries(events: list[dict[str, object]]) -> list[tuple[str
         feature = str(event.get("feature_id", ""))
         agent_id = str(event.get("agent_id", ""))
         agent_labels = {
+            "business-analyst-agent": "Business Analyst Codex",
+            "architect-agent": "Architect Codex",
+            "project-manager-agent": "Project Manager Codex",
             "qa-codex-agent": "QA Codex",
             "deployment-codex-agent": "Deployment Codex",
             "handoff-codex-agent": "Handoff Codex",
+            "head-codex-review": "Head Codex Review",
+            "team-lead-codex-review": "Team Lead Codex Review",
         }
         agent_label = agent_labels.get(agent_id, "Codex")
         label = f"{agent_label} ({feature})" if feature else agent_label
@@ -92,6 +97,41 @@ def _workflow_event_entries(events: list[dict[str, object]]) -> list[tuple[str, 
         "delivery_graph_node_started": "Graph node started",
         "delivery_graph_node_completed": "Graph node completed",
         "delivery_graph_node_failed": "Graph node failed",
+        "head_planning_started": "Head Agent planning started",
+        "head_worker_started": "Head Agent tool started",
+        "head_worker_completed": "Head Agent tool completed",
+        "head_decision": "Head Agent decision",
+        "head_tool_completed": "Head Agent tool completed",
+        "head_delivery_completed": "Head Agent delivery completed",
+        "head_planning_blocked": "Head Agent planning blocked",
+        "head_agent_completed": "Head Agent completed",
+        "business_analysis_started": "Business Analysis started",
+        "business_analysis_completed": "Business Analysis completed",
+        "business_analysis_blocked": "Business Analysis blocked",
+        "business_analysis_codex_started": "Business Analyst Codex started",
+        "business_analysis_codex_completed": "Business Analyst Codex completed",
+        "architecture_started": "Architecture started",
+        "architecture_completed": "Architecture completed",
+        "architecture_blocked": "Architecture blocked",
+        "architecture_codex_started": "Architect Codex started",
+        "architecture_codex_completed": "Architect Codex completed",
+        "project_management_started": "Project Management started",
+        "project_management_completed": "Project Management completed",
+        "project_management_blocked": "Project Management blocked",
+        "project_management_codex_started": "Project Manager Codex started",
+        "project_management_codex_completed": "Project Manager Codex completed",
+        "team_lead_sprint_started": "Team Lead sprint started",
+        "team_lead_decision": "Team Lead decision",
+        "team_lead_tool_completed": "Team Lead tool completed",
+        "team_lead_feature_selected": "Team Lead selected feature",
+        "team_lead_feature_queue_completed": "Team Lead feature queue completed",
+        "team_lead_worker_started": "Team Lead tool started",
+        "team_lead_worker_completed": "Team Lead tool completed",
+        "team_lead_post_deploy_qa_started": "Team Lead post-deploy QA started",
+        "team_lead_post_deploy_qa_completed": "Team Lead post-deploy QA completed",
+        "team_lead_complete_sprint_requested": "Team Lead completed sprint",
+        "team_lead_blocked_sprint": "Team Lead blocked sprint",
+        "team_lead_sprint_completed": "Team Lead sprint completed",
         "run_started": "Planning started",
         "run_completed": "Planning completed",
         "execution_started": "Fullstack Agent started",
@@ -232,6 +272,21 @@ def _event_suffix(event: dict[str, object]) -> str:
     data = event.get("data", {})
     if not isinstance(data, dict):
         return ""
+    decision = data.get("decision")
+    if isinstance(decision, dict):
+        tool = decision.get("tool")
+        target = decision.get("target")
+        reason = decision.get("reason")
+        suffix = f" | tool={tool}" if tool else ""
+        if target:
+            suffix += f" target={target}"
+        if reason:
+            suffix += f" reason={reason}"
+        return suffix
+    tool = data.get("tool")
+    if tool:
+        status = data.get("status")
+        return f" | tool={tool}" + (f" status={status}" if status else "")
     node = data.get("node")
     if node:
         status = data.get("status")

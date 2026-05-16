@@ -170,6 +170,10 @@ def test_quality_codex_prompt_suggests_non_exhaustive_toolbox(tmp_path):
     assert "You may use other tools or approaches" in prompt
     assert "Playwright can be useful" in prompt
     assert "evaluate both behavior and user experience" in prompt
+    assert "classify failures for Team\n  Lead routing" in prompt
+    assert "usually\n  need Fullstack repair" in prompt
+    assert "usually need Deployment\n  repair" in prompt
+    assert "remediation_owner" in prompt
     assert "Do not run every possible tool mechanically" in prompt
 
 
@@ -202,7 +206,9 @@ def _create_run(tmp_path: Path) -> Path:
         "acceptance_criteria": ["API can create a task", "API can list tasks"],
         "delivery_order": 1,
     }
-    (run_dir / "06-execution-request.json").write_text(
+    request_path = run_dir / "delivery/execution-request.json"
+    request_path.parent.mkdir(parents=True, exist_ok=True)
+    request_path.write_text(
         json.dumps(
             {
                 "run_id": run_dir.name,
@@ -216,7 +222,6 @@ def _create_run(tmp_path: Path) -> Path:
                 "expected_outputs": ["README.md"],
                 "instructions": ["Build the active feature."],
                 "constraints": ["Keep names stable."],
-                "project_archetype": "api-web-compose",
                 "feature_queue": [feature],
                 "active_feature": feature,
                 "completed_feature_ids": [],

@@ -1,9 +1,10 @@
-"""Runtime boundary for executing and persisting delivery graph state."""
+"""Platform graph runner for executing and persisting delivery state."""
 
 from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,9 +15,16 @@ from agentic_company.orchestration.graphs import (
     DeliveryGraphNodes,
     run_delivery_graph,
 )
-from agentic_company.platform.artifacts import load_execution_request
+from agentic_company.platform.artifacts import (
+    EXECUTION_REQUEST_ARTIFACT,
+    load_execution_request,
+)
 from agentic_company.platform.events import write_event
-from agentic_company.platform.state import DeliveryState, initial_delivery_state
+from agentic_company.platform.state import (
+    DeliveryState,
+    initial_delivery_state,
+    write_delivery_state,
+)
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_STATE_FILENAME = ".delivery-state.json"
@@ -25,7 +33,7 @@ GRAPH_AGENT_ID = "delivery-graph"
 
 @dataclass(slots=True)
 class DeliveryGraphRuntime:
-    """Start the delivery graph and persist its state for consoles and future resumes."""
+    """Start a configured platform graph and persist state for consoles and future resumes."""
 
     state_filename: str = DEFAULT_STATE_FILENAME
     nodes: DeliveryGraphNodes | None = None
@@ -38,9 +46,9 @@ class DeliveryGraphRuntime:
         run_id: str | None = None,
         requirements_path: Path | None = None,
         target_project_dir: Path | None = None,
-        max_repair_attempts: int = 3,
+        max_repair_attempts: int = 5,
     ) -> DeliveryState:
-        """Load or create graph state, invoke the graph, and persist the final state."""
+        """Load or create graph state, invoke configured nodes, and persist final state."""
 
         run_dir.mkdir(parents=True, exist_ok=True)
         event_log = run_dir / "events.jsonl"
@@ -79,7 +87,7 @@ class DeliveryGraphRuntime:
         try:
             final_state = run_delivery_graph(
                 state,
-                nodes=self._evented_nodes(event_log, state["run_id"]),
+                nodes=self._evented_nodes(event_log, state["run_id"], node_order),
                 node_order=node_order,
             )
         except Exception as exc:
@@ -124,39 +132,53 @@ class DeliveryGraphRuntime:
         state_path = self.state_path(run_dir)
         if not state_path.exists():
             return None
-        return cast(DeliveryState, json.loads(state_path.read_text(encoding="utf-8")))
+        for attempt in range(3):
+            try:
+                raw_state = state_path.read_text(encoding="utf-8")
+                return cast(DeliveryState, json.loads(raw_state))
+            except PermissionError:
+                if attempt == 2:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+        return None
 
     def save_state(self, run_dir: Path, state: DeliveryState) -> Path:
         """Persist delivery state atomically inside the run directory."""
 
-        state_path = self.state_path(run_dir)
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = state_path.with_suffix(state_path.suffix + ".tmp")
-        tmp_path.write_text(
-            json.dumps(state, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        tmp_path.replace(state_path)
-        return state_path
+        return write_delivery_state(state, self.state_path(run_dir))
 
     def state_path(self, run_dir: Path) -> Path:
         """Return the runtime state artifact path for a run."""
 
         return run_dir / self.state_filename
 
-    def _evented_nodes(self, event_log: Path, run_id: str) -> DeliveryGraphNodes:
+    def _evented_nodes(
+        self,
+        event_log: Path,
+        run_id: str,
+        node_order: Sequence[str],
+    ) -> DeliveryGraphNodes:
         nodes = self.nodes or DeliveryGraphNodes()
+        active_nodes = set(node_order)
+
+        def evented(
+            node_name: str,
+            node: Callable[[DeliveryState], DeliveryState] | None,
+        ) -> Callable[[DeliveryState], DeliveryState] | None:
+            if node is None and node_name not in active_nodes:
+                return None
+            return self._evented_node(event_log, run_id, node_name, node)
+
         return DeliveryGraphNodes(
-            planning=self._evented_node(event_log, run_id, "planning", nodes.planning),
-            fullstack=self._evented_node(
-                event_log,
-                run_id,
-                "fullstack",
-                nodes.fullstack,
-            ),
-            qa=self._evented_node(event_log, run_id, "qa", nodes.qa),
-            deployment=self._evented_node(event_log, run_id, "deployment", nodes.deployment),
-            handoff=self._evented_node(event_log, run_id, "handoff", nodes.handoff),
+            head=evented("head", nodes.head),
+            business_analyst=evented("business_analyst", nodes.business_analyst),
+            architecture=evented("architecture", nodes.architecture),
+            project_management=evented("project_management", nodes.project_management),
+            team_lead=evented("team_lead", nodes.team_lead),
+            fullstack=evented("fullstack", nodes.fullstack),
+            qa=evented("qa", nodes.qa),
+            deployment=evented("deployment", nodes.deployment),
+            handoff=evented("handoff", nodes.handoff),
         )
 
     def _evented_node(
@@ -249,14 +271,13 @@ class DeliveryGraphRuntime:
         run_dir: Path,
         state: DeliveryState,
     ) -> DeliveryState:
-        request_path = run_dir / "06-execution-request.json"
+        request_path = run_dir / EXECUTION_REQUEST_ARTIFACT
         if not request_path.exists():
             return state
 
         request = load_execution_request(run_dir)
         updated: DeliveryState = {**state}
         updated["target_project_dir"] = request.target_project_dir
-        updated["project_archetype"] = request.project_archetype
         updated["feature_queue"] = request.feature_queue
         updated["completed_feature_ids"] = request.completed_feature_ids
         updated["feature_statuses"] = {

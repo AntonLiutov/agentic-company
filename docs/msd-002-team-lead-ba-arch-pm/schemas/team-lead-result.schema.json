@@ -1,0 +1,55 @@
+{
+  "title": "TeamLeadResult",
+  "type": "object",
+  "required": [
+    "sprint_id",
+    "status",
+    "completed_features",
+    "failed_features",
+    "blockers",
+    "artifacts",
+    "next_recommended_action"
+  ],
+  "properties": {
+    "sprint_id": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "passed",
+        "failed",
+        "blocked",
+        "escalated"
+      ]
+    },
+    "completed_features": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "failed_features": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "next_recommended_action": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

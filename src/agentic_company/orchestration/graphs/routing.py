@@ -3,21 +3,13 @@
 from __future__ import annotations
 
 DELIVERY_GRAPH_NODE_ORDER = [
-    "planning",
-    "fullstack",
-    "qa",
-    "deployment",
-    "handoff",
+    "head",
 ]
 
 CONSOLE_EXECUTION_NODE_ORDER = [
-    "fullstack",
-    "qa",
-    "deployment",
-    "handoff",
+    "head",
 ]
 
 CONSOLE_DEPLOYMENT_NODE_ORDER = [
-    "deployment",
-    "handoff",
+    "head",
 ]

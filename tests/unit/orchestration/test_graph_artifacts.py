@@ -9,19 +9,22 @@ def test_write_graph_artifacts_persists_single_langgraph_delivery_graph(tmp_path
 
     paths = {write.path.relative_to(tmp_path).as_posix(): write for write in writes}
     assert set(paths) == {
+        "src/agentic_company/orchestration/graphs/company-agent-map.mmd",
         "src/agentic_company/orchestration/graphs/delivery-graph.mmd",
     }
     assert all(write.changed for write in writes)
     content = paths["src/agentic_company/orchestration/graphs/delivery-graph.mmd"].path.read_text(
         encoding="utf-8"
     )
-    assert "__start__ --> fullstack;" in content
-    assert "fullstack -.-> qa;" in content
-    assert "qa -.-> fullstack;" in content
-    assert "qa -.-> deployment;" in content
-    assert "qa -. &nbsp;end&nbsp; .-> __end__;" in content
-    assert "deployment -.-> handoff;" in content
-    assert "handoff --> __end__;" in content
+    assert "__start__ --> head;" in content
+    assert "head --> __end__;" in content
+    agent_map = paths[
+        "src/agentic_company/orchestration/graphs/company-agent-map.mmd"
+    ].path.read_text(encoding="utf-8")
+    assert "Platform Graph Runner" in agent_map
+    assert "Head Agent<br/>company coordinator" in agent_map
+    assert "request_sprint_delivery" in agent_map
+    assert "request_deployment" in agent_map
 
 
 def test_write_graph_artifacts_tracks_unchanged_files(tmp_path):
@@ -37,4 +40,5 @@ def test_graph_artifact_specs_are_named():
 
     assert names == [
         "delivery-graph",
+        "company-agent-map",
     ]

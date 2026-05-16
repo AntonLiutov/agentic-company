@@ -9,7 +9,12 @@ from agentic_company.integrations.commands import timestamp_now
 from agentic_company.platform.security import redact_sensitive_output
 
 
-def append_raw_codex_event(raw_events_path: Path, line: str) -> None:
+def append_raw_codex_event(
+    raw_events_path: Path,
+    line: str,
+    *,
+    metadata: dict[str, str] | None = None,
+) -> None:
     try:
         parsed = json.loads(line)
     except json.JSONDecodeError:
@@ -18,6 +23,8 @@ def append_raw_codex_event(raw_events_path: Path, line: str) -> None:
         return
 
     event = _redact_event(_repair_event(parsed))
+    if isinstance(event, dict) and metadata:
+        event.update({key: value for key, value in metadata.items() if value})
     event.setdefault("recorded_at", timestamp_now())
     with raw_events_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")

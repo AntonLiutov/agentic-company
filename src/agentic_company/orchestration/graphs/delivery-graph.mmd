@@ -5,20 +5,10 @@ config:
 ---
 graph TD;
 	__start__([<p>__start__</p>]):::first
-	fullstack(fullstack)
-	qa(qa)
-	deployment(deployment)
-	handoff(handoff)
+	head(head)
 	__end__([<p>__end__</p>]):::last
-	__start__ --> fullstack;
-	deployment -. &nbsp;end&nbsp; .-> __end__;
-	deployment -.-> handoff;
-	fullstack -. &nbsp;end&nbsp; .-> __end__;
-	fullstack -.-> qa;
-	qa -. &nbsp;end&nbsp; .-> __end__;
-	qa -.-> deployment;
-	qa -.-> fullstack;
-	handoff --> __end__;
+	__start__ --> head;
+	head --> __end__;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc

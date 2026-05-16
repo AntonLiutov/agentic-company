@@ -7,18 +7,37 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, NotRequired, Protocol, TypedDict, cast
 
-from langgraph.graph import END, START, StateGraph
-
-from agentic_company.agents.base import artifact_refs, extend_artifacts
-from agentic_company.platform.artifacts import load_execution_request
+from agentic_company.platform.agent_contracts import (
+    append_downstream_response,
+    artifact_refs,
+    extend_artifacts,
+)
+from agentic_company.platform.agent_runtime import (
+    AGENT_EXECUTOR_GRAPH_NODE_ORDER,
+    SpecialistAgentExecutor,
+    SpecialistAgentRequest,
+    agent_env_value,
+    build_agent_executor_graph,
+)
+from agentic_company.platform.artifacts import (
+    build_execution_request_payload,
+    write_execution_request,
+)
+from agentic_company.platform.messages import AgentMessageStore
 from agentic_company.platform.models import AgentRunResult
-from agentic_company.platform.state import DeliveryState, mark_node_completed
+from agentic_company.platform.state import (
+    DeliveryState,
+    codex_resume_thread_id,
+    mark_node_completed,
+)
 
-FULLSTACK_AGENT_GRAPH_NODE_ORDER = [
-    "prepare_context",
-    "run_codex",
-    "apply_result",
-]
+FULLSTACK_AGENT_GRAPH_NODE_ORDER = AGENT_EXECUTOR_GRAPH_NODE_ORDER
+FULLSTACK_AGENT_SYSTEM_PROMPT = """You are the Fullstack Agent for agentic-company.
+
+You own implementation work only through the available tools. Call `codex_exec`
+to run the Codex implementation worker for the assigned feature or project.
+Do not claim work is complete without calling a tool.
+"""
 
 
 class FullstackRunnerLike(Protocol):
@@ -40,6 +59,7 @@ class FullstackAgentGraphState(TypedDict):
 def build_fullstack_agent_graph(
     runner: FullstackRunnerLike,
     *,
+    agent_executor: SpecialistAgentExecutor,
     node_order: Sequence[str] | None = None,
 ):
     """Build the fullstack agent internal graph."""
@@ -48,25 +68,24 @@ def build_fullstack_agent_graph(
     if not order:
         raise ValueError("Fullstack agent graph requires at least one node.")
 
-    graph = StateGraph(FullstackAgentGraphState)
     node_map = {
         "prepare_context": _prepare_context,
-        "run_codex": _run_codex(runner),
+        "run_agent_executor": _run_agent_executor(runner, agent_executor),
         "apply_result": _apply_result,
     }
-    for name in order:
-        graph.add_node(name, node_map[name])
-
-    graph.add_edge(START, order[0])
-    for current, next_node in zip(order, order[1:], strict=False):
-        graph.add_edge(current, next_node)
-    graph.add_edge(order[-1], END)
-    return graph.compile()
+    return build_agent_executor_graph(
+        FullstackAgentGraphState,
+        prepare_node=node_map[order[0]],
+        run_agent_executor_node=node_map[order[1]],
+        apply_result_node=node_map[order[2]],
+        node_order=tuple(order),
+    )
 
 
 def run_fullstack_agent_graph(
     delivery_state: DeliveryState,
     runner: FullstackRunnerLike,
+    agent_executor: SpecialistAgentExecutor,
 ) -> DeliveryState:
     """Run the fullstack agent subgraph and return updated delivery state."""
 
@@ -74,7 +93,7 @@ def run_fullstack_agent_graph(
         "delivery_state": delivery_state,
         "run_dir": delivery_state["run_dir"],
     }
-    result = build_fullstack_agent_graph(runner).invoke(graph_state)
+    result = build_fullstack_agent_graph(runner, agent_executor=agent_executor).invoke(graph_state)
     return cast(DeliveryState, result["delivery_state"])
 
 
@@ -86,51 +105,32 @@ def render_fullstack_agent_graph_mermaid() -> str:
             raise RuntimeError("Runner is not available in graph rendering.")
 
     return (
-        build_fullstack_agent_graph(cast(FullstackRunnerLike, NoopRunner()))
+        build_fullstack_agent_graph(
+            cast(FullstackRunnerLike, NoopRunner()),
+            agent_executor=cast(SpecialistAgentExecutor, object()),
+        )
         .get_graph()
         .draw_mermaid()
     )
 
 
 def _prepare_context(state: FullstackAgentGraphState) -> FullstackAgentGraphState:
-    return state
+    delivery_state = state["delivery_state"]
+    feature_queue = _ordered_feature_queue(delivery_state)
+    if not feature_queue:
+        return state
 
-
-def _run_codex(runner: FullstackRunnerLike):
-    def run(state: FullstackAgentGraphState) -> FullstackAgentGraphState:
-        delivery_state = state["delivery_state"]
-        feature_queue = _ordered_feature_queue(delivery_state)
-        if delivery_state.get("project_archetype") != "api-web-compose" or not feature_queue:
-            result = runner.run(Path(state["run_dir"]))
-            return {**state, "result": result, "results": [result]}
-
-        run_dir = Path(state["run_dir"])
-        base_request = load_execution_request(run_dir)
-        active_feature = _active_feature(delivery_state)
-        updated_delivery_state = {**delivery_state}
-        if active_feature is None:
-            result = AgentRunResult(
-                agent_id=base_request.agent_id,
-                status="already_completed",
-                output_artifacts=[],
-                summary="No active Fullstack feature to execute.",
-            )
-            return {
-                **state,
-                "delivery_state": cast(DeliveryState, updated_delivery_state),
-                "result": result,
-                "results": [result],
-            }
-
-        completed_feature_ids = list(delivery_state.get("completed_feature_ids", []))
-        updated_delivery_state["active_feature_id"] = str(active_feature["id"])
-        _write_feature_execution_request(
-            run_dir,
-            base_request,
-            active_feature,
-            completed_feature_ids,
+    run_dir = Path(state["run_dir"])
+    active_feature = _active_feature(delivery_state)
+    updated_delivery_state = {**delivery_state}
+    if active_feature is None:
+        result = AgentRunResult(
+            agent_id="fullstack-agent",
+            status="no_active_feature",
+            output_artifacts=[],
+            summary="No active Fullstack feature to execute.",
+            execution_id=str(delivery_state.get("agent_execution_id") or ""),
         )
-        result = runner.run(run_dir)
         return {
             **state,
             "delivery_state": cast(DeliveryState, updated_delivery_state),
@@ -138,7 +138,56 @@ def _run_codex(runner: FullstackRunnerLike):
             "results": [result],
         }
 
+    completed_feature_ids = list(delivery_state.get("completed_feature_ids", []))
+    updated_delivery_state["active_feature_id"] = str(active_feature["id"])
+    _write_feature_execution_request(
+        run_dir,
+        active_feature,
+        completed_feature_ids,
+        delivery_state,
+    )
+    return {**state, "delivery_state": cast(DeliveryState, updated_delivery_state)}
+
+
+def _run_agent_executor(runner: FullstackRunnerLike, agent_executor: SpecialistAgentExecutor):
+    def run(state: FullstackAgentGraphState) -> FullstackAgentGraphState:
+        if "result" in state:
+            return state
+        run_dir = Path(state["run_dir"])
+        result = agent_executor.run(
+            SpecialistAgentRequest(
+                agent_id="fullstack-agent",
+                agent_name="Fullstack Agent",
+                stage="fullstack",
+                system_prompt=FULLSTACK_AGENT_SYSTEM_PROMPT,
+                user_prompt=_fullstack_user_prompt(state["delivery_state"]),
+                runner=runner,
+                run_dir=run_dir,
+                delivery_state=state["delivery_state"],
+            )
+        )
+        return {
+            **state,
+            "result": result,
+            "results": [result],
+        }
+
     return run
+
+
+def _fullstack_user_prompt(state: DeliveryState) -> str:
+    return json.dumps(
+        {
+            "task": "Run the assigned Fullstack Codex implementation task.",
+            "run_dir": state["run_dir"],
+            "active_feature_id": state.get("active_feature_id"),
+            "feature_statuses": state.get("feature_statuses", {}),
+            "agent_call_message_id": state.get("agent_call_message_id"),
+            "agent_execution_id": state.get("agent_execution_id"),
+        },
+        indent=2,
+        sort_keys=True,
+    )
 
 
 def _apply_result(state: FullstackAgentGraphState) -> FullstackAgentGraphState:
@@ -155,14 +204,14 @@ def _apply_result(state: FullstackAgentGraphState) -> FullstackAgentGraphState:
         status=result.status,
     )
     feature_queue = _ordered_feature_queue(updated)
-    if updated.get("project_archetype") == "api-web-compose" and feature_queue:
+    if feature_queue:
         active_feature_id = updated.get("active_feature_id")
-        if result.status in {"codex_completed", "already_completed"} and active_feature_id:
+        if result.status == "codex_completed" and active_feature_id:
             feature_statuses = dict(updated.get("feature_statuses", {}))
             feature_statuses[str(active_feature_id)] = "implemented"
             updated["feature_statuses"] = feature_statuses
             updated["status"] = "fullstack_feature_implemented"
-        elif result.status not in {"codex_completed", "already_completed"}:
+        elif result.status != "codex_completed":
             updated["status"] = "fullstack_feature_failed"
             updated["blockers"] = [
                 *updated.get("blockers", []),
@@ -179,6 +228,7 @@ def _apply_result(state: FullstackAgentGraphState) -> FullstackAgentGraphState:
             owner_agent=result.agent_id,
         ),
     )
+    append_downstream_response(updated, from_agent="fullstack-agent", result=result)
     return {**state, "delivery_state": updated}
 
 
@@ -203,59 +253,83 @@ def _active_feature(state: DeliveryState) -> dict[str, Any] | None:
 
 def _write_feature_execution_request(
     run_dir: Path,
-    base_request,
     feature: dict[str, Any],
     completed_feature_ids: list[str],
+    delivery_state: DeliveryState,
 ) -> None:
     feature_id = str(feature["id"])
-    fix_request_artifacts = _feature_fix_request_artifacts(run_dir, feature_id)
-    request = {
-        **base_request.to_dict(),
-        "active_feature": feature,
-        "completed_feature_ids": completed_feature_ids,
-        "input_artifacts": [
-            *base_request.input_artifacts,
-            *fix_request_artifacts,
+    upstream_artifacts = _current_agent_call_artifacts(run_dir, delivery_state)
+    instructions = [
+        "Read the upstream agent message and artifact refs before editing.",
+        "Implement only the active feature selected by Team Lead in this Codex run.",
+        "Use the feature title, goal, scope, acceptance criteria, dependencies, and QA notes.",
+        "Preserve behavior from previously completed features.",
+        "Write a concise execution summary mapping work to the active feature.",
+        (
+            f"Active feature for this run: {feature_id} - {feature.get('title', '')}. "
+            "Implement only this active feature in this Codex run."
+        ),
+        (
+            "Acceptance criteria for the active feature: "
+            + "; ".join(str(item) for item in feature.get("acceptance_criteria", []))
+        ),
+        (
+            "Already completed features before this run: "
+            + (", ".join(completed_feature_ids) if completed_feature_ids else "none")
+            + ". Preserve their behavior."
+        ),
+        (
+            "This is a repair run when upstream artifact refs include QA/fix evidence. "
+            "Read the upstream Team Lead message and artifact refs before editing. "
+            "If this is a repair request, pass through the exact QA findings instead "
+            "of relying on inferred filenames."
+        ),
+    ]
+    request = build_execution_request_payload(
+        delivery_state,
+        agent_id="fullstack-agent",
+        model=agent_env_value("FULLSTACK_CODEX_MODEL", delivery_state) or "gpt-5.5",
+        input_artifacts=upstream_artifacts,
+        expected_outputs=[
+            "README.md",
+            "pyproject.toml",
+            "uv.lock",
+            ".env.example",
+            "execution-summary.md",
         ],
-        "instructions": [
-            *base_request.instructions,
+        instructions=instructions,
+        constraints=[
             (
-                f"Active feature for this run: {feature_id} - {feature['title']}. "
-                "Implement only this active feature in this Codex run."
+                "Do not expand scope beyond the upstream BA, architecture, PM, "
+                "and Team Lead artifacts."
             ),
-            (
-                "Acceptance criteria for the active feature: "
-                + "; ".join(str(item) for item in feature.get("acceptance_criteria", []))
-            ),
-            (
-                "Already completed features before this run: "
-                + (", ".join(completed_feature_ids) if completed_feature_ids else "none")
-                + ". Preserve their behavior."
-            ),
-            *(
-                [
-                    (
-                        "This is a repair run. Read the QA fix request and evidence "
-                        f"before editing: {', '.join(fix_request_artifacts)}."
-                    )
-                ]
-                if fix_request_artifacts
-                else []
-            ),
+            "Work only inside the generated project directory.",
+            "Do not bake secrets into generated code or images.",
         ],
-    }
-    (run_dir / "06-execution-request.json").write_text(
-        json.dumps(request, indent=2) + "\n",
-        encoding="utf-8",
+        active_feature=feature,
+        codex_resume_thread_id=codex_resume_thread_id(delivery_state, "fullstack-agent"),
+    )
+    request["completed_feature_ids"] = completed_feature_ids
+    write_execution_request(run_dir, request)
+
+
+def _current_agent_call_artifacts(run_dir: Path, state: DeliveryState) -> list[str]:
+    message_id = str(state.get("agent_call_message_id") or "")
+    message = AgentMessageStore(run_dir).get(message_id) if message_id else None
+    if message and message.artifact_refs:
+        return _unique_paths(message.artifact_refs)
+    return _unique_paths(
+        [
+            path.relative_to(run_dir).as_posix()
+            for pattern in ("*-fix-request-*.md", "*-fix-request-*.json")
+            for path in run_dir.glob(pattern)
+        ]
     )
 
 
-def _feature_fix_request_artifacts(run_dir: Path, feature_id: str) -> list[str]:
-    return [
-        path.name
-        for path in [
-            run_dir / f"10-fix-request-{feature_id}.md",
-            run_dir / f"10-fix-request-{feature_id}.json",
-        ]
-        if path.exists()
-    ]
+def _unique_paths(paths: list[str]) -> list[str]:
+    unique: list[str] = []
+    for path in paths:
+        if path not in unique:
+            unique.append(path)
+    return unique

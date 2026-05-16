@@ -5,7 +5,7 @@ from pathlib import Path
 
 from agentic_company.agents.fullstack import CodexCliRunner
 from agentic_company.agents.fullstack.codex_cli import build_codex_prompt
-from agentic_company.agents.planning import run_pipeline
+from agentic_company.integrations.codex import DEFAULT_CODEX_SANDBOX
 from agentic_company.integrations.codex.cli import resolve_codex_binary
 from agentic_company.integrations.codex.events import (
     append_raw_codex_event,
@@ -13,6 +13,7 @@ from agentic_company.integrations.codex.events import (
     render_raw_codex_events,
     write_structured_codex_artifacts,
 )
+from agentic_company.platform.artifacts import EXECUTION_REQUEST_ARTIFACT
 
 
 def test_codex_cli_runner_invokes_codex_exec_with_planning_context(
@@ -81,13 +82,18 @@ def test_codex_cli_runner_invokes_codex_exec_with_planning_context(
     assert not (run_dir / "12-deployment-request.md").exists()
     assert command[:2] == ["codex-test", "exec"]
     assert command[command.index("--model") + 1] == "gpt-5.5"
-    assert command[command.index("--sandbox") + 1] == "workspace-write"
+    config_values = [
+        command[index + 1] for index, value in enumerate(command) if value == "--config"
+    ]
+    assert 'model_reasoning_effort="high"' in config_values
+    assert "shell_environment_policy.inherit=all" in config_values
+    assert command[command.index("--sandbox") + 1] == DEFAULT_CODEX_SANDBOX
     assert command[command.index("--cd") + 1] == str(run_dir / "generated-project")
     assert command[command.index("--add-dir") + 1] == str(run_dir)
     assert "--skip-git-repo-check" in command
     assert "--json" in command
     assert command[-1] == "-"
-    assert "Implementation brief:" in prompt
+    assert "Request context:" in prompt
     assert "Simple LLM Chat" in prompt
     assert "Work only inside the target project directory." in prompt
     assert "Do not print secret values" in prompt
@@ -113,6 +119,70 @@ def test_codex_cli_runner_invokes_codex_exec_with_planning_context(
     )
     assert any(
         event["event"] == "execution_completed" and event["data"]["status"] == "codex_completed"
+        for event in events
+    )
+
+
+def test_codex_cli_runner_does_not_skip_when_summary_exists(tmp_path, write_sample_requirements):
+    run_dir = _create_planning_run(tmp_path, write_sample_requirements)
+    (run_dir / "07-execution-summary.md").write_text("old summary", encoding="utf-8")
+    calls = 0
+
+    def fake_executor(
+        command: Sequence[str],
+        prompt: str,
+        timeout_seconds: int,
+        log_path: Path,
+        raw_events_path: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        summary_path = Path(command[command.index("--output-last-message") + 1])
+        summary_path.write_text("new summary", encoding="utf-8")
+        raw_events_path.write_text('{"type":"turn.completed"}\n', encoding="utf-8")
+        return subprocess.CompletedProcess(
+            command, 0, stdout='{"type":"turn.completed"}', stderr=""
+        )
+
+    result = CodexCliRunner(codex_binary="codex-test", command_executor=fake_executor).run(run_dir)
+
+    assert calls == 1
+    assert result.status == "codex_completed"
+    assert result.summary == "new summary"
+
+
+def test_codex_cli_runner_resumes_existing_codex_thread(tmp_path, write_sample_requirements):
+    run_dir = _create_planning_run(tmp_path, write_sample_requirements)
+    request_path = run_dir / "delivery/execution-request.json"
+    payload = json.loads(request_path.read_text(encoding="utf-8"))
+    payload["codex_resume_thread_id"] = "thread-existing"
+    request_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    calls: list[Sequence[str]] = []
+
+    def fake_executor(
+        command: Sequence[str],
+        prompt: str,
+        timeout_seconds: int,
+        log_path: Path,
+        raw_events_path: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        summary_path = Path(command[command.index("--output-last-message") + 1])
+        summary_path.write_text("resumed summary", encoding="utf-8")
+        raw_events_path.write_text('{"type":"turn.completed"}\n', encoding="utf-8")
+        return subprocess.CompletedProcess(
+            command, 0, stdout='{"type":"turn.completed"}', stderr=""
+        )
+
+    result = CodexCliRunner(codex_binary="codex-test", command_executor=fake_executor).run(run_dir)
+
+    assert calls[0][-3:] == ["resume", "thread-existing", "-"]
+    assert result.status == "codex_completed"
+    assert result.codex_thread_id == "thread-existing"
+    events = _read_events(run_dir)
+    assert any(
+        event["event"] == "execution_started"
+        and event["data"]["codex_resume_thread_id"] == "thread-existing"
         for event in events
     )
 
@@ -151,6 +221,10 @@ def test_codex_prompt_scopes_active_feature(tmp_path):
     assert "scripts/`, `tests/`, or a clearly" in prompt
     assert "project-local `.gitignore` and `.dockerignore`" in prompt
     assert "platform repository's root `.gitignore`" in prompt
+    assert "Cloud/runtime readiness" in prompt
+    assert "local Docker smoke checks" in prompt
+    assert "configuration-driven\n  persistence" in prompt
+    assert "Deployment or QA evidence showing an application runtime/cloud" in prompt
 
 
 def test_codex_cli_runner_records_failure_summary_when_codex_fails(
@@ -370,9 +444,18 @@ def test_append_raw_codex_event_redacts_secret_values(tmp_path):
 
 
 def _create_planning_run(tmp_path: Path, write_sample_requirements) -> Path:
-    requirements = tmp_path / "requirements.md"
+    run_dir = tmp_path / "runs" / "codex-runner-test"
+    run_dir.mkdir(parents=True)
+    requirements = run_dir / "00-requirements.md"
     write_sample_requirements(requirements)
-    return run_pipeline(requirements, tmp_path / "runs", run_id="codex-runner-test")
+    (run_dir / "05-implementation-brief.md").write_text(
+        "# Implementation Brief\n\nSimple LLM Chat\n", encoding="utf-8"
+    )
+    request = _execution_request(run_dir)
+    request_path = run_dir / EXECUTION_REQUEST_ARTIFACT
+    request_path.parent.mkdir(parents=True, exist_ok=True)
+    request_path.write_text(json.dumps(request.to_dict(), indent=2) + "\n", encoding="utf-8")
+    return run_dir
 
 
 def _execution_request(
@@ -395,7 +478,6 @@ def _execution_request(
         expected_outputs=["api/app.py"],
         instructions=["Build the active feature."],
         constraints=["Keep names stable."],
-        project_archetype="api-web-compose",
         feature_queue=[active_feature] if active_feature else [],
         active_feature=active_feature,
         completed_feature_ids=completed_feature_ids or [],

@@ -1,0 +1,49 @@
+{
+  "title": "SprintPlan",
+  "type": "object",
+  "required": [
+    "sprint_id",
+    "title",
+    "goal",
+    "features",
+    "exit_criteria",
+    "deployment_policy",
+    "is_final_sprint"
+  ],
+  "properties": {
+    "sprint_id": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "goal": {
+      "type": "string"
+    },
+    "features": {
+      "type": "array",
+      "items": {
+        "$ref": "feature-task.schema.json"
+      }
+    },
+    "exit_criteria": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "deployment_policy": {
+      "type": "string",
+      "enum": [
+        "none",
+        "manual_after_sprint",
+        "auto_dev_after_sprint_with_approval",
+        "final_only"
+      ]
+    },
+    "is_final_sprint": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false
+}

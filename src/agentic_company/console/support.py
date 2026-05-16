@@ -6,26 +6,30 @@ import json
 import logging
 import shutil
 import threading
+import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from agentic_company.agents.planning import run_pipeline
 from agentic_company.orchestration import DeliveryGraphRuntime
 from agentic_company.orchestration.graphs import (
     CONSOLE_DEPLOYMENT_NODE_ORDER,
     CONSOLE_EXECUTION_NODE_ORDER,
 )
+from agentic_company.platform.artifacts import EXECUTION_REQUEST_ARTIFACT
 
 LOGGER = logging.getLogger(__name__)
 
 _CODEX_THREADS: dict[str, threading.Thread] = {}
 _DEPLOYMENT_THREADS: dict[str, threading.Thread] = {}
 DEFAULT_ENV_VALUES = {
-    "DEFAULT_MODEL": "gpt-4o-mini",
+    "AGENT_LLM_MODEL": "gpt-4.1",
+    "COORDINATOR_AGENT_REASONING_EFFORT": "none",
+    "SPECIALIST_AGENT_REASONING_EFFORT": "none",
 }
-DEFAULT_SAMPLE_REQUIREMENTS = "web-app-mvp-chat.md"
+DEFAULT_SAMPLE_REQUIREMENTS = "multi-service-task-tracker.md"
 
 
 @dataclass(slots=True)
@@ -43,6 +47,11 @@ class FeatureProgress:
     active: bool
     repair_attempts: int
     owner: str
+    sprint_id: str = ""
+    lane: str = ""
+    assigned_agent: str = ""
+    story_points: int = 0
+    artifact_count: int = 0
 
 
 @dataclass(slots=True)
@@ -53,11 +62,34 @@ class DeploymentTarget:
 
 
 @dataclass(slots=True)
+class TeamLeadStep:
+    step: int
+    tool: str
+    target: str
+    reason: str
+    status: str
+
+
+@dataclass(slots=True)
+class CurrentWork:
+    stage: str
+    feature_id: str
+    title: str
+    status: str
+    lane: str
+    owner: str
+    assigned_agent: str
+    last_tool: str
+    last_target: str
+    last_reason: str
+    last_status: str
+
+
+@dataclass(slots=True)
 class DeliveryOverview:
     run_id: str
     stage: str
     status: str
-    project_archetype: str
     active_feature_id: str | None
     features: list[FeatureProgress]
     qa_status: str
@@ -66,6 +98,8 @@ class DeliveryOverview:
     topology_summary: str
     deployment_targets: list[DeploymentTarget]
     blockers: list[str]
+    team_lead_steps: list[TeamLeadStep]
+    current_work: CurrentWork | None
 
     @property
     def completed_feature_count(self) -> int:
@@ -84,21 +118,91 @@ def console_status_label(value: str) -> str:
     return value.replace("_", " ").strip().title().replace("Qa", "QA")
 
 
+def team_lead_step_rows(steps: Sequence[TeamLeadStep]) -> list[dict[str, object]]:
+    """Return every Team Lead decision row for the Overview table."""
+
+    return [
+        {
+            "Step": step.step,
+            "Tool": _team_lead_tool_label(step.tool),
+            "Target": step.target or "-",
+            "Result": console_status_label(step.status or "pending"),
+            "Reason": step.reason,
+        }
+        for step in steps
+    ]
+
+
+def _team_lead_tool_label(tool: str) -> str:
+    if not tool:
+        return ""
+    return console_status_label(tool.removeprefix("run_"))
+
+
 ArtifactSpec = tuple[str, str, str]
 ArtifactGroup = tuple[str, str, list[ArtifactSpec]]
 
-PLANNING_ARTIFACTS = [
-    ("01-intake-brief.json", "Intake brief", "Intake Agent"),
-    ("02-project-classification.json", "Classification", "Project Classifier"),
-    ("03-staffing-decision.json", "Staffing decision", "Team Assembler Agent"),
-    ("04-workflow-plan.json", "Workflow plan", "Workflow Planner"),
-    ("05-implementation-brief.md", "Implementation brief", "Tech Lead Agent"),
-    ("06-execution-request.json", "Execution request", "Fullstack Agent"),
+UPSTREAM_PLANNING_ARTIFACTS = [
+    ("upstream-planning/business-analysis.md", "Business analysis brief", "Business Analyst"),
+    ("upstream-planning/business-analysis.json", "Business analysis data", "Business Analyst"),
+    (
+        "upstream-planning/business-analysis-request.json",
+        "Business analysis request",
+        "Business Analyst",
+    ),
+    ("upstream-planning/architecture.md", "Architecture brief", "Architect"),
+    ("upstream-planning/architecture.json", "Architecture data", "Architect"),
+    ("upstream-planning/architecture.mmd", "Architecture diagram", "Architect"),
+    (
+        "upstream-planning/architecture-request.json",
+        "Architecture request",
+        "Architect",
+    ),
+    (
+        "upstream-planning/project-management/release-plan.md",
+        "Release plan",
+        "Project Manager",
+    ),
+    (
+        "upstream-planning/project-management/release-plan.json",
+        "Release plan data",
+        "Project Manager",
+    ),
+    (
+        "upstream-planning/project-management/candidate-feature-queue.json",
+        "Candidate feature queue",
+        "Project Manager",
+    ),
+    (
+        "upstream-planning/project-management/risks-and-dependencies.md",
+        "Risks and dependencies",
+        "Project Manager",
+    ),
+    (
+        "upstream-planning/project-management/roadmap.csv",
+        "Roadmap table",
+        "Project Manager",
+    ),
+    (
+        "upstream-planning/project-management-request.json",
+        "Project management request",
+        "Project Manager",
+    ),
+]
+
+HEAD_ARTIFACTS = [
+    ("head/planning-history.json", "Planning coordination history", "Head Agent"),
+    ("head/result.json", "Planning coordination result", "Head Agent"),
 ]
 
 EXECUTION_ARTIFACTS = [
     ("07-execution-summary.md", "Execution summary", "Fullstack Agent"),
     ("08-qa-report.md", "QA report", "QA Agent"),
+]
+
+TEAM_LEAD_ARTIFACTS = [
+    ("team-lead/sprint-01-plan.json", "Sprint plan", "Team Lead Agent"),
+    ("team-lead/sprint-01-result.json", "Sprint result", "Team Lead Agent"),
 ]
 
 DEPLOYMENT_ARTIFACTS = [
@@ -135,13 +239,24 @@ CODEX_DIAGNOSTIC_ARTIFACTS = [
     ("codex/prompt.md", "Codex prompt", "Fullstack Agent"),
 ]
 
-ARTIFACTS = PLANNING_ARTIFACTS + EXECUTION_ARTIFACTS + DEPLOYMENT_ARTIFACTS + HANDOFF_ARTIFACTS
+ARTIFACTS = [
+    *UPSTREAM_PLANNING_ARTIFACTS,
+    *HEAD_ARTIFACTS,
+    *EXECUTION_ARTIFACTS,
+    *DEPLOYMENT_ARTIFACTS,
+    *HANDOFF_ARTIFACTS,
+]
 
 ARTIFACT_GROUPS: list[ArtifactGroup] = [
     (
-        "Planning",
-        "Business intake, classification, staffing, workflow, and implementation brief.",
-        PLANNING_ARTIFACTS,
+        "Business Analyst",
+        "Business requirements, scope, acceptance criteria, and open questions.",
+        UPSTREAM_PLANNING_ARTIFACTS,
+    ),
+    (
+        "Team Lead",
+        "AgentExecutor decisions, selected tools, sprint state, and sprint outcome.",
+        TEAM_LEAD_ARTIFACTS,
     ),
     (
         "Build And QA",
@@ -180,12 +295,12 @@ DIAGNOSTIC_ARTIFACT_GROUPS: list[ArtifactGroup] = [
 
 RUNTIME_BY_AGENT = {
     "delivery-graph": "L1 LangGraph",
-    "pipeline": "L0 Deterministic",
-    "intake-agent": "L0 Deterministic",
-    "project-classifier": "L0 Deterministic",
-    "team-assembler-agent": "L0 Deterministic",
-    "workflow-planner": "L0 Deterministic",
-    "tech-lead-agent": "L0 Deterministic",
+    "head-agent": "L4 AgentExecutor",
+    "head-codex-review": "L6 Codex Review",
+    "business-analyst-agent": "L6 Codex Business Analyst",
+    "architect-agent": "L6 Codex Architect",
+    "project-manager-agent": "L6 Codex Project Manager",
+    "team-lead-agent": "L4 AgentExecutor",
     "fullstack-agent": "L6 Codex Agent",
     "qa-agent": "L6 Codex QA Agent",
     "qa-codex-agent": "L6 Codex QA Agent",
@@ -196,12 +311,12 @@ RUNTIME_BY_AGENT = {
 }
 
 AGENT_ARTIFACT_LABELS = {
-    "planning-agent": "Planning Agent",
-    "intake-agent": "Planning Agent",
-    "project-classifier": "Planning Agent",
-    "team-assembler-agent": "Planning Agent",
-    "workflow-planner": "Planning Agent",
-    "tech-lead-agent": "Planning Agent",
+    "head-agent": "Head Agent",
+    "head-codex-review": "Head Agent",
+    "business-analyst-agent": "Business Analyst",
+    "architect-agent": "Architect",
+    "project-manager-agent": "Project Manager",
+    "team-lead-agent": "Team Lead Agent",
     "fullstack-agent": "Fullstack Agent",
     "qa-agent": "QA Agent",
     "qa-codex-agent": "QA Agent",
@@ -213,7 +328,11 @@ AGENT_ARTIFACT_LABELS = {
 
 AGENT_ARTIFACT_ORDER = [
     "Documentation / Handoff Agent",
-    "Planning Agent",
+    "Head Agent",
+    "Business Analyst",
+    "Architect",
+    "Project Manager",
+    "Team Lead Agent",
     "Fullstack Agent",
     "QA Agent",
     "Deployment Agent",
@@ -255,7 +374,7 @@ def create_console_run(requirements_text: str, output_root: Path | None = None) 
     requirements_path = output_dir / "00-requirements.md"
     requirements_path.write_text(requirements_text.strip() + "\n", encoding="utf-8")
     LOGGER.info("Created console run shell run_id=%s output_dir=%s", run_id, output_dir)
-    return run_pipeline(requirements_path, output_base, run_id=run_id)
+    return output_dir
 
 
 def run_codex_execution(run_dir: Path) -> str:
@@ -320,7 +439,9 @@ def codex_execution_running(run_dir: Path) -> bool:
         return False
     if status_text.startswith(("starting", "running")):
         state = _read_delivery_state(run_dir)
-        return not (_delivery_execution_terminal(state) and review_completed(run_dir))
+        if _delivery_execution_terminal(state):
+            return _delivery_terminal_requires_review(state) and not review_completed(run_dir)
+        return True
     if execution_completed(run_dir):
         return False
     if (run_dir / "codex" / "execution.log").exists() and not (
@@ -345,10 +466,13 @@ def azure_deployment_running(run_dir: Path) -> bool:
 
 
 def deployment_completed(run_dir: Path) -> bool:
+    deployment_result = _read_optional_json(run_dir / "deployment" / "result.json")
+    if str(deployment_result.get("status") or "") == "deployed":
+        return True
     summary_path = run_dir / "13-deployment-summary.md"
     if not summary_path.exists():
         return False
-    return "Status: deployed" in summary_path.read_text(encoding="utf-8")
+    return "Status: deployed" in read_text_artifact(summary_path)
 
 
 def review_completed(run_dir: Path) -> bool:
@@ -368,14 +492,32 @@ def _feature_codex_log_paths(run_dir: Path) -> list[Path]:
     codex_dir = run_dir / "codex"
     if not codex_dir.exists():
         return []
-    return sorted(codex_dir.glob("*/execution.log"))
+    return sorted(codex_dir.rglob("execution.log"))
 
 
 def _read_delivery_state(run_dir: Path) -> dict[str, Any]:
     state_path = run_dir / ".delivery-state.json"
     if not state_path.exists():
         return {}
-    return json.loads(state_path.read_text(encoding="utf-8"))
+    for attempt in range(3):
+        try:
+            raw_state = state_path.read_text(encoding="utf-8")
+            return json.loads(raw_state) if raw_state.strip() else {}
+        except PermissionError:
+            if attempt == 2:
+                LOGGER.warning("Delivery state is temporarily locked run_dir=%s", run_dir)
+                return {}
+            time.sleep(0.05 * (attempt + 1))
+        except OSError as exc:
+            LOGGER.warning(
+                "Delivery state is temporarily unavailable run_dir=%s error=%s",
+                run_dir,
+                exc,
+            )
+            return {}
+        except json.JSONDecodeError:
+            LOGGER.warning("Delivery state is temporarily unreadable run_dir=%s", run_dir)
+            return {}
 
 
 def execution_completed(run_dir: Path) -> bool:
@@ -385,20 +527,54 @@ def execution_completed(run_dir: Path) -> bool:
     summaries = _execution_summary_paths(run_dir)
     if not summaries:
         return False
-    return all("Status: codex failed" not in path.read_text(encoding="utf-8") for path in summaries)
+    return all("Status: codex failed" not in read_text_artifact(path) for path in summaries)
+
+
+def workflow_should_refresh(run_dir: Path, *, execution_is_running: bool) -> bool:
+    """Return whether the console should continue refreshing a running workflow."""
+
+    if execution_is_running:
+        return True
+
+    events = read_events(run_dir)
+    execution_started = any(event.get("event") == "execution_started" for event in events)
+    terminal_events = {
+        "delivery_graph_completed",
+        "head_agent_completed",
+        "head_delivery_completed",
+        "head_planning_completed",
+        "head_planning_blocked",
+        "business_analysis_blocked",
+        "architecture_blocked",
+        "project_management_blocked",
+        "execution_failed",
+    }
+    terminal_seen = any(event.get("event") in terminal_events for event in events)
+    return execution_started and not terminal_seen
 
 
 def _delivery_execution_terminal(state: dict[str, Any]) -> bool:
     status = str(state.get("status", ""))
     return status in {
+        "head_planning_completed",
+        "head_delivery_completed",
+        "head_planning_blocked",
+        "team_lead_sprint_blocked",
         "fullstack_feature_queue_completed_downstream_paused",
         "feature_queue_qa_completed_downstream_paused",
     } or status.startswith("deployment_")
 
 
+def _delivery_terminal_requires_review(state: dict[str, Any]) -> bool:
+    return str(state.get("status", "")) in {
+        "fullstack_feature_queue_completed_downstream_paused",
+        "feature_queue_qa_completed_downstream_paused",
+    }
+
+
 def _summary_has_failed(run_dir: Path) -> bool:
     return any(
-        "Status: codex failed" in path.read_text(encoding="utf-8")
+        "Status: codex failed" in read_text_artifact(path)
         for path in _execution_summary_paths(run_dir)
     )
 
@@ -435,13 +611,24 @@ def read_events(run_dir: Path) -> list[dict[str, Any]]:
             continue
         event = json.loads(line)
         agent_id = str(event.get("agent_id", ""))
-        event["runtime"] = RUNTIME_BY_AGENT.get(agent_id, "L0 Deterministic")
+        event["runtime"] = RUNTIME_BY_AGENT.get(agent_id, "Unknown Runtime")
         events.append(event)
     return events
 
 
 def read_json_artifact(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    return payload if isinstance(payload, dict) else {}
+
+
+def read_text_artifact(path: Path) -> str:
+    raw = path.read_bytes()
+    for encoding in ("utf-8", "utf-8-sig", "cp1252"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
 
 
 _FEATURE_DONE_STATUSES = {
@@ -458,6 +645,7 @@ def delivery_overview_for_run(run_dir: Path) -> DeliveryOverview:
 
     state = _read_delivery_state(run_dir)
     deployment_result = _read_optional_json(run_dir / "deployment" / "result.json")
+    board_features = _feature_progress_from_board(state)
     feature_queue = _feature_queue_from_state_or_plan(run_dir, state)
     feature_statuses = _as_dict(state.get("feature_statuses", {}))
     completed_feature_ids = {
@@ -466,7 +654,7 @@ def delivery_overview_for_run(run_dir: Path) -> DeliveryOverview:
     active_feature_id = _optional_str(state.get("active_feature_id"))
     repair_attempts = _as_dict(state.get("feature_repair_attempts", {}))
 
-    features = [
+    features = board_features or [
         _feature_progress(
             feature,
             feature_statuses=feature_statuses,
@@ -476,23 +664,239 @@ def delivery_overview_for_run(run_dir: Path) -> DeliveryOverview:
         )
         for feature in feature_queue
     ]
+    _apply_deployment_completion_to_features(
+        features,
+        deployment_status=str(
+            state.get("deployment_status") or deployment_result.get("status") or ""
+        ),
+    )
+    handoff_status = _handoff_status(run_dir, state)
+    _apply_handoff_completion_to_features(features, handoff_status=handoff_status)
+    _apply_current_worker_to_features(features, run_dir, state)
+    team_lead_steps = _team_lead_steps(run_dir)
 
     return DeliveryOverview(
         run_id=str(state.get("run_id") or run_dir.name),
-        stage=str(state.get("stage") or _stage_from_artifacts(run_dir)),
+        stage=_current_stage_for_run(run_dir, state),
         status=str(state.get("status") or "planning_ready"),
-        project_archetype=str(state.get("project_archetype") or _project_archetype(run_dir)),
         active_feature_id=active_feature_id,
         features=features,
         qa_status=str(state.get("qa_status") or _feature_queue_qa_status(features, run_dir)),
         deployment_status=str(
             state.get("deployment_status") or deployment_result.get("status") or ""
         ),
-        handoff_status=_handoff_status(run_dir, state),
+        handoff_status=handoff_status,
         topology_summary=str(deployment_result.get("topology_summary") or ""),
         deployment_targets=_deployment_targets(deployment_result),
         blockers=[str(blocker) for blocker in state.get("blockers", []) if blocker],
+        team_lead_steps=team_lead_steps,
+        current_work=_current_work(features, team_lead_steps, run_dir, state),
     )
+
+
+def _team_lead_steps(run_dir: Path) -> list[TeamLeadStep]:
+    history_dir = run_dir / "team-lead"
+    histories = sorted(history_dir.glob("*-history.json")) if history_dir.exists() else []
+    normalized: list[TeamLeadStep] = []
+    for history_path in histories:
+        history = _read_optional_json(history_path)
+        steps = history.get("steps", [])
+        if not isinstance(steps, list):
+            continue
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            normalized.append(
+                TeamLeadStep(
+                    step=len(normalized) + 1,
+                    tool=str(step.get("tool") or ""),
+                    target=str(step.get("target") or step.get("active_feature_id") or ""),
+                    reason=str(step.get("reason") or ""),
+                    status=str(step.get("result_status") or ""),
+                )
+            )
+    event_steps = _team_lead_steps_from_events(run_dir)
+    if len(event_steps) > len(normalized):
+        return event_steps
+    return normalized
+
+
+def _team_lead_steps_from_events(run_dir: Path) -> list[TeamLeadStep]:
+    steps: list[TeamLeadStep] = []
+    for event in read_events(run_dir):
+        event_name = str(event.get("event") or "")
+        data = event.get("data", {})
+        if not isinstance(data, dict):
+            continue
+        if event_name == "team_lead_decision":
+            decision = data.get("decision", {})
+            if not isinstance(decision, dict):
+                continue
+            steps.append(
+                TeamLeadStep(
+                    step=len(steps) + 1,
+                    tool=str(decision.get("tool") or ""),
+                    target=str(decision.get("target") or ""),
+                    reason=str(decision.get("reason") or ""),
+                    status="",
+                )
+            )
+        elif event_name == "team_lead_tool_completed" and steps:
+            for index in range(len(steps) - 1, -1, -1):
+                step = steps[index]
+                if step.status:
+                    continue
+                steps[index] = TeamLeadStep(
+                    step=step.step,
+                    tool=step.tool,
+                    target=step.target,
+                    reason=step.reason,
+                    status=str(data.get("status") or ""),
+                )
+                break
+    return steps
+
+
+def _current_work(
+    features: list[FeatureProgress],
+    steps: list[TeamLeadStep],
+    run_dir: Path,
+    state: dict[str, Any],
+) -> CurrentWork | None:
+    active_stage = _current_stage_for_run(run_dir, state)
+    active_feature_id = _current_feature_id_for_state(state, features, active_stage)
+    feature = _active_feature_progress(features, active_feature_id)
+    last_step = steps[-1] if steps else None
+
+    if not feature and not last_step and not active_stage:
+        return None
+    status = feature.status if feature else str(state.get("status") or "")
+    lane = feature.lane if feature else ""
+    if feature and _feature_is_current_worker_target(feature, state, active_stage):
+        if status in {"", "pending", "assigned"}:
+            status = "in_progress"
+        if not lane or lane == "todo":
+            lane = "doing"
+    return CurrentWork(
+        stage=active_stage,
+        feature_id=feature.feature_id if feature else active_feature_id or "",
+        title=feature.title if feature else "",
+        status=status,
+        lane=lane,
+        owner=feature.owner if feature else "",
+        assigned_agent=_current_work_assigned_agent(feature, state, active_stage),
+        last_tool=last_step.tool if last_step else "",
+        last_target=last_step.target if last_step else "",
+        last_reason=last_step.reason if last_step else "",
+        last_status=last_step.status if last_step else "",
+    )
+
+
+def _apply_current_worker_to_features(
+    features: list[FeatureProgress],
+    run_dir: Path,
+    state: dict[str, Any],
+) -> None:
+    active_stage = _current_stage_for_run(run_dir, state)
+    active_feature_id = _current_feature_id_for_state(state, features, active_stage)
+    if not active_feature_id:
+        return
+    for feature in features:
+        is_active = feature.feature_id == active_feature_id
+        if not is_active:
+            continue
+        if feature.status in _FEATURE_DONE_STATUSES:
+            feature.active = False
+            continue
+        if not _feature_is_current_worker_target(feature, state, active_stage):
+            continue
+        feature.active = True
+        if feature.status in {"", "pending", "assigned"}:
+            feature.status = "in_progress"
+        if not feature.lane or feature.lane == "todo":
+            feature.lane = "doing"
+        feature.assigned_agent = _current_work_assigned_agent(feature, state, active_stage)
+
+
+def _current_feature_id_for_state(
+    state: dict[str, Any],
+    features: list[FeatureProgress],
+    active_stage: str,
+) -> str | None:
+    active_feature_id = _optional_str(state.get("active_feature_id"))
+    if active_feature_id:
+        return active_feature_id
+
+    correlation_id = _optional_str(state.get("agent_call_correlation_id"))
+    if correlation_id and any(feature.feature_id == correlation_id for feature in features):
+        return correlation_id
+
+    agent_id = str(state.get("agent_execution_agent_id") or "")
+    if agent_id == "deployment-agent" or active_stage == "deployment":
+        return _first_feature_id(features, owner="deployment-agent", preferred_id="DEPLOY")
+    if agent_id == "documentation-handoff-agent" or active_stage == "handoff":
+        return _first_feature_id(features, owner="documentation-handoff-agent")
+    return None
+
+
+def _first_feature_id(
+    features: list[FeatureProgress],
+    *,
+    owner: str,
+    preferred_id: str = "",
+) -> str | None:
+    if preferred_id:
+        for feature in features:
+            if feature.feature_id == preferred_id:
+                return feature.feature_id
+    for feature in features:
+        if feature.owner == owner and feature.status not in _FEATURE_DONE_STATUSES:
+            return feature.feature_id
+    return None
+
+
+def _feature_is_current_worker_target(
+    feature: FeatureProgress,
+    state: dict[str, Any],
+    active_stage: str,
+) -> bool:
+    correlation_id = str(state.get("agent_call_correlation_id") or "")
+    agent_id = str(state.get("agent_execution_agent_id") or "")
+    if correlation_id and feature.feature_id == correlation_id:
+        return True
+    if agent_id and feature.owner == agent_id:
+        return True
+    return (active_stage == "deployment" and feature.owner == "deployment-agent") or (
+        active_stage == "handoff" and feature.owner == "documentation-handoff-agent"
+    )
+
+
+def _current_work_assigned_agent(
+    feature: FeatureProgress | None,
+    state: dict[str, Any],
+    active_stage: str,
+) -> str:
+    execution_agent = str(state.get("agent_execution_agent_id") or "")
+    if feature and _feature_is_current_worker_target(feature, state, active_stage):
+        return execution_agent or feature.owner or feature.assigned_agent
+    return feature.assigned_agent if feature else execution_agent
+
+
+def _active_feature_progress(
+    features: list[FeatureProgress],
+    active_feature_id: str | None,
+) -> FeatureProgress | None:
+    if active_feature_id:
+        for feature in features:
+            if feature.feature_id == active_feature_id:
+                return feature
+    for feature in features:
+        if feature.active:
+            return feature
+    for feature in features:
+        if feature.status in {"assigned", "in_progress", "implemented", "in_qa", "qa_failed"}:
+            return feature
+    return None
 
 
 def _feature_queue_from_state_or_plan(
@@ -503,10 +907,15 @@ def _feature_queue_from_state_or_plan(
     if isinstance(state_queue, list) and state_queue:
         return [item for item in state_queue if isinstance(item, dict)]
 
-    workflow = _read_optional_json(run_dir / "04-workflow-plan.json")
-    workflow_queue = workflow.get("feature_queue", [])
-    if isinstance(workflow_queue, list):
-        return [item for item in workflow_queue if isinstance(item, dict)]
+    candidate_queue = state.get("candidate_feature_queue", [])
+    if isinstance(candidate_queue, list) and candidate_queue:
+        return [item for item in candidate_queue if isinstance(item, dict)]
+
+    pm_queue = _read_optional_json_value(
+        run_dir / "upstream-planning" / "project-management" / "candidate-feature-queue.json"
+    )
+    if isinstance(pm_queue, list):
+        return [item for item in pm_queue if isinstance(item, dict)]
     return []
 
 
@@ -533,7 +942,93 @@ def _feature_progress(
         active=feature_id == active_feature_id,
         repair_attempts=_int_value(repair_attempts.get(feature_id), default=0),
         owner=str(feature.get("suggested_owner_agent") or ""),
+        sprint_id=str(feature.get("sprint_id") or ""),
+        story_points=_int_value(feature.get("story_points"), default=0),
     )
+
+
+def _feature_progress_from_board(state: dict[str, Any]) -> list[FeatureProgress]:
+    board = state.get("work_board", {})
+    if not isinstance(board, dict):
+        return []
+    items = board.get("items", [])
+    if not isinstance(items, list):
+        return []
+
+    features: list[FeatureProgress] = []
+    repair_attempts = _as_dict(state.get("feature_repair_attempts", {}))
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("item_id") or "")
+        artifact_refs = item.get("artifact_refs", [])
+        features.append(
+            FeatureProgress(
+                feature_id=item_id,
+                title=str(item.get("title") or "Untitled feature"),
+                status=str(item.get("status") or "pending"),
+                delivery_order=_int_value(item.get("delivery_order"), default=0),
+                active=bool(item.get("active")),
+                repair_attempts=_int_value(repair_attempts.get(item_id), default=0),
+                owner=str(item.get("owner_agent") or ""),
+                sprint_id=str(item.get("sprint_id") or ""),
+                lane=str(item.get("lane") or ""),
+                assigned_agent=_current_assigned_agent(item),
+                story_points=_int_value(item.get("story_points"), default=0),
+                artifact_count=len(artifact_refs) if isinstance(artifact_refs, list) else 0,
+            )
+        )
+    return sorted(features, key=lambda feature: feature.delivery_order)
+
+
+def _apply_deployment_completion_to_features(
+    features: list[FeatureProgress],
+    *,
+    deployment_status: str,
+) -> None:
+    if deployment_status != "deployed":
+        return
+    for feature in features:
+        owner_hint = f"{feature.owner} {feature.assigned_agent}".lower()
+        if "deployment-agent" not in owner_hint:
+            continue
+        feature.status = "deployed"
+        feature.lane = "done"
+        feature.active = False
+
+
+def _apply_handoff_completion_to_features(
+    features: list[FeatureProgress],
+    *,
+    handoff_status: str,
+) -> None:
+    if handoff_status not in {"ready", "handoff_ready", "complete", "completed"}:
+        return
+    for feature in features:
+        if not _is_handoff_feature(feature):
+            continue
+        if feature.status in {"blocked", "failed"}:
+            continue
+        feature.status = "handoff_ready"
+        feature.lane = "done"
+        feature.active = False
+        feature.assigned_agent = ""
+
+
+def _is_handoff_feature(feature: FeatureProgress) -> bool:
+    text = f"{feature.feature_id} {feature.title} {feature.owner}".lower()
+    return "handoff" in text or "completion report" in text
+
+
+def _current_assigned_agent(item: dict[str, Any]) -> str:
+    status = str(item.get("status") or "")
+    if (
+        not item.get("active")
+        or status in _FEATURE_DONE_STATUSES
+        or status in {"blocked", "failed"}
+    ):
+        return ""
+    return str(item.get("assigned_agent") or "")
 
 
 def _feature_queue_qa_status(features: list[FeatureProgress], run_dir: Path) -> str:
@@ -544,6 +1039,124 @@ def _feature_queue_qa_status(features: list[FeatureProgress], run_dir: Path) -> 
     if all(feature.status in _FEATURE_DONE_STATUSES for feature in features):
         return "passed"
     return ""
+
+
+def _current_stage_for_run(run_dir: Path, state: dict[str, Any]) -> str:
+    active = _active_stage_from_events(read_events(run_dir))
+    if active:
+        return active
+    return str(state.get("stage") or _stage_from_artifacts(run_dir))
+
+
+def _active_stage_from_events(events: list[dict[str, Any]]) -> str:
+    active: list[tuple[tuple[str, str], str]] = []
+    for event in events:
+        start = _stage_start(event)
+        if start:
+            active.append(start)
+            continue
+        stop = _stage_stop(event)
+        if stop:
+            active = [item for item in active if item[0] != stop]
+    return active[-1][1] if active else ""
+
+
+def _stage_start(event: dict[str, Any]) -> tuple[tuple[str, str], str] | None:
+    name = str(event.get("event") or "")
+    data = event.get("data", {})
+    payload = data if isinstance(data, dict) else {}
+
+    if name == "delivery_graph_node_started":
+        node = str(payload.get("node") or "")
+        return (("graph", node), _stage_token(node)) if node else None
+    if name == "head_worker_started":
+        node = str(payload.get("node") or "")
+        return (("head_worker", node), _stage_token(node)) if node else None
+    if name == "team_lead_worker_started":
+        node = str(payload.get("node") or "")
+        return (("team_lead_worker", node), _stage_token(node)) if node else None
+
+    stage = _stage_from_started_event(name)
+    if stage:
+        return ((str(event.get("agent_id") or ""), stage), stage)
+    return None
+
+
+def _stage_stop(event: dict[str, Any]) -> tuple[str, str] | None:
+    name = str(event.get("event") or "")
+    data = event.get("data", {})
+    payload = data if isinstance(data, dict) else {}
+
+    if name in {
+        "delivery_graph_node_completed",
+        "delivery_graph_node_failed",
+        "delivery_graph_node_skipped",
+    }:
+        node = str(payload.get("node") or "")
+        return ("graph", node) if node else None
+    if name == "head_worker_completed":
+        node = str(payload.get("node") or "")
+        return ("head_worker", node) if node else None
+    if name == "team_lead_worker_completed":
+        node = str(payload.get("node") or "")
+        return ("team_lead_worker", node) if node else None
+
+    stage = _stage_from_completed_event(name)
+    if stage:
+        return (str(event.get("agent_id") or ""), stage)
+    return None
+
+
+def _stage_from_started_event(event_name: str) -> str:
+    if event_name == "execution_started":
+        return "fullstack"
+    for prefix in (
+        "business_analysis",
+        "architecture",
+        "project_management",
+        "team_lead",
+        "qa",
+        "deployment",
+        "handoff",
+    ):
+        if event_name == f"{prefix}_started" or event_name == f"{prefix}_codex_started":
+            return prefix
+    return ""
+
+
+def _stage_from_completed_event(event_name: str) -> str:
+    if event_name == "execution_completed":
+        return "fullstack"
+    for prefix in (
+        "business_analysis",
+        "architecture",
+        "project_management",
+        "team_lead",
+        "qa",
+        "deployment",
+        "handoff",
+    ):
+        if event_name in {
+            f"{prefix}_completed",
+            f"{prefix}_codex_completed",
+            f"{prefix}_blocked",
+        }:
+            return prefix
+    return ""
+
+
+def _stage_token(node: str) -> str:
+    return {
+        "business_analyst": "business_analysis",
+        "architecture": "architecture",
+        "project_management": "project_management",
+        "team_lead": "team_lead",
+        "fullstack": "fullstack",
+        "qa": "qa",
+        "deployment": "deployment",
+        "handoff": "handoff",
+        "head": "head",
+    }.get(node, node)
 
 
 def _deployment_targets(payload: dict[str, Any]) -> list[DeploymentTarget]:
@@ -587,14 +1200,24 @@ def _handoff_status(run_dir: Path, state: dict[str, Any]) -> str:
     status = str(state.get("status") or "")
     if status.startswith("handoff_"):
         return status.removeprefix("handoff_")
-    if (run_dir / "handoff" / "release-report.html").exists():
+    sprint_id = _current_handoff_sprint_id(state)
+    if _handoff_report_exists(run_dir, sprint_id=sprint_id):
         return "ready"
     return ""
 
 
 def _stage_from_artifacts(run_dir: Path) -> str:
-    if (run_dir / "handoff" / "release-report.html").exists():
+    if _handoff_report_exists(run_dir):
         return "handoff"
+    project_management_dir = run_dir / "upstream-planning" / "project-management"
+    if (project_management_dir / "release-plan.json").exists() or (
+        project_management_dir / "candidate-feature-queue.json"
+    ).exists():
+        return "project_management"
+    if (run_dir / "upstream-planning" / "architecture.json").exists():
+        return "architecture"
+    if (run_dir / "upstream-planning" / "business-analysis.json").exists():
+        return "business_analysis"
     if (run_dir / "13-deployment-summary.md").exists():
         return "deployment"
     if list((run_dir / "qa").glob("results-*.json")):
@@ -604,19 +1227,42 @@ def _stage_from_artifacts(run_dir: Path) -> str:
     return "planning"
 
 
-def _project_archetype(run_dir: Path) -> str:
-    request = _read_optional_json(run_dir / "06-execution-request.json")
-    return str(request.get("project_archetype") or "")
+def _handoff_report_exists(run_dir: Path, *, sprint_id: str = "") -> bool:
+    handoff_dir = run_dir / "handoff"
+    if (handoff_dir / "release-report.html").exists():
+        return True
+    if sprint_id:
+        return (handoff_dir / "sprints" / sprint_id / "release-report.html").exists()
+    return any(handoff_dir.glob("**/release-report.html"))
+
+
+def _current_handoff_sprint_id(state: dict[str, Any]) -> str:
+    sprint_id = str(state.get("team_lead_sprint_id") or "")
+    if sprint_id:
+        return sprint_id
+    board = state.get("work_board", {})
+    if isinstance(board, dict):
+        return str(board.get("sprint_id") or "")
+    return ""
 
 
 def _read_optional_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _read_optional_json_value(path: Path) -> Any:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -646,9 +1292,13 @@ def artifact_groups_for_run(run_dir: Path) -> list[ArtifactGroup]:
     """Build visible artifact groups from delivery state plus planning artifacts."""
 
     grouped: dict[str, list[ArtifactSpec]] = {}
-    for filename, label, agent in PLANNING_ARTIFACTS:
+    for filename, label, agent in UPSTREAM_PLANNING_ARTIFACTS:
         if (run_dir / filename).exists():
-            grouped.setdefault("Planning Agent", []).append((filename, label, agent))
+            grouped.setdefault(agent, []).append((filename, label, agent))
+
+    for filename, label, agent in HEAD_ARTIFACTS:
+        if (run_dir / filename).exists():
+            grouped.setdefault(agent, []).append((filename, label, agent))
 
     for artifact in _delivery_state_artifacts(run_dir):
         path = str(artifact.get("path", ""))
@@ -696,6 +1346,16 @@ def _artifact_label_from_path(path: str) -> str:
         base = "QA results"
     elif filename.startswith("10-fix-request"):
         base = "Fix request"
+    elif filename.startswith("sprint-") and filename.endswith("-plan.json"):
+        base = "Sprint plan"
+    elif filename.startswith("sprint-") and filename.endswith("-history.json"):
+        base = "Decision and tool history"
+    elif filename.startswith("sprint-") and filename.endswith("-result.json"):
+        base = "Sprint result"
+    elif filename.endswith(".json") and "/decisions/" in path.replace("\\", "/"):
+        base = (
+            "Head decision" if path.replace("\\", "/").startswith("head/") else "Team Lead decision"
+        )
     elif filename == "release-report.html":
         base = "Client release report"
     elif filename == "release-evidence.json":
@@ -734,8 +1394,13 @@ def _dedupe_artifacts(artifacts: list[ArtifactSpec]) -> list[ArtifactSpec]:
 
 def _agent_group_description(name: str) -> str:
     descriptions = {
-        "Planning Agent": (
-            "Planning intake, classification, staffing, workflow, and handoff requests."
+        "Business Analyst": (
+            "Business requirements, users, acceptance criteria, scope, and open questions."
+        ),
+        "Head Agent": "Upstream planning coordination, decisions, and review artifacts.",
+        "Architect": "Solution architecture, technical decisions, constraints, and diagrams.",
+        "Project Manager": (
+            "Release plans, sprint packages, feature sequencing, dependencies, and risks."
         ),
         "Fullstack Agent": (
             "Feature-scoped implementation summaries, prompts, logs, and generated files."
@@ -744,6 +1409,9 @@ def _agent_group_description(name: str) -> str:
             "Feature-scoped QA reports, structured results, QA Codex attempts, and evidence."
         ),
         "Deployment Agent": "Deployment planning, execution, and post-deployment evidence.",
+        "Team Lead Agent": (
+            "Sprint coordination, AgentExecutor decisions, selected tools, and sprint outcome."
+        ),
         "Documentation / Handoff Agent": (
             "Final user-facing handoff and delivery summary artifacts."
         ),
@@ -847,7 +1515,7 @@ def saved_env_keys(run_dir: Path) -> list[str]:
 
 
 def _target_project_dir(run_dir: Path) -> Path:
-    request_path = run_dir / "06-execution-request.json"
+    request_path = run_dir / EXECUTION_REQUEST_ARTIFACT
     if request_path.exists():
         request = read_json_artifact(request_path)
         target = request.get("target_project_dir")
@@ -896,6 +1564,7 @@ def _run_console_execution_graph(run_dir: Path) -> dict[str, Any]:
     return runtime.start(
         run_dir,
         run_id=run_dir.name,
+        requirements_path=run_dir / "00-requirements.md",
         target_project_dir=_target_project_dir(run_dir),
     )
 
@@ -904,7 +1573,7 @@ def _execution_summary_text(run_dir: Path) -> str:
     summaries = _execution_summary_paths(run_dir)
     if not summaries:
         return ""
-    return "\n\n".join(f"# {path.name}\n\n{path.read_text(encoding='utf-8')}" for path in summaries)
+    return "\n\n".join(f"# {path.name}\n\n{read_text_artifact(path)}" for path in summaries)
 
 
 def _run_deployment_in_thread(run_dir: Path) -> None:

@@ -9,6 +9,7 @@ from agentic_company.agents.fullstack.graph import (
     render_fullstack_agent_graph_mermaid,
     run_fullstack_agent_graph,
 )
+from agentic_company.platform.agent_runtime import DirectSpecialistAgentExecutor
 from agentic_company.platform.models import AgentRunResult
 from agentic_company.platform.state import initial_delivery_state
 
@@ -25,7 +26,7 @@ def test_fullstack_agent_graph_runs_runner_and_maps_state(tmp_path):
         )
     )
 
-    result = run_fullstack_agent_graph(state, runner)
+    result = run_fullstack_agent_graph(state, runner, DirectSpecialistAgentExecutor())
 
     assert runner.run_dirs == [run_dir]
     assert result["stage"] == "fullstack"
@@ -56,7 +57,6 @@ def test_fullstack_agent_graph_runs_multi_service_features_sequentially(tmp_path
     ]
     _write_execution_request(run_dir, feature_queue)
     state = initial_delivery_state(run_id="run", run_dir=run_dir)
-    state["project_archetype"] = "api-web-compose"
     state["feature_queue"] = feature_queue
     state["active_feature_id"] = "F1"
     runner = RecordingRunner(
@@ -68,7 +68,7 @@ def test_fullstack_agent_graph_runs_multi_service_features_sequentially(tmp_path
         )
     )
 
-    result = run_fullstack_agent_graph(state, runner)
+    result = run_fullstack_agent_graph(state, runner, DirectSpecialistAgentExecutor())
 
     assert runner.active_feature_ids == ["F1"]
     assert result["stage"] == "fullstack"
@@ -88,7 +88,6 @@ def test_fullstack_agent_graph_stops_feature_iteration_on_failed_feature(tmp_pat
     ]
     _write_execution_request(run_dir, feature_queue)
     state = initial_delivery_state(run_id="run", run_dir=run_dir)
-    state["project_archetype"] = "api-web-compose"
     state["feature_queue"] = feature_queue
     runner = RecordingRunner(
         AgentRunResult(
@@ -99,7 +98,7 @@ def test_fullstack_agent_graph_stops_feature_iteration_on_failed_feature(tmp_pat
         )
     )
 
-    result = run_fullstack_agent_graph(state, runner)
+    result = run_fullstack_agent_graph(state, runner, DirectSpecialistAgentExecutor())
 
     assert runner.active_feature_ids == ["F1"]
     assert result["status"] == "fullstack_feature_failed"
@@ -118,12 +117,11 @@ def test_fullstack_agent_graph_includes_feature_fix_request_on_repair(tmp_path):
     (run_dir / "10-fix-request-F1.md").write_text("# Fix Request\n", encoding="utf-8")
     (run_dir / "10-fix-request-F1.json").write_text("{}\n", encoding="utf-8")
     state = initial_delivery_state(run_id="run", run_dir=run_dir)
-    state["project_archetype"] = "api-web-compose"
     state["feature_queue"] = feature_queue
     state["active_feature_id"] = "F1"
     runner = RecordingRunner()
 
-    run_fullstack_agent_graph(state, runner)
+    run_fullstack_agent_graph(state, runner, DirectSpecialistAgentExecutor())
 
     payload = runner.payloads[-1]
     assert "10-fix-request-F1.md" in payload["input_artifacts"]
@@ -131,25 +129,65 @@ def test_fullstack_agent_graph_includes_feature_fix_request_on_repair(tmp_path):
     assert any("This is a repair run" in item for item in payload["instructions"])
 
 
-def test_fullstack_agent_graph_exposes_expected_node_order():
-    assert FULLSTACK_AGENT_GRAPH_NODE_ORDER == [
-        "prepare_context",
-        "run_codex",
-        "apply_result",
+def test_fullstack_agent_graph_passes_resume_thread_to_execution_request(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    feature_queue = [
+        {"id": "F2", "title": "Mark done", "acceptance_criteria": [], "delivery_order": 2},
     ]
+    _write_execution_request(run_dir, feature_queue)
+    state = initial_delivery_state(run_id="run", run_dir=run_dir)
+    state["feature_queue"] = feature_queue
+    state["active_feature_id"] = "F2"
+    state["codex_threads_by_agent"] = {"fullstack-agent": "thread-f1"}
+    runner = RecordingRunner()
+
+    run_fullstack_agent_graph(state, runner, DirectSpecialistAgentExecutor())
+
+    assert runner.payloads[-1]["codex_resume_thread_id"] == "thread-f1"
+
+
+def test_fullstack_agent_graph_records_codex_thread_id(tmp_path):
+    run_dir = tmp_path / "run"
+    state = initial_delivery_state(run_id="run", run_dir=run_dir)
+    runner = RecordingRunner(
+        AgentRunResult(
+            agent_id="fullstack-agent",
+            status="codex_completed",
+            output_artifacts=["07-execution-summary.md"],
+            summary="done",
+            codex_thread_id="thread-f1",
+        )
+    )
+
+    result = run_fullstack_agent_graph(state, runner, DirectSpecialistAgentExecutor())
+
+    assert result["codex_threads_by_agent"] == {"fullstack-agent": "thread-f1"}
+
+
+def test_fullstack_agent_graph_exposes_expected_node_order():
+    assert FULLSTACK_AGENT_GRAPH_NODE_ORDER == (
+        "prepare_context",
+        "run_agent_executor",
+        "apply_result",
+    )
 
 
 def test_fullstack_agent_graph_mermaid_includes_internal_nodes():
     mermaid = render_fullstack_agent_graph_mermaid()
 
     assert "prepare_context" in mermaid
-    assert "run_codex" in mermaid
+    assert "run_agent_executor" in mermaid
     assert "apply_result" in mermaid
 
 
 def test_fullstack_agent_graph_requires_nodes():
     with pytest.raises(ValueError, match="requires at least one node"):
-        build_fullstack_agent_graph(RecordingRunner(), node_order=[])
+        build_fullstack_agent_graph(
+            RecordingRunner(),
+            agent_executor=DirectSpecialistAgentExecutor(),
+            node_order=[],
+        )
 
 
 class RecordingRunner:
@@ -166,7 +204,7 @@ class RecordingRunner:
 
     def run(self, run_dir: Path) -> AgentRunResult:
         self.run_dirs.append(run_dir)
-        request = run_dir / "06-execution-request.json"
+        request = run_dir / "delivery/execution-request.json"
         if request.exists():
             payload = json.loads(request.read_text(encoding="utf-8"))
             self.payloads.append(payload)
@@ -179,7 +217,9 @@ def _write_execution_request(
     run_dir: Path,
     feature_queue: list[dict[str, object]],
 ) -> None:
-    (run_dir / "06-execution-request.json").write_text(
+    request_path = run_dir / "delivery/execution-request.json"
+    request_path.parent.mkdir(parents=True, exist_ok=True)
+    request_path.write_text(
         json.dumps(
             {
                 "run_id": run_dir.name,
@@ -193,7 +233,6 @@ def _write_execution_request(
                 "expected_outputs": ["api/app.py", "web/app.py"],
                 "instructions": ["Build the active feature."],
                 "constraints": ["Keep names stable."],
-                "project_archetype": "api-web-compose",
                 "feature_queue": feature_queue,
                 "active_feature": feature_queue[0],
                 "completed_feature_ids": [],

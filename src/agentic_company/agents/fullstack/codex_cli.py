@@ -10,16 +10,25 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agentic_company.integrations.codex import (
+    DEFAULT_CODEX_SANDBOX,
     build_codex_exec_command,
     stream_codex_exec_to_log,
     write_structured_codex_artifacts,
 )
-from agentic_company.platform.artifacts import load_execution_request
+from agentic_company.platform.artifacts import load_execution_request, read_text_artifact
 from agentic_company.platform.events import write_event
+from agentic_company.platform.executions import (
+    build_agent_execution_id,
+    build_codex_execution_id,
+    execution_artifact_dir,
+    extract_codex_thread_id,
+)
 from agentic_company.platform.logging import configure_logging
+from agentic_company.platform.messages import render_incoming_messages_for_prompt
 from agentic_company.platform.models import AgentRunResult, ExecutionRequest
 
 LOGGER = logging.getLogger(__name__)
+REQUEST_CONTEXT_PREVIEW_CHARS = 2500
 
 CommandExecutor = Callable[
     [Sequence[str], str, int, Path, Path],
@@ -36,7 +45,7 @@ class CodexCliRunner:
     """
 
     codex_binary: str | None = None
-    sandbox: str = "workspace-write"
+    sandbox: str = DEFAULT_CODEX_SANDBOX
     timeout_seconds: int = 1800
     summary_filename: str = "07-execution-summary.md"
     prompt_filename: str = "codex/prompt.md"
@@ -49,30 +58,28 @@ class CodexCliRunner:
         event_log = run_dir / "events.jsonl"
         target_dir = Path(request.target_project_dir)
         active_feature_id = _active_feature_id(request)
-        summary_filename = _feature_artifact_filename(
-            self.summary_filename,
-            active_feature_id,
+        execution_id = _execution_id(request, active_feature_id)
+        codex_execution_id = build_codex_execution_id(
+            execution_id=execution_id,
+            codex_agent_id=request.agent_id,
         )
-        prompt_filename = _feature_artifact_filename(self.prompt_filename, active_feature_id)
-        log_filename = _feature_artifact_filename(self.log_filename, active_feature_id)
-        raw_events_filename = _feature_artifact_filename(
-            self.raw_events_filename,
-            active_feature_id,
+        paths = _execution_paths(
+            run_dir=run_dir,
+            active_feature_id=active_feature_id,
+            execution_id=request.execution_id,
+            summary_filename=self.summary_filename,
+            prompt_filename=self.prompt_filename,
+            log_filename=self.log_filename,
+            raw_events_filename=self.raw_events_filename,
         )
+        summary_filename = paths["summary"]
+        prompt_filename = paths["prompt"]
+        log_filename = paths["log"]
+        raw_events_filename = paths["raw_events"]
         summary_path = run_dir / summary_filename
         prompt_path = run_dir / prompt_filename
         log_path = run_dir / log_filename
         raw_events_path = run_dir / raw_events_filename
-
-        if summary_path.exists() and not _is_failed_summary(summary_path):
-            LOGGER.info("Codex execution already completed run_dir=%s", run_dir)
-            summary = summary_path.read_text(encoding="utf-8")
-            return AgentRunResult(
-                agent_id=request.agent_id,
-                status="already_completed",
-                output_artifacts=[summary_filename],
-                summary=summary,
-            )
 
         target_dir.mkdir(parents=True, exist_ok=True)
         prompt_path.parent.mkdir(parents=True, exist_ok=True)
@@ -80,6 +87,7 @@ class CodexCliRunner:
             raw_events_path.unlink()
         command = self.build_command(request, run_dir, summary_path)
         prompt = build_codex_prompt(request, run_dir)
+        resume_thread_id = request.codex_resume_thread_id
         prompt_path.write_text(prompt, encoding="utf-8")
         LOGGER.info(
             "Codex execution starting run_id=%s model=%s target_dir=%s",
@@ -90,6 +98,9 @@ class CodexCliRunner:
         log_path.write_text(
             f"$ {' '.join(command)}\n"
             f"timeout_seconds={self.timeout_seconds}\n\n"
+            f"execution_id={execution_id}\n"
+            f"codex_execution_id={codex_execution_id}\n\n"
+            f"codex_resume_thread_id={resume_thread_id or '(none)'}\n\n"
             "Codex process is starting...\n",
             encoding="utf-8",
         )
@@ -103,12 +114,21 @@ class CodexCliRunner:
                 "target_project_dir": request.target_project_dir,
                 "provider": "codex-cli",
                 "mode": "codex-exec",
+                "execution_id": execution_id,
+                "codex_execution_id": codex_execution_id,
+                "codex_resume_thread_id": resume_thread_id,
                 **_feature_event_data(active_feature_id),
             },
         )
 
         try:
-            completed = self._execute(command, prompt, log_path, raw_events_path)
+            completed = self._execute(
+                command,
+                prompt,
+                log_path,
+                raw_events_path,
+                codex_execution_id=codex_execution_id,
+            )
         except FileNotFoundError as exc:
             LOGGER.exception("Codex CLI missing run_id=%s", request.run_id)
             summary = render_codex_failure_summary(request, command, "Codex CLI was not found.")
@@ -163,14 +183,21 @@ class CodexCliRunner:
                 status="codex_failed",
                 output_artifacts=[summary_filename, log_filename, *structured_artifacts],
                 summary=summary,
+                execution_id=execution_id,
+                codex_thread_id=extract_codex_thread_id(raw_events_path) or resume_thread_id,
+                blocking_findings=[reason],
+                recommended_next_action=(
+                    "Inspect Codex execution log and retry the implementation task."
+                ),
             )
 
         if summary_path.exists():
-            summary = summary_path.read_text(encoding="utf-8")
+            summary = read_text_artifact(summary_path)
         else:
             summary = render_codex_success_summary(request, completed)
             summary_path.write_text(summary, encoding="utf-8")
 
+        codex_thread_id = extract_codex_thread_id(raw_events_path) or resume_thread_id
         write_event(
             event_log,
             request.run_id,
@@ -180,6 +207,9 @@ class CodexCliRunner:
                 "artifact": summary_filename,
                 "target_project_dir": request.target_project_dir,
                 "status": "codex_completed",
+                "execution_id": execution_id,
+                "codex_execution_id": codex_execution_id,
+                "codex_thread_id": codex_thread_id,
                 **_feature_event_data(active_feature_id),
             },
         )
@@ -195,6 +225,8 @@ class CodexCliRunner:
                 *request.expected_outputs,
             ],
             summary=summary,
+            execution_id=execution_id,
+            codex_thread_id=codex_thread_id,
         )
 
     def build_command(
@@ -210,6 +242,7 @@ class CodexCliRunner:
             target_project_dir=request.target_project_dir,
             run_dir=run_dir,
             summary_path=summary_path,
+            resume_session_id=request.codex_resume_thread_id,
         )
 
     def _execute(
@@ -218,6 +251,8 @@ class CodexCliRunner:
         prompt: str,
         log_path: Path,
         raw_events_path: Path,
+        *,
+        codex_execution_id: str,
     ) -> subprocess.CompletedProcess[str]:
         if self.command_executor:
             return self.command_executor(
@@ -230,16 +265,18 @@ class CodexCliRunner:
             self.timeout_seconds,
             log_path,
             raw_events_path,
+            codex_execution_id=codex_execution_id,
         )
 
 
 def build_codex_prompt(request: ExecutionRequest, run_dir: Path) -> str:
-    implementation_brief = (run_dir / "05-implementation-brief.md").read_text(encoding="utf-8")
+    request_context = _render_request_context(request, run_dir)
     inputs = "\n".join(f"- {artifact}" for artifact in request.input_artifacts)
     outputs = "\n".join(f"- {artifact}" for artifact in request.expected_outputs)
     instructions = "\n".join(f"- {instruction}" for instruction in request.instructions)
     constraints = "\n".join(f"- {constraint}" for constraint in request.constraints)
     feature_context = _render_feature_context(request)
+    upstream_messages = render_incoming_messages_for_prompt(run_dir, to_agent=request.agent_id)
 
     return f"""You are the Fullstack Agent for agentic-company.
 
@@ -248,6 +285,12 @@ Build the requested project inside this working directory only:
 
 Planning run directory:
 {run_dir}
+
+Platform execution id:
+{request.execution_id or "(not provided)"}
+
+Execution intent:
+{request.execution_intent or "(not provided)"}
 
 Input artifacts available:
 {inputs}
@@ -264,15 +307,37 @@ Constraints:
 Feature delivery context:
 {feature_context}
 
+Upstream agent messages:
+{upstream_messages}
+
+Contract precedence:
+- Use the active feature context, canonical work item packet, and referenced
+  artifacts as the source of truth for implementation.
+- Treat coordinator free-text as routing/context unless it is supported by those
+  sources.
+- Do not add or omit acceptance criteria, status codes, feature scope,
+  deployment gates, or QA gates based only on a coordinator paraphrase.
+- If coordinator text conflicts with the canonical work item or artifacts, call
+  out the mismatch in your summary instead of silently changing the contract.
+
 Workspace ownership:
+- Treat `{run_dir}` as the delivery run workspace and
+  `{request.target_project_dir}` as the generated product project.
+- Work only inside the target project directory.
+- You may use network-backed tools when needed for the generated project, such
+  as package indexes, documentation lookup, dependency installation, Docker
+  builds, and local verification.
 - Product implementation files belong inside `{request.target_project_dir}` only.
 - Create application folders there, for example `api/`, `web/`, `src/`, `tests/`,
   `scripts/`, `docs/`, or other project-local folders when they are part of the
   generated application.
 - Do not write QA, deployment, handoff, or orchestration artifacts. Those belong
   to other agents.
+- Do not modify files outside `{run_dir}`. In particular, do not modify the
+  platform repository source, root configuration, user home files, or unrelated
+  projects unless the execution request explicitly names that path.
 - Do not write outside `{request.target_project_dir}` unless the execution
-  request explicitly names a required run-level artifact.
+  request explicitly names a required run-level artifact under `{run_dir}`.
 - If you create implementation helper scripts or smoke tests, keep them inside
   the generated project, preferably under `scripts/`, `tests/`, or a clearly
   named project-local folder.
@@ -333,17 +398,65 @@ Environment setup:
 - Runtime commands inside Docker should use `uv run --no-sync ...` after the build has already
   run `uv sync`, so container startup does not repeat dependency checks.
 
-Implementation brief:
-{implementation_brief}
+Cloud/runtime readiness:
+- Do not treat successful local tests, local Docker smoke checks, or local filesystem
+  persistence as proof that the app is ready for hosted/containerized deployment.
+- When the product requires shared or durable state, implement configuration-driven
+  persistence so local development/tests can use lightweight local storage while
+  deployed environments can use a backend suitable for the target runtime.
+- Avoid hard-coding local filesystem-only storage when the release requires state to
+  survive refreshes, restarts, revisions, redeployments, or access from multiple users.
+- If Team Lead sends Deployment or QA evidence showing an application runtime/cloud
+  mismatch, repair the generated app accordingly. Examples include persistence support,
+  startup initialization, runtime config, health endpoint behavior, container definition,
+  and application-owned environment assumptions.
+
+Request context:
+{request_context}
 
 When finished, leave the project files in the working directory and summarize what you built,
 what you intentionally skipped, and how to run it.
 """
 
 
+def _render_request_context(request: ExecutionRequest, run_dir: Path) -> str:
+    sections: list[str] = []
+    for artifact in request.input_artifacts:
+        path = run_dir / artifact
+        if not path.exists() or path.is_dir():
+            continue
+        if path.suffix.lower() not in {".md", ".txt", ".json", ".csv", ".mmd"}:
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace").strip()
+        if not text:
+            continue
+        sections.append(f"## {artifact}\n\n{_preview_text(text, path)}")
+    if sections:
+        return (
+            "The following sections are previews only. Treat artifact paths as "
+            "the source of truth and open full files from the workspace when "
+            "implementation details matter.\n\n" + "\n\n".join(sections)
+        )
+    requirements_path = run_dir / "00-requirements.md"
+    if requirements_path.exists():
+        text = requirements_path.read_text(encoding="utf-8", errors="replace")
+        return (
+            "Preview of 00-requirements.md. Open the full file from the workspace "
+            "when details matter.\n\n" + _preview_text(text, requirements_path)
+        )
+    return "(No readable request artifacts found.)"
+
+
+def _preview_text(text: str, path: Path, limit: int = REQUEST_CONTEXT_PREVIEW_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    omitted = len(text) - limit
+    return (
+        f"{text[:limit].rstrip()}\n\n... [truncated {omitted} chars; open {path} for full source]"
+    )
+
+
 def _active_feature_id(request: ExecutionRequest) -> str | None:
-    if request.project_archetype != "api-web-compose":
-        return None
     if not request.active_feature:
         return None
     feature_id = request.active_feature.get("id")
@@ -359,6 +472,48 @@ def _feature_artifact_filename(filename: str, feature_id: str | None) -> str:
     return str(path.parent / feature_id / path.name).replace("\\", "/")
 
 
+def _execution_id(request: ExecutionRequest, feature_id: str | None) -> str:
+    if request.execution_id:
+        return request.execution_id
+    return build_agent_execution_id(
+        run_id=request.run_id,
+        agent_id=request.agent_id,
+        target=feature_id or "project",
+        intent=request.execution_intent or "implementation",
+    )
+
+
+def _execution_paths(
+    *,
+    run_dir: Path,
+    active_feature_id: str | None,
+    execution_id: str,
+    summary_filename: str,
+    prompt_filename: str,
+    log_filename: str,
+    raw_events_filename: str,
+) -> dict[str, str]:
+    if not execution_id:
+        return {
+            "summary": _feature_artifact_filename(summary_filename, active_feature_id),
+            "prompt": _feature_artifact_filename(prompt_filename, active_feature_id),
+            "log": _feature_artifact_filename(log_filename, active_feature_id),
+            "raw_events": _feature_artifact_filename(raw_events_filename, active_feature_id),
+        }
+
+    root = run_dir / "codex"
+    if active_feature_id:
+        root = root / active_feature_id
+    artifact_dir = execution_artifact_dir(root=root, execution_id=execution_id)
+    relative = artifact_dir.relative_to(run_dir).as_posix()
+    return {
+        "summary": f"{relative}/summary.md",
+        "prompt": f"{relative}/prompt.md",
+        "log": f"{relative}/execution.log",
+        "raw_events": f"{relative}/events.jsonl",
+    }
+
+
 def _feature_event_data(feature_id: str | None) -> dict[str, str]:
     return {"feature_id": feature_id} if feature_id else {}
 
@@ -370,8 +525,7 @@ def _render_feature_context(request: ExecutionRequest) -> str:
     feature = request.active_feature
     criteria = "\n".join(f"  - {criterion}" for criterion in feature.get("acceptance_criteria", []))
     completed = ", ".join(request.completed_feature_ids) or "none"
-    return f"""- Project archetype: `{request.project_archetype}`
-- Active feature: `{feature.get("id")}` - {feature.get("title")}
+    return f"""- Active feature: `{feature.get("id")}` - {feature.get("title")}
 - Active feature acceptance criteria:
 {criteria or "  - None provided."}
 - Completed features before this run: {completed}
@@ -380,7 +534,7 @@ def _render_feature_context(request: ExecutionRequest) -> str:
 
 
 def _is_failed_summary(summary_path: Path) -> bool:
-    summary = summary_path.read_text(encoding="utf-8")
+    summary = read_text_artifact(summary_path)
     return "Status: codex failed" in summary
 
 

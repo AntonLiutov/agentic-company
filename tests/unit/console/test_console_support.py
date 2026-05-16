@@ -1,7 +1,9 @@
 import json
+from pathlib import Path
 
 from agentic_company.console.support import (
-    PLANNING_ARTIFACTS,
+    UPSTREAM_PLANNING_ARTIFACTS,
+    TeamLeadStep,
     artifact_groups_for_run,
     clear_console_runs,
     codex_execution_running,
@@ -20,6 +22,8 @@ from agentic_company.console.support import (
     run_codex_execution,
     saved_env_keys,
     start_azure_deployment,
+    team_lead_step_rows,
+    workflow_should_refresh,
     write_target_env,
 )
 from agentic_company.orchestration.graphs import (
@@ -28,23 +32,14 @@ from agentic_company.orchestration.graphs import (
 )
 
 
-def test_console_run_writes_requirements_artifacts_and_runtime_events(tmp_path):
+def test_console_run_writes_requirements_artifact_without_legacy_planning(tmp_path):
     requirements = load_sample_requirements()
 
     run_dir = create_console_run(requirements, tmp_path / "runs")
 
     assert (run_dir / "00-requirements.md").exists()
-    for filename, _, _ in PLANNING_ARTIFACTS:
-        assert (run_dir / filename).exists()
-
-    events = read_events(run_dir)
-    assert events[0]["event"] == "run_started"
-    assert events[-1]["event"] == "run_completed"
-    assert "L0 Deterministic" in {event["runtime"] for event in events}
-    assert "L6 Codex Agent" in {event["runtime"] for event in events}
-
-    staffing = json.loads((run_dir / "03-staffing-decision.json").read_text(encoding="utf-8"))
-    assert "Fullstack Agent" in staffing["selected_agents"]
+    assert not (run_dir / "delivery" / "execution-request.json").exists()
+    assert read_events(run_dir) == []
 
 
 def test_console_support_lists_and_loads_sample_requirements(tmp_path):
@@ -59,12 +54,36 @@ def test_console_support_lists_and_loads_sample_requirements(tmp_path):
     assert load_sample_requirements(tmp_path, "a-sample.md") == "Project name: A\n"
 
 
+def test_console_support_loads_multi_service_sample_by_default():
+    requirements = load_sample_requirements()
+
+    assert "I want a small web app for managing team tasks." in requirements
+    assert "current Azure integration" in requirements
+    assert "working app link and a short, business-facing demo report" in requirements
+
+
 def test_artifact_groups_for_run_group_state_artifacts_by_agent(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    for filename, _, _ in PLANNING_ARTIFACTS[:2]:
-        (run_dir / filename).write_text("{}", encoding="utf-8")
+    for filename, _, _ in UPSTREAM_PLANNING_ARTIFACTS[:2]:
+        path = run_dir / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+    for filename in (
+        "upstream-planning/architecture.md",
+        "upstream-planning/architecture.json",
+        "upstream-planning/architecture.mmd",
+    ):
+        path = run_dir / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
     artifacts = [
+        {
+            "path": "head/result.json",
+            "kind": "internal",
+            "owner_agent": "head-agent",
+            "visibility": "developer",
+        },
         {
             "path": "07-execution-summary-F1.md",
             "kind": "execution",
@@ -89,6 +108,12 @@ def test_artifact_groups_for_run_group_state_artifacts_by_agent(tmp_path):
             "owner_agent": "handoff-codex-agent",
             "visibility": "user",
         },
+        {
+            "path": "team-lead/sprint-01-result.json",
+            "kind": "internal",
+            "owner_agent": "team-lead-agent",
+            "visibility": "developer",
+        },
     ]
     for artifact in artifacts:
         path = run_dir / artifact["path"]
@@ -111,9 +136,22 @@ def test_artifact_groups_for_run_group_state_artifacts_by_agent(tmp_path):
         for artifact in group_artifacts
     ]
 
-    assert "Planning Agent" in grouped_paths
+    assert "Business Analyst" in grouped_paths
+    assert "Head Agent" in grouped_paths
+    assert "Architect" in grouped_paths
     assert groups[0][0] == "Documentation / Handoff Agent"
+    assert grouped_paths["Business Analyst"] == [
+        "upstream-planning/business-analysis.md",
+        "upstream-planning/business-analysis.json",
+    ]
+    assert grouped_paths["Architect"] == [
+        "upstream-planning/architecture.md",
+        "upstream-planning/architecture.json",
+        "upstream-planning/architecture.mmd",
+    ]
     assert grouped_paths["Documentation / Handoff Agent"] == ["handoff/release-report.html"]
+    assert grouped_paths["Team Lead Agent"] == ["team-lead/sprint-01-result.json"]
+    assert grouped_paths["Head Agent"] == ["head/result.json"]
     assert grouped_paths["Fullstack Agent"] == ["07-execution-summary-F1.md"]
     assert grouped_paths["QA Agent"] == [
         "qa/results-F1.json",
@@ -141,7 +179,6 @@ def test_delivery_overview_scales_feature_queue_and_deployment_targets(tmp_path)
                 "run_id": "run",
                 "stage": "handoff",
                 "status": "handoff_ready",
-                "project_archetype": "api-web-compose",
                 "active_feature_id": None,
                 "feature_queue": feature_queue,
                 "completed_feature_ids": [f"F{index}" for index in range(1, 8)],
@@ -177,13 +214,37 @@ def test_delivery_overview_scales_feature_queue_and_deployment_targets(tmp_path)
     )
     (run_dir / "handoff").mkdir()
     (run_dir / "handoff" / "release-report.html").write_text("<html></html>", encoding="utf-8")
+    team_lead_dir = run_dir / "team-lead"
+    team_lead_dir.mkdir()
+    (team_lead_dir / "sprint-01-history.json").write_text(
+        json.dumps(
+            {
+                "steps": [
+                    {
+                        "step": 1,
+                        "tool": "assign_next_feature",
+                        "target": "F1",
+                        "reason": "Start sprint.",
+                        "result_status": "team_lead_feature_selected",
+                    },
+                    {
+                        "step": 2,
+                        "tool": "run_fullstack",
+                        "target": "F1",
+                        "reason": "Implement feature.",
+                        "result_status": "fullstack_feature_implemented",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
 
     overview = delivery_overview_for_run(run_dir)
 
     assert overview.run_id == "run"
     assert overview.stage == "handoff"
     assert overview.status == "handoff_ready"
-    assert overview.project_archetype == "api-web-compose"
     assert overview.completed_feature_count == 7
     assert overview.total_feature_count == 7
     assert [feature.feature_id for feature in overview.features] == [
@@ -199,6 +260,11 @@ def test_delivery_overview_scales_feature_queue_and_deployment_targets(tmp_path)
     assert overview.qa_status == "passed"
     assert overview.deployment_status == "deployed"
     assert overview.handoff_status == "ready"
+    assert [step.tool for step in overview.team_lead_steps] == [
+        "assign_next_feature",
+        "run_fullstack",
+    ]
+    assert overview.team_lead_steps[1].reason == "Implement feature."
     assert overview.topology_summary == "API plus web service."
     assert [(target.label, target.url) for target in overview.deployment_targets] == [
         ("API", "https://api.example.test"),
@@ -206,15 +272,499 @@ def test_delivery_overview_scales_feature_queue_and_deployment_targets(tmp_path)
     ]
 
 
-def test_delivery_overview_falls_back_to_workflow_plan_before_execution(tmp_path):
+def test_delivery_overview_marks_deployment_board_item_done_when_deployed(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    (run_dir / "04-workflow-plan.json").write_text(
+    deployment_dir = run_dir / "deployment"
+    deployment_dir.mkdir()
+    (deployment_dir / "result.json").write_text(
+        json.dumps({"status": "deployed"}),
+        encoding="utf-8",
+    )
+    (run_dir / ".delivery-state.json").write_text(
         json.dumps(
             {
-                "feature_queue": [
-                    {"id": "F1", "title": "Create tasks", "delivery_order": 1},
-                    {"id": "F2", "title": "Complete tasks", "delivery_order": 2},
+                "run_id": "run",
+                "stage": "head",
+                "status": "head_delivery_completed",
+                "active_feature_id": "F6",
+                "deployment_status": "deployed",
+                "work_board": {
+                    "items": [
+                        {
+                            "item_id": "F1",
+                            "title": "Feature",
+                            "status": "qa_passed",
+                            "lane": "done",
+                            "owner_agent": "fullstack-agent",
+                            "delivery_order": 1,
+                        },
+                        {
+                            "item_id": "F6",
+                            "title": "Deploy",
+                            "status": "pending",
+                            "lane": "todo",
+                            "active": True,
+                            "owner_agent": "deployment-agent",
+                            "delivery_order": 2,
+                        },
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    overview = delivery_overview_for_run(run_dir)
+    deployed = next(feature for feature in overview.features if feature.feature_id == "F6")
+
+    assert deployed.status == "deployed"
+    assert deployed.lane == "done"
+    assert not deployed.active
+    assert overview.completed_feature_count == 2
+
+
+def test_delivery_overview_tolerates_temporarily_locked_state_file(
+    tmp_path,
+    monkeypatch,
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    state_path = run_dir / ".delivery-state.json"
+    state_path.write_text(json.dumps({"run_id": "run", "stage": "qa"}), encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def fake_read_text(path, *args, **kwargs):
+        if path == state_path:
+            raise PermissionError("state file is locked")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+    monkeypatch.setattr("agentic_company.console.support.time.sleep", lambda _: None)
+
+    overview = delivery_overview_for_run(run_dir)
+
+    assert overview.run_id == "run"
+    assert overview.status == "planning_ready"
+
+
+def test_delivery_overview_stage_prefers_active_worker_event(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / ".delivery-state.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run",
+                "stage": "business_analysis",
+                "status": "business_analysis_completed",
+                "feature_queue": [],
+                "blockers": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "events.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-05-11T01:00:00",
+                        "run_id": "run",
+                        "agent_id": "delivery-graph",
+                        "event": "delivery_graph_node_started",
+                        "data": {"node": "head", "stage": "initialized"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-05-11T01:00:01",
+                        "run_id": "run",
+                        "agent_id": "head-agent",
+                        "event": "head_worker_started",
+                        "data": {"node": "project_management"},
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    overview = delivery_overview_for_run(run_dir)
+
+    assert overview.stage == "project_management"
+
+
+def test_delivery_overview_stage_falls_back_after_worker_completed(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / ".delivery-state.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run",
+                "stage": "project_management",
+                "status": "project_management_completed",
+                "feature_queue": [],
+                "blockers": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "events.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-05-11T01:00:00",
+                        "run_id": "run",
+                        "agent_id": "head-agent",
+                        "event": "head_worker_started",
+                        "data": {"node": "project_management"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-05-11T01:00:01",
+                        "run_id": "run",
+                        "agent_id": "head-agent",
+                        "event": "head_worker_completed",
+                        "data": {"node": "project_management"},
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    overview = delivery_overview_for_run(run_dir)
+
+    assert overview.stage == "project_management"
+
+
+def test_team_lead_step_rows_show_full_decision_history():
+    rows = team_lead_step_rows(
+        [
+            TeamLeadStep(
+                step=index,
+                tool="run_fullstack",
+                target=f"F{index}",
+                reason=f"Decision {index}",
+                status="fullstack_feature_implemented",
+            )
+            for index in range(1, 19)
+        ]
+    )
+
+    assert len(rows) == 18
+    assert rows[0]["Step"] == 1
+    assert rows[-1]["Step"] == 18
+    assert rows[0]["Tool"] == "Fullstack"
+
+
+def test_delivery_overview_uses_project_manager_candidate_queue_before_delivery(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    pm_dir = run_dir / "upstream-planning" / "project-management"
+    pm_dir.mkdir(parents=True)
+    (pm_dir / "candidate-feature-queue.json").write_text(
+        json.dumps(
+            [
+                {"id": "F1", "title": "Create tasks", "delivery_order": 1},
+                {"id": "F2", "title": "Complete tasks", "delivery_order": 2},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    overview = delivery_overview_for_run(run_dir)
+
+    assert overview.stage == "project_management"
+    assert overview.status == "planning_ready"
+    assert overview.completed_feature_count == 0
+    assert overview.total_feature_count == 2
+    assert [feature.status for feature in overview.features] == ["pending", "pending"]
+
+
+def test_delivery_overview_prefers_runtime_work_board(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / ".delivery-state.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run",
+                "stage": "team_lead",
+                "status": "team_lead_feature_selected",
+                "active_feature_id": "F1",
+                "feature_repair_attempts": {"F1": 1},
+                "work_board": {
+                    "sprint_id": "sprint-01",
+                    "active_item_id": "F1",
+                    "status_counts": {"in_progress": 1},
+                    "items": [
+                        {
+                            "item_id": "F1",
+                            "title": "Build task flow",
+                            "sprint_id": "sprint-01",
+                            "status": "in_progress",
+                            "lane": "doing",
+                            "owner_agent": "fullstack-agent",
+                            "assigned_agent": "fullstack-agent",
+                            "delivery_order": 1,
+                            "story_points": 3,
+                            "active": True,
+                            "artifact_refs": ["codex/F1/summary.md"],
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    overview = delivery_overview_for_run(run_dir)
+
+    assert len(overview.features) == 1
+    feature = overview.features[0]
+    assert feature.feature_id == "F1"
+    assert feature.status == "in_progress"
+    assert feature.lane == "doing"
+    assert feature.assigned_agent == "fullstack-agent"
+    assert feature.story_points == 3
+    assert feature.artifact_count == 1
+    assert feature.repair_attempts == 1
+    assert overview.current_work is not None
+    assert overview.current_work.feature_id == "F1"
+    assert overview.current_work.status == "in_progress"
+    assert overview.current_work.assigned_agent == "fullstack-agent"
+
+
+def test_delivery_overview_corrects_completed_handoff_and_stale_assigned_agents(tmp_path):
+    run_dir = tmp_path / "run"
+    (run_dir / "handoff" / "sprints" / "sprint-01").mkdir(parents=True)
+    (run_dir / "handoff" / "sprints" / "sprint-01" / "release-report.html").write_text(
+        "<html>ready</html>",
+        encoding="utf-8",
+    )
+    stale_assigned = "documentation-handoff-agent"
+    (run_dir / ".delivery-state.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run",
+                "stage": "head",
+                "status": "head_delivery_completed",
+                "deployment_status": "deployed",
+                "work_board": {
+                    "sprint_id": "sprint-01",
+                    "active_item_id": "DEPLOY",
+                    "items": [
+                        {
+                            "item_id": "F1",
+                            "title": "Browser Task Tracker Demo",
+                            "sprint_id": "sprint-01",
+                            "status": "qa_passed",
+                            "lane": "done",
+                            "owner_agent": "fullstack-agent",
+                            "assigned_agent": stale_assigned,
+                            "delivery_order": 1,
+                        },
+                        {
+                            "item_id": "DEPLOY",
+                            "title": "Azure Demo Deployment",
+                            "sprint_id": "sprint-01",
+                            "status": "deployed",
+                            "lane": "done",
+                            "owner_agent": "deployment-agent",
+                            "assigned_agent": stale_assigned,
+                            "delivery_order": 2,
+                        },
+                        {
+                            "item_id": "HANDOFF",
+                            "title": "Completion Report",
+                            "sprint_id": "sprint-01",
+                            "status": "pending",
+                            "lane": "todo",
+                            "owner_agent": "documentation-handoff-agent",
+                            "assigned_agent": stale_assigned,
+                            "delivery_order": 3,
+                        },
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    overview = delivery_overview_for_run(run_dir)
+
+    assert overview.handoff_status == "ready"
+    assert overview.completed_feature_count == 3
+    assert overview.total_feature_count == 3
+    statuses = {feature.feature_id: feature.status for feature in overview.features}
+    assert statuses == {
+        "F1": "qa_passed",
+        "DEPLOY": "deployed",
+        "HANDOFF": "handoff_ready",
+    }
+    assert {feature.assigned_agent for feature in overview.features} == {""}
+
+
+def test_delivery_overview_does_not_count_previous_sprint_handoff_for_current_sprint(tmp_path):
+    run_dir = tmp_path / "run"
+    (run_dir / "handoff" / "sprints" / "sprint-01").mkdir(parents=True)
+    (run_dir / "handoff" / "sprints" / "sprint-01" / "release-report.html").write_text(
+        "<html>sprint 1 ready</html>",
+        encoding="utf-8",
+    )
+    (run_dir / ".delivery-state.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run",
+                "stage": "team_lead",
+                "status": "deployment_deployed",
+                "team_lead_sprint_id": "sprint-02",
+                "deployment_status": "deployed",
+                "work_board": {
+                    "sprint_id": "sprint-02",
+                    "items": [
+                        {
+                            "item_id": "DEPLOY",
+                            "title": "Azure Dev Deployment",
+                            "sprint_id": "sprint-02",
+                            "status": "pending",
+                            "lane": "todo",
+                            "owner_agent": "deployment-agent",
+                            "delivery_order": 1,
+                        },
+                        {
+                            "item_id": "QA-LIVE",
+                            "title": "Live Azure Flow And Design Checks",
+                            "sprint_id": "sprint-02",
+                            "status": "pending",
+                            "lane": "todo",
+                            "owner_agent": "qa-agent",
+                            "delivery_order": 2,
+                        },
+                        {
+                            "item_id": "HANDOFF",
+                            "title": "Business-Facing Demo Report",
+                            "sprint_id": "sprint-02",
+                            "status": "pending",
+                            "lane": "todo",
+                            "owner_agent": "documentation-handoff-agent",
+                            "delivery_order": 3,
+                        },
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    overview = delivery_overview_for_run(run_dir)
+
+    assert overview.handoff_status == ""
+    assert overview.completed_feature_count == 1
+    assert {feature.feature_id: feature.status for feature in overview.features} == {
+        "DEPLOY": "deployed",
+        "QA-LIVE": "pending",
+        "HANDOFF": "pending",
+    }
+
+
+def test_delivery_overview_reads_all_team_lead_histories(tmp_path):
+    run_dir = tmp_path / "run"
+    team_lead_dir = run_dir / "team-lead"
+    team_lead_dir.mkdir(parents=True)
+    for sprint_id, target in [("sprint-01", "F1"), ("sprint-02", "F2")]:
+        (team_lead_dir / f"{sprint_id}-history.json").write_text(
+            json.dumps(
+                {
+                    "steps": [
+                        {
+                            "step": 1,
+                            "tool": "run_fullstack",
+                            "target": target,
+                            "reason": f"Implement {target}.",
+                            "result_status": "fullstack_feature_implemented",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    overview = delivery_overview_for_run(run_dir)
+
+    assert [step.step for step in overview.team_lead_steps] == [1, 2]
+    assert [step.target for step in overview.team_lead_steps] == ["F1", "F2"]
+
+
+def test_delivery_overview_recovers_team_lead_history_from_events_when_history_is_truncated(
+    tmp_path,
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "events.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "agent_id": "team-lead-agent",
+                        "event": "team_lead_decision",
+                        "data": {
+                            "decision": {
+                                "tool": "inspect_sprint_status",
+                                "target": "sprint-01",
+                                "reason": "Inspect first pass.",
+                            }
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "agent_id": "team-lead-agent",
+                        "event": "team_lead_tool_completed",
+                        "data": {"status": "running"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "agent_id": "team-lead-agent",
+                        "event": "team_lead_decision",
+                        "data": {
+                            "decision": {
+                                "tool": "run_fullstack",
+                                "target": "US-05",
+                                "reason": "Continue sprint.",
+                            }
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "agent_id": "team-lead-agent",
+                        "event": "team_lead_tool_completed",
+                        "data": {"status": "fullstack_feature_implemented"},
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    team_lead_dir = run_dir / "team-lead"
+    team_lead_dir.mkdir()
+    (team_lead_dir / "sprint-01-history.json").write_text(
+        json.dumps(
+            {
+                "steps": [
+                    {
+                        "tool": "run_fullstack",
+                        "target": "US-05",
+                        "reason": "Continue sprint.",
+                        "result_status": "fullstack_feature_implemented",
+                    }
                 ]
             }
         ),
@@ -223,11 +773,80 @@ def test_delivery_overview_falls_back_to_workflow_plan_before_execution(tmp_path
 
     overview = delivery_overview_for_run(run_dir)
 
-    assert overview.stage == "planning"
-    assert overview.status == "planning_ready"
-    assert overview.completed_feature_count == 0
-    assert overview.total_feature_count == 2
-    assert [feature.status for feature in overview.features] == ["pending", "pending"]
+    assert [step.tool for step in overview.team_lead_steps] == [
+        "inspect_sprint_status",
+        "run_fullstack",
+    ]
+    assert [step.status for step in overview.team_lead_steps] == [
+        "running",
+        "fullstack_feature_implemented",
+    ]
+
+
+def test_delivery_overview_current_work_maps_deployment_stage_to_deploy_item(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / ".delivery-state.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run",
+                "run_dir": str(run_dir),
+                "stage": "team_lead",
+                "status": "team_lead_sprint_started",
+                "agent_call_correlation_id": "DEPLOY",
+                "agent_execution_agent_id": "deployment-agent",
+                "work_board": {
+                    "items": [
+                        {
+                            "item_id": "DEPLOY",
+                            "title": "Azure Dev Deployment",
+                            "status": "pending",
+                            "lane": "todo",
+                            "owner_agent": "deployment-agent",
+                            "assigned_agent": "deployment-agent",
+                            "delivery_order": 1,
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "events.jsonl").write_text(
+        json.dumps(
+            {
+                "agent_id": "team-lead-agent",
+                "event": "team_lead_worker_started",
+                "data": {"node": "deployment", "active_feature_id": None},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "agent_id": "deployment-agent",
+                "event": "deployment_started",
+                "data": {"release_strategy": "release_batch"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    overview = delivery_overview_for_run(run_dir)
+
+    assert overview.current_work is not None
+    assert overview.current_work.stage == "deployment"
+    assert overview.current_work.feature_id == "DEPLOY"
+    assert overview.current_work.title == "Azure Dev Deployment"
+    assert overview.current_work.status == "in_progress"
+    assert overview.current_work.lane == "doing"
+    assert overview.current_work.assigned_agent == "deployment-agent"
+    assert len(overview.features) == 1
+    assert overview.features[0].feature_id == "DEPLOY"
+    assert overview.features[0].active is True
+    assert overview.features[0].status == "in_progress"
+    assert overview.features[0].lane == "doing"
+    assert overview.features[0].assigned_agent == "deployment-agent"
 
 
 def test_console_status_label_keeps_qa_uppercase():
@@ -245,9 +864,10 @@ def test_console_support_runs_codex_execution_through_graph_runtime(tmp_path, mo
         def __init__(self, *, node_order):
             calls["node_order"] = node_order
 
-        def start(self, run_dir_arg, *, run_id, target_project_dir):
+        def start(self, run_dir_arg, *, run_id, requirements_path, target_project_dir):
             calls["run_dir"] = run_dir_arg
             calls["run_id"] = run_id
+            calls["requirements_path"] = requirements_path
             calls["target_project_dir"] = target_project_dir
             (run_dir_arg / "07-execution-summary.md").write_text(
                 "# Execution Summary\n\nStatus: codex completed\n",
@@ -262,6 +882,7 @@ def test_console_support_runs_codex_execution_through_graph_runtime(tmp_path, mo
     assert calls["node_order"] == CONSOLE_EXECUTION_NODE_ORDER
     assert calls["run_dir"] == run_dir
     assert calls["run_id"] == "run"
+    assert calls["requirements_path"] == run_dir / "00-requirements.md"
     assert calls["target_project_dir"] == run_dir / "generated-project"
     assert "Status: codex completed" in summary
 
@@ -400,6 +1021,15 @@ def test_codex_execution_running_detects_feature_scoped_log(tmp_path):
     assert codex_execution_running(run_dir)
 
 
+def test_codex_execution_running_detects_execution_scoped_log(tmp_path):
+    run_dir = tmp_path / "run"
+    execution_log = run_dir / "codex" / "F1" / "exec-run-fullstack-f1" / "execution.log"
+    execution_log.parent.mkdir(parents=True)
+    execution_log.write_text("status=running\n", encoding="utf-8")
+
+    assert codex_execution_running(run_dir)
+
+
 def test_review_completed_accepts_feature_scoped_results(tmp_path):
     run_dir = tmp_path / "run"
     qa_dir = run_dir / "qa"
@@ -410,7 +1040,7 @@ def test_review_completed_accepts_feature_scoped_results(tmp_path):
 
 
 def test_console_support_writes_run_local_env_file(tmp_path):
-    requirements = load_sample_requirements()
+    requirements = load_sample_requirements(filename="multi-service-task-tracker.md")
     run_dir = create_console_run(requirements, tmp_path / "runs")
 
     required = read_required_configuration(run_dir)
@@ -418,31 +1048,31 @@ def test_console_support_writes_run_local_env_file(tmp_path):
         run_dir,
         {
             "OPENAI_API_KEY": "sk-test",
-            "DEFAULT_MODEL": "gpt-test",
+            "AGENT_LLM_MODEL": "gpt-test",
         },
     )
-    write_target_env(run_dir, {"OPENAI_API_KEY": "", "DEFAULT_MODEL": "gpt-next"})
+    write_target_env(run_dir, {"OPENAI_API_KEY": "", "AGENT_LLM_MODEL": "gpt-next"})
 
     env_text = env_path.read_text(encoding="utf-8")
 
-    assert "OPENAI_API_KEY" in required
+    assert required == []
     assert env_path == run_dir / "generated-project" / ".env"
     assert "OPENAI_API_KEY=sk-test" in env_text
-    assert "DEFAULT_MODEL=gpt-next" in env_text
-    assert saved_env_keys(run_dir) == ["DEFAULT_MODEL", "OPENAI_API_KEY"]
+    assert "AGENT_LLM_MODEL=gpt-next" in env_text
+    assert saved_env_keys(run_dir) == ["AGENT_LLM_MODEL", "OPENAI_API_KEY"]
 
 
 def test_console_support_requires_non_default_credentials_before_execution(tmp_path):
-    requirements = load_sample_requirements()
+    requirements = load_sample_requirements(filename="multi-service-task-tracker.md")
     run_dir = create_console_run(requirements, tmp_path / "runs")
 
-    assert missing_required_env_keys(run_dir) == ["OPENAI_API_KEY"]
+    assert missing_required_env_keys(run_dir) == []
 
     env_path = ensure_required_env_defaults(run_dir)
 
     assert env_path == run_dir / "generated-project" / ".env"
-    assert "DEFAULT_MODEL=gpt-4o-mini" in env_path.read_text(encoding="utf-8")
-    assert missing_required_env_keys(run_dir) == ["OPENAI_API_KEY"]
+    assert not env_path.exists()
+    assert missing_required_env_keys(run_dir) == []
 
     write_target_env(run_dir, {"OPENAI_API_KEY": "sk-test"})
 
@@ -450,21 +1080,21 @@ def test_console_support_requires_non_default_credentials_before_execution(tmp_p
 
 
 def test_console_support_validates_proposed_required_credentials(tmp_path):
-    requirements = load_sample_requirements()
+    requirements = load_sample_requirements(filename="multi-service-task-tracker.md")
     run_dir = create_console_run(requirements, tmp_path / "runs")
 
-    assert missing_required_env_keys(run_dir, {"OPENAI_API_KEY": ""}) == ["OPENAI_API_KEY"]
+    assert missing_required_env_keys(run_dir, {"OPENAI_API_KEY": ""}) == []
     assert missing_required_env_keys(run_dir, {"OPENAI_API_KEY": "sk-test"}) == []
 
 
 def test_console_support_can_prefill_credentials_from_root_env(tmp_path):
     (tmp_path / ".env").write_text(
-        "OPENAI_API_KEY=sk-root-test\nDEFAULT_MODEL=gpt-root\n",
+        "OPENAI_API_KEY=sk-root-test\nAGENT_LLM_MODEL=gpt-root\n",
         encoding="utf-8",
     )
 
     assert initial_env_value("OPENAI_API_KEY", tmp_path) == "sk-root-test"
-    assert initial_env_value("DEFAULT_MODEL", tmp_path) == "gpt-root"
+    assert initial_env_value("AGENT_LLM_MODEL", tmp_path) == "gpt-root"
     assert initial_env_value("UNKNOWN_KEY", tmp_path) == ""
 
 
@@ -505,3 +1135,83 @@ def test_codex_execution_running_stays_true_until_graph_reaches_terminal_state(t
     )
 
     assert not codex_execution_running(run_dir)
+
+
+def test_codex_execution_running_continues_after_business_analysis_until_pm(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / ".codex-execution.status").write_text("running\n", encoding="utf-8")
+    (run_dir / ".delivery-state.json").write_text(
+        json.dumps({"status": "business_analysis_completed"}),
+        encoding="utf-8",
+    )
+
+    assert codex_execution_running(run_dir)
+
+
+def test_codex_execution_running_continues_after_architecture_until_pm(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / ".codex-execution.status").write_text("running\n", encoding="utf-8")
+    (run_dir / ".delivery-state.json").write_text(
+        json.dumps({"status": "architecture_completed"}),
+        encoding="utf-8",
+    )
+
+    assert codex_execution_running(run_dir)
+
+
+def test_codex_execution_running_continues_after_project_management_until_team_lead(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / ".codex-execution.status").write_text("running\n", encoding="utf-8")
+    (run_dir / ".delivery-state.json").write_text(
+        json.dumps({"status": "project_management_completed"}),
+        encoding="utf-8",
+    )
+
+    assert codex_execution_running(run_dir)
+
+
+def test_codex_execution_running_continues_after_team_lead_handoff_until_head_terminal(
+    tmp_path,
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / ".codex-execution.status").write_text("running\n", encoding="utf-8")
+    (run_dir / ".delivery-state.json").write_text(
+        json.dumps({"status": "team_lead_sprint_handoff_ready"}),
+        encoding="utf-8",
+    )
+
+    assert codex_execution_running(run_dir)
+
+    (run_dir / ".delivery-state.json").write_text(
+        json.dumps({"status": "head_delivery_completed"}),
+        encoding="utf-8",
+    )
+
+    assert not codex_execution_running(run_dir)
+
+
+def test_workflow_refresh_continues_after_team_lead_until_head_completes(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "events.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"event": "execution_started"}),
+                json.dumps({"event": "handoff_completed"}),
+                json.dumps({"event": "team_lead_sprint_completed"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert workflow_should_refresh(run_dir, execution_is_running=False)
+
+    with (run_dir / "events.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"event": "head_agent_completed"}) + "\n")
+
+    assert not workflow_should_refresh(run_dir, execution_is_running=False)

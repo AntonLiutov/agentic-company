@@ -59,6 +59,72 @@ def test_stream_command_redacts_log_but_returns_real_output(tmp_path: Path):
     assert "***REDACTED***" in log_text
 
 
+def test_stream_command_passes_explicit_environment(tmp_path: Path):
+    log_path = tmp_path / "commands.log"
+
+    result = stream_command(
+        StreamedCommand(
+            command=[
+                sys.executable,
+                "-c",
+                "import os; print(os.environ['AGENTIC_TEST_ENV'])",
+            ],
+            cwd=tmp_path,
+            timeout_seconds=10,
+            log_path=log_path,
+            env={"AGENTIC_TEST_ENV": "visible-to-child"},
+        )
+    )
+
+    assert result.returncode == 0
+    assert "visible-to-child" in result.stdout
+
+
+def test_stream_command_handles_closed_stdin_without_crashing(tmp_path: Path):
+    log_path = tmp_path / "commands.log"
+
+    result = stream_command(
+        StreamedCommand(
+            command=[sys.executable, "-c", "import sys; sys.exit(7)"],
+            cwd=tmp_path,
+            timeout_seconds=10,
+            log_path=log_path,
+            input_text="x" * 1_000_000,
+        )
+    )
+
+    log_text = log_path.read_text(encoding="utf-8")
+
+    assert result.returncode == 7
+    assert "exit_code=7" in log_text
+
+
+def test_stream_command_returns_after_terminal_output_when_process_hangs(tmp_path: Path):
+    log_path = tmp_path / "commands.log"
+
+    result = stream_command(
+        StreamedCommand(
+            command=[
+                sys.executable,
+                "-c",
+                ('import time; print(\'{"type":"turn.completed"}\', flush=True); time.sleep(30)'),
+            ],
+            cwd=tmp_path,
+            timeout_seconds=10,
+            log_path=log_path,
+            terminal_output_predicate=lambda line: "turn.completed" in line,
+            terminal_grace_seconds=0.1,
+        )
+    )
+
+    log_text = log_path.read_text(encoding="utf-8")
+
+    assert result.returncode == 0
+    assert "turn.completed" in result.stdout
+    assert "Terminal output was observed" in log_text
+    assert "exit_code=0" in log_text
+
+
 def test_append_completed_command_log_supports_injected_executors(tmp_path: Path):
     log_path = tmp_path / "commands.log"
 

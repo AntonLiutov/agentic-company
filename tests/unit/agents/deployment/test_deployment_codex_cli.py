@@ -274,6 +274,12 @@ def test_deployment_codex_prompt_does_not_prescribe_topology_or_commands(tmp_pat
     assert "Deployment-owned helper files" in prompt
     assert "project-local `.dockerignore` or `.gitignore`" in prompt
     assert "Do not write QA artifacts under `qa/`" in prompt
+    assert "Verify cloud-readiness assumptions" in prompt
+    assert "Local tests, local Docker smoke checks" in prompt
+    assert "Classify the likely remediation owner" in prompt
+    assert "Fullstack for application code" in prompt
+    assert "Deployment for Azure resources" in prompt
+    assert "remediation_requests" in prompt
     assert "az containerapp create" not in prompt
     assert "docker build -t" not in prompt
 
@@ -337,7 +343,9 @@ def _create_run(tmp_path: Path) -> Path:
     run_dir = tmp_path / "runs" / "deployment-codex"
     target_dir = run_dir / "generated-project"
     target_dir.mkdir(parents=True)
-    (run_dir / "06-execution-request.json").write_text(
+    request_path = run_dir / "delivery/execution-request.json"
+    request_path.parent.mkdir(parents=True, exist_ok=True)
+    request_path.write_text(
         json.dumps(
             {
                 "run_id": run_dir.name,
@@ -351,7 +359,6 @@ def _create_run(tmp_path: Path) -> Path:
                 "expected_outputs": ["README.md", "docker-compose.yml"],
                 "instructions": ["Build the release batch."],
                 "constraints": ["Keep names stable."],
-                "project_archetype": "api-web-compose",
                 "feature_queue": [{"id": "F1", "title": "Create tasks", "delivery_order": 1}],
                 "active_feature": None,
                 "completed_feature_ids": ["F1"],
