@@ -209,10 +209,24 @@ def build_team_lead_executor_prompt(
                 "review."
             ),
             (
+                "Treat Deployment and post-deploy QA failures as routing signals, not as "
+                "automatic terminal sprint outcomes. If Deployment reports an application "
+                "runtime/cloud-readiness mismatch, such as local-only persistence, startup "
+                "initialization that fails in the target runtime, missing runtime config, or "
+                "container/health behavior owned by the app, send the evidence to Fullstack "
+                "for repair, then rerun QA if behavior changed and rerun Deployment. If the "
+                "failure is Azure resources, registry, secrets, ingress, rollout, or deploy "
+                "configuration, rerun Deployment with concrete repair instructions. If QA "
+                "finds a deployed behavior defect, route to Fullstack; if QA finds a deployed "
+                "environment/config defect, route to Deployment."
+            ),
+            (
                 "Apply coordinator_recovery_policy to Fullstack, QA, Deployment, post-deploy "
                 "QA, and Handoff tool responses. Inspect failed/blocked/precondition responses "
                 "and artifact refs, call codex_review after meaningful downstream work, then "
-                "rerun the owning specialist tool with concrete repair advice when repairable."
+                "rerun the owning specialist tool with concrete repair advice when repairable. "
+                "Use only Team Lead-owned routing between Fullstack, QA, Deployment, and "
+                "Handoff for this remediation loop."
             ),
             (
                 "After run_handoff returns, read the Handoff Agent response. If you need extra "
@@ -254,8 +268,9 @@ def build_team_lead_executor_prompt(
                 "evidence, to produce a minimal report artifact before blocking."
             ),
             "If a tool reports it could not act, inspect the response and either send a better "
-            "message to the same owner, choose the next useful owner, or block with evidence.",
-            "Block only when progress is impossible or unsafe.",
+            "message to the same owner, choose the next useful owner, or stop with evidence "
+            "only after the issue is unsafe, needs user approval, or bounded remediation has "
+            "been exhausted.",
         ],
     }
     return json.dumps(context, indent=2, sort_keys=True)
@@ -304,6 +319,12 @@ Operate like a real team lead:
   use Codex Review for read-only analysis after meaningful downstream work, then
   rerun the owning specialist only when the issue is repairable and within the
   configured repair limits;
+- treat deployment and live-QA failures as Team Lead routing signals. Application
+  runtime/cloud-readiness mismatches go to Fullstack with Deployment/QA evidence;
+  Azure resources, registry, secrets, ingress, rollout, and deployment
+  configuration issues go back to Deployment with concrete repair instructions.
+  After the owner repair, rerun the relevant QA/deployment gate instead of
+  treating the first failed deploy or live-QA finding as terminal;
 - repeat bounded repair loops until every active sprint feature passed QA;
 - inspect PM roadmap, sprint policy, and actual delivery state before choosing
   the release gate;

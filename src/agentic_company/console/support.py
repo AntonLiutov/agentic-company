@@ -672,6 +672,7 @@ def delivery_overview_for_run(run_dir: Path) -> DeliveryOverview:
     )
     handoff_status = _handoff_status(run_dir, state)
     _apply_handoff_completion_to_features(features, handoff_status=handoff_status)
+    _apply_current_worker_to_features(features, run_dir, state)
     team_lead_steps = _team_lead_steps(run_dir)
 
     return DeliveryOverview(
@@ -714,7 +715,46 @@ def _team_lead_steps(run_dir: Path) -> list[TeamLeadStep]:
                     status=str(step.get("result_status") or ""),
                 )
             )
+    event_steps = _team_lead_steps_from_events(run_dir)
+    if len(event_steps) > len(normalized):
+        return event_steps
     return normalized
+
+
+def _team_lead_steps_from_events(run_dir: Path) -> list[TeamLeadStep]:
+    steps: list[TeamLeadStep] = []
+    for event in read_events(run_dir):
+        event_name = str(event.get("event") or "")
+        data = event.get("data", {})
+        if not isinstance(data, dict):
+            continue
+        if event_name == "team_lead_decision":
+            decision = data.get("decision", {})
+            if not isinstance(decision, dict):
+                continue
+            steps.append(
+                TeamLeadStep(
+                    step=len(steps) + 1,
+                    tool=str(decision.get("tool") or ""),
+                    target=str(decision.get("target") or ""),
+                    reason=str(decision.get("reason") or ""),
+                    status="",
+                )
+            )
+        elif event_name == "team_lead_tool_completed" and steps:
+            for index in range(len(steps) - 1, -1, -1):
+                step = steps[index]
+                if step.status:
+                    continue
+                steps[index] = TeamLeadStep(
+                    step=step.step,
+                    tool=step.tool,
+                    target=step.target,
+                    reason=step.reason,
+                    status=str(data.get("status") or ""),
+                )
+                break
+    return steps
 
 
 def _current_work(
@@ -723,28 +763,123 @@ def _current_work(
     run_dir: Path,
     state: dict[str, Any],
 ) -> CurrentWork | None:
-    active_feature_id = _optional_str(state.get("active_feature_id"))
+    active_stage = _current_stage_for_run(run_dir, state)
+    active_feature_id = _current_feature_id_for_state(state, features, active_stage)
     feature = _active_feature_progress(features, active_feature_id)
     last_step = steps[-1] if steps else None
-    active_stage = _current_stage_for_run(run_dir, state)
 
     if not feature and not last_step and not active_stage:
         return None
+    status = feature.status if feature else str(state.get("status") or "")
+    lane = feature.lane if feature else ""
+    if feature and _feature_is_current_worker_target(feature, state, active_stage):
+        if status in {"", "pending", "assigned"}:
+            status = "in_progress"
+        if not lane or lane == "todo":
+            lane = "doing"
     return CurrentWork(
         stage=active_stage,
         feature_id=feature.feature_id if feature else active_feature_id or "",
         title=feature.title if feature else "",
-        status=feature.status if feature else str(state.get("status") or ""),
-        lane=feature.lane if feature else "",
+        status=status,
+        lane=lane,
         owner=feature.owner if feature else "",
-        assigned_agent=(
-            feature.assigned_agent if feature else str(state.get("agent_execution_agent_id") or "")
-        ),
+        assigned_agent=_current_work_assigned_agent(feature, state, active_stage),
         last_tool=last_step.tool if last_step else "",
         last_target=last_step.target if last_step else "",
         last_reason=last_step.reason if last_step else "",
         last_status=last_step.status if last_step else "",
     )
+
+
+def _apply_current_worker_to_features(
+    features: list[FeatureProgress],
+    run_dir: Path,
+    state: dict[str, Any],
+) -> None:
+    active_stage = _current_stage_for_run(run_dir, state)
+    active_feature_id = _current_feature_id_for_state(state, features, active_stage)
+    if not active_feature_id:
+        return
+    for feature in features:
+        is_active = feature.feature_id == active_feature_id
+        if not is_active:
+            continue
+        if feature.status in _FEATURE_DONE_STATUSES:
+            feature.active = False
+            continue
+        if not _feature_is_current_worker_target(feature, state, active_stage):
+            continue
+        feature.active = True
+        if feature.status in {"", "pending", "assigned"}:
+            feature.status = "in_progress"
+        if not feature.lane or feature.lane == "todo":
+            feature.lane = "doing"
+        feature.assigned_agent = _current_work_assigned_agent(feature, state, active_stage)
+
+
+def _current_feature_id_for_state(
+    state: dict[str, Any],
+    features: list[FeatureProgress],
+    active_stage: str,
+) -> str | None:
+    active_feature_id = _optional_str(state.get("active_feature_id"))
+    if active_feature_id:
+        return active_feature_id
+
+    correlation_id = _optional_str(state.get("agent_call_correlation_id"))
+    if correlation_id and any(feature.feature_id == correlation_id for feature in features):
+        return correlation_id
+
+    agent_id = str(state.get("agent_execution_agent_id") or "")
+    if agent_id == "deployment-agent" or active_stage == "deployment":
+        return _first_feature_id(features, owner="deployment-agent", preferred_id="DEPLOY")
+    if agent_id == "documentation-handoff-agent" or active_stage == "handoff":
+        return _first_feature_id(features, owner="documentation-handoff-agent")
+    return None
+
+
+def _first_feature_id(
+    features: list[FeatureProgress],
+    *,
+    owner: str,
+    preferred_id: str = "",
+) -> str | None:
+    if preferred_id:
+        for feature in features:
+            if feature.feature_id == preferred_id:
+                return feature.feature_id
+    for feature in features:
+        if feature.owner == owner and feature.status not in _FEATURE_DONE_STATUSES:
+            return feature.feature_id
+    return None
+
+
+def _feature_is_current_worker_target(
+    feature: FeatureProgress,
+    state: dict[str, Any],
+    active_stage: str,
+) -> bool:
+    correlation_id = str(state.get("agent_call_correlation_id") or "")
+    agent_id = str(state.get("agent_execution_agent_id") or "")
+    if correlation_id and feature.feature_id == correlation_id:
+        return True
+    if agent_id and feature.owner == agent_id:
+        return True
+    return (active_stage == "deployment" and feature.owner == "deployment-agent") or (
+        active_stage == "handoff" and feature.owner == "documentation-handoff-agent"
+    )
+
+
+def _current_work_assigned_agent(
+    feature: FeatureProgress | None,
+    state: dict[str, Any],
+    active_stage: str,
+) -> str:
+    execution_agent = str(state.get("agent_execution_agent_id") or "")
+    if feature and _feature_is_current_worker_target(feature, state, active_stage):
+        return execution_agent or feature.owner or feature.assigned_agent
+    return feature.assigned_agent if feature else execution_agent
 
 
 def _active_feature_progress(
@@ -1065,7 +1200,8 @@ def _handoff_status(run_dir: Path, state: dict[str, Any]) -> str:
     status = str(state.get("status") or "")
     if status.startswith("handoff_"):
         return status.removeprefix("handoff_")
-    if _handoff_report_exists(run_dir):
+    sprint_id = _current_handoff_sprint_id(state)
+    if _handoff_report_exists(run_dir, sprint_id=sprint_id):
         return "ready"
     return ""
 
@@ -1091,11 +1227,23 @@ def _stage_from_artifacts(run_dir: Path) -> str:
     return "planning"
 
 
-def _handoff_report_exists(run_dir: Path) -> bool:
+def _handoff_report_exists(run_dir: Path, *, sprint_id: str = "") -> bool:
     handoff_dir = run_dir / "handoff"
-    return (handoff_dir / "release-report.html").exists() or any(
-        handoff_dir.glob("**/release-report.html")
-    )
+    if (handoff_dir / "release-report.html").exists():
+        return True
+    if sprint_id:
+        return (handoff_dir / "sprints" / sprint_id / "release-report.html").exists()
+    return any(handoff_dir.glob("**/release-report.html"))
+
+
+def _current_handoff_sprint_id(state: dict[str, Any]) -> str:
+    sprint_id = str(state.get("team_lead_sprint_id") or "")
+    if sprint_id:
+        return sprint_id
+    board = state.get("work_board", {})
+    if isinstance(board, dict):
+        return str(board.get("sprint_id") or "")
+    return ""
 
 
 def _read_optional_json(path: Path) -> dict[str, Any]:

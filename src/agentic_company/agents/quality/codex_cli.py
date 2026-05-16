@@ -445,6 +445,12 @@ Non-exhaustive QA toolbox:
   visible state, empty/loading/error states, labels and roles, keyboard path,
   responsive layout, text overlap, broken interactions, and visual polish
   relative to the product intent.
+- For deployed or deployment-adjacent validation, classify failures for Team
+  Lead routing. Application behavior, runtime assumptions, startup behavior,
+  persistence behavior, API/UI defects, and container definition issues usually
+  need Fullstack repair. Cloud resources, secrets/configuration, registry,
+  ingress, rollout, scaling, and deployment wiring usually need Deployment
+  repair. Include evidence and the likely owner in the report and fix request.
 - Do not run every possible tool mechanically. Explain why the evidence you
   chose is sufficient, and call out any remaining evidence gaps as risks.
 
@@ -484,7 +490,9 @@ The results JSON must be valid JSON and include at least:
       "evidence": "specific evidence"
     }}
   ],
-  "risks": []
+  "risks": [],
+  "remediation_owner": "fullstack-agent | deployment-agent | none",
+  "remediation_reason": "brief owner-routing explanation when status is failed"
 }}
 ```
 

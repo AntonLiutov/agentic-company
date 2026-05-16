@@ -170,6 +170,10 @@ def test_quality_codex_prompt_suggests_non_exhaustive_toolbox(tmp_path):
     assert "You may use other tools or approaches" in prompt
     assert "Playwright can be useful" in prompt
     assert "evaluate both behavior and user experience" in prompt
+    assert "classify failures for Team\n  Lead routing" in prompt
+    assert "usually\n  need Fullstack repair" in prompt
+    assert "usually need Deployment\n  repair" in prompt
+    assert "remediation_owner" in prompt
     assert "Do not run every possible tool mechanically" in prompt
 
 

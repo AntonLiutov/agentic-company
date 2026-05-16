@@ -114,6 +114,33 @@ def test_status_inspector_runner_reads_and_normalizes_utf8_bom_status_json(tmp_p
     assert not status_path.read_bytes().startswith(b"\xef\xbb\xbf")
 
 
+def test_status_inspector_runner_writes_failed_status_when_json_missing(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    def executor(command, prompt, timeout_seconds, log_path, raw_events_path):
+        return subprocess.CompletedProcess(command, 0, stdout="summary only", stderr="")
+
+    result = StatusInspectorRunner(command_executor=executor).run(
+        StatusInspectionRequest(
+            run_id="run",
+            run_dir=run_dir,
+            requesting_agent="team-lead-agent",
+            scope="sprint",
+            purpose="Inspect sprint status.",
+            status_context={"sprint_id": "sprint-01"},
+            artifact_refs=[],
+            correlation_id="sprint-01",
+        )
+    )
+
+    status_path = run_dir / result.result_artifact
+    persisted = json.loads(status_path.read_text(encoding="utf-8"))
+    assert result.status == "inspection_failed"
+    assert persisted == result.payload
+    assert persisted["errors"] == [f"missing_or_invalid_artifact: {result.result_artifact}"]
+
+
 def test_status_inspection_prompt_requires_json_readback(tmp_path):
     prompt = build_status_inspection_prompt(
         StatusInspectionRequest(

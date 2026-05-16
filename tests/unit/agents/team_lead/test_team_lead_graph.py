@@ -129,6 +129,61 @@ def test_team_lead_graph_exposes_agent_executor_node():
     assert "run_agent_executor" in mermaid
 
 
+def test_team_lead_toolbox_preserves_existing_sprint_history(tmp_path):
+    state = initial_delivery_state(run_id="history-test", run_dir=tmp_path)
+    state["feature_queue"] = [{"id": "F1", "title": "Feature one", "sprint_id": "sprint-01"}]
+    history_path = tmp_path / "team-lead" / "sprint-01-history.json"
+    history_path.parent.mkdir(parents=True)
+    history_path.write_text(
+        json.dumps(
+            {
+                "steps": [
+                    {
+                        "step": 1,
+                        "tool": "inspect_sprint_status",
+                        "target": "sprint-01",
+                        "reason": "Initial readback.",
+                        "result_status": "running",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fullstack_worker(delivery_state):
+        updated = {**delivery_state}
+        updated["status"] = "fullstack_feature_implemented"
+        updated["stage"] = "fullstack"
+        return updated
+
+    toolbox = TeamLeadToolbox(
+        delivery_state=state,
+        sprint={"sprint_id": "sprint-01"},
+        workers=TeamLeadWorkers(
+            fullstack=fullstack_worker,
+            qa=lambda delivery_state: delivery_state,
+            deployment=lambda delivery_state: delivery_state,
+            handoff=lambda delivery_state: delivery_state,
+        ),
+        max_steps=10,
+    )
+
+    toolbox.run_fullstack(target="F1", reason="Continue sprint.", message="Continue sprint.")
+    result = toolbox.result()
+
+    assert [step["tool"] for step in result.history] == [
+        "inspect_sprint_status",
+        "run_fullstack",
+    ]
+    assert [step["step"] for step in result.history] == [1, 2]
+    persisted = json.loads(history_path.read_text(encoding="utf-8"))
+    assert [step["tool"] for step in persisted["steps"]] == [
+        "inspect_sprint_status",
+        "run_fullstack",
+    ]
+
+
 def test_team_lead_prompt_uses_lightweight_handoff_sanity_review(tmp_path):
     state = initial_delivery_state(run_id="prompt-test", run_dir=tmp_path)
     state["artifacts"] = [
@@ -163,6 +218,12 @@ def test_team_lead_prompt_uses_lightweight_handoff_sanity_review(tmp_path):
     assert "status/evidence readback" in prompt
     assert "Do not let the inspector choose the next worker" in prompt
     assert "routing remains your responsibility" in prompt
+    assert "Treat Deployment and post-deploy QA failures as routing signals" in prompt
+    assert (
+        "Application\n  runtime/cloud-readiness mismatches go to Fullstack"
+        in TEAM_LEAD_SYSTEM_PROMPT
+    )
+    assert "Azure resources, registry, secrets, ingress, rollout" in TEAM_LEAD_SYSTEM_PROMPT
     assert "Never end the sprint with block_sprint before requesting" in prompt
     assert "blocked/partial sprint" in TEAM_LEAD_SYSTEM_PROMPT
     assert "failed, blocked, waiting, refused, precondition" in prompt

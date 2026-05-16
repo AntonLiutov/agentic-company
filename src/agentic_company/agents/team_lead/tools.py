@@ -17,7 +17,11 @@ from agentic_company.agents.team_lead.contracts import (
     env_value,
 )
 from agentic_company.platform.agent_contracts import extend_artifacts
-from agentic_company.platform.artifacts import EXECUTION_REQUEST_ARTIFACT, artifact_ref
+from agentic_company.platform.artifacts import (
+    EXECUTION_REQUEST_ARTIFACT,
+    artifact_ref,
+    read_json_object_artifact,
+)
 from agentic_company.platform.codex_review import (
     CodexReviewRequest,
     CodexReviewResult,
@@ -92,7 +96,7 @@ class TeamLeadToolbox:
 
     def __post_init__(self) -> None:
         if self.history is None:
-            self.history = []
+            self.history = _read_history_artifact(self.delivery_state, self.sprint_id)
 
     def run_fullstack(
         self,
@@ -1334,6 +1338,20 @@ def write_history_artifact(
     history: list[dict[str, Any]],
 ) -> None:
     write_json_artifact(state, f"team-lead/{sprint_id}-history.json", {"steps": history})
+
+
+def _read_history_artifact(state: DeliveryState, sprint_id: str) -> list[dict[str, Any]]:
+    path = Path(state["run_dir"]) / f"team-lead/{sprint_id}-history.json"
+    if not path.exists():
+        return []
+    try:
+        payload = read_json_object_artifact(path, normalize_bom=True)
+    except (OSError, json.JSONDecodeError):
+        return []
+    steps = payload.get("steps", [])
+    if not isinstance(steps, list):
+        return []
+    return [dict(step) for step in steps if isinstance(step, dict)]
 
 
 def write_json_artifact(state: DeliveryState, relative_path: str, payload: dict[str, Any]) -> Path:

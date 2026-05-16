@@ -221,6 +221,10 @@ def test_codex_prompt_scopes_active_feature(tmp_path):
     assert "scripts/`, `tests/`, or a clearly" in prompt
     assert "project-local `.gitignore` and `.dockerignore`" in prompt
     assert "platform repository's root `.gitignore`" in prompt
+    assert "Cloud/runtime readiness" in prompt
+    assert "local Docker smoke checks" in prompt
+    assert "configuration-driven\n  persistence" in prompt
+    assert "Deployment or QA evidence showing an application runtime/cloud" in prompt
 
 
 def test_codex_cli_runner_records_failure_summary_when_codex_fails(

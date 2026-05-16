@@ -398,6 +398,19 @@ Environment setup:
 - Runtime commands inside Docker should use `uv run --no-sync ...` after the build has already
   run `uv sync`, so container startup does not repeat dependency checks.
 
+Cloud/runtime readiness:
+- Do not treat successful local tests, local Docker smoke checks, or local filesystem
+  persistence as proof that the app is ready for hosted/containerized deployment.
+- When the product requires shared or durable state, implement configuration-driven
+  persistence so local development/tests can use lightweight local storage while
+  deployed environments can use a backend suitable for the target runtime.
+- Avoid hard-coding local filesystem-only storage when the release requires state to
+  survive refreshes, restarts, revisions, redeployments, or access from multiple users.
+- If Team Lead sends Deployment or QA evidence showing an application runtime/cloud
+  mismatch, repair the generated app accordingly. Examples include persistence support,
+  startup initialization, runtime config, health endpoint behavior, container definition,
+  and application-owned environment assumptions.
+
 Request context:
 {request_context}
 

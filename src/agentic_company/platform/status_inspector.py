@@ -14,7 +14,7 @@ from agentic_company.integrations.codex import (
     build_codex_exec_environment,
     stream_codex_exec_to_log,
 )
-from agentic_company.platform.artifacts import read_json_object_artifact
+from agentic_company.platform.artifacts import read_json_object_artifact, write_json_artifact
 from agentic_company.platform.executions import (
     build_agent_execution_id,
     build_codex_execution_id,
@@ -143,6 +143,7 @@ class StatusInspectorRunner:
                 "status_summary": "Status inspector did not write a valid status JSON artifact.",
                 "errors": [f"missing_or_invalid_artifact: {_relative_path(result_path, request)}"],
             }
+            write_json_artifact(result_path, payload)
         status = str(
             payload.get("status") or ("inspected" if completed.returncode == 0 else "failed")
         )

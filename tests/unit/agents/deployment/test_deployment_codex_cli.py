@@ -274,6 +274,12 @@ def test_deployment_codex_prompt_does_not_prescribe_topology_or_commands(tmp_pat
     assert "Deployment-owned helper files" in prompt
     assert "project-local `.dockerignore` or `.gitignore`" in prompt
     assert "Do not write QA artifacts under `qa/`" in prompt
+    assert "Verify cloud-readiness assumptions" in prompt
+    assert "Local tests, local Docker smoke checks" in prompt
+    assert "Classify the likely remediation owner" in prompt
+    assert "Fullstack for application code" in prompt
+    assert "Deployment for Azure resources" in prompt
+    assert "remediation_requests" in prompt
     assert "az containerapp create" not in prompt
     assert "docker build -t" not in prompt
 

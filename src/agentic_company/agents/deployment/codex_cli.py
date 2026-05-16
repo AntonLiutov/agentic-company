@@ -150,7 +150,11 @@ class DeploymentCodexRunner:
             recommended_next_action=(
                 "Proceed to post-deploy QA."
                 if status == "deployed"
-                else "Resolve deployment findings or environment blockers."
+                else (
+                    "Return findings to Team Lead for remediation routing. Route app/runtime "
+                    "cloud-readiness gaps to Fullstack; route Azure resource, secret, ingress, "
+                    "registry, rollout, and deployment configuration issues back to Deployment."
+                )
             ),
         )
 
@@ -426,14 +430,25 @@ Your job:
 - Understand the application topology from project evidence, especially Docker
   Compose when present. Do not assume fixed service names, ports, folders, or
   container counts unless the generated project proves them.
+- Verify cloud-readiness assumptions for the target runtime before and during
+  release: persistence, filesystem behavior, concurrency, networking, ports,
+  secrets/configuration, scaling, startup initialization, health checks, and
+  restart/revision behavior. Local tests, local Docker smoke checks, and local
+  filesystem persistence are useful evidence, but they do not prove the app is
+  suitable for the cloud target.
 - Decide whether this project can be safely deployed to the configured dev
   environment now.
 - If deployable, create any safe runtime `.env` needed from `.env.example` and
   existing non-secret values, build and start local containers as needed,
   prepare Azure Container Apps resources, deploy the service or services, and
   report public URL(s).
-- If not deployable, block with precise reasons and next actions instead of
-  forcing a brittle deployment.
+- If not deployable or a deployment attempt exposes a runtime mismatch, return
+  precise evidence and a remediation request for Team Lead. Do not treat an
+  application architecture/runtime gap as something Deployment should hide with
+  fragile infrastructure workarounds. Classify the likely remediation owner:
+  Fullstack for application code, runtime configuration, startup behavior,
+  container definition, or persistence support; Deployment for Azure resources,
+  registry/auth, secrets, ingress, rollout, scaling, and deployment config.
 - Deployment is release-batch by default: deploy the already QA-passed feature
   queue once, not feature-by-feature, unless planning explicitly says otherwise.
 - Deployment does not own product correctness. If deployment succeeds, provide
@@ -527,6 +542,14 @@ The result JSON must be valid JSON and include at least:
       "evidence": "what command/evidence supports it"
     }}
   ],
+  "remediation_requests": [
+    {{
+      "owner_agent": "fullstack-agent | deployment-agent",
+      "reason": "why this owner should handle the next repair",
+      "evidence_refs": ["artifact paths or log locations"],
+      "recommended_fix": "concrete repair request for Team Lead to route"
+    }}
+  ],
   "blockers": [],
   "risks": []
 }}
@@ -541,6 +564,8 @@ of evidence conflict or are missing.
 The Markdown artifacts should be operator-readable and explain:
 - inferred topology and why;
 - deployment strategy and resource naming;
+- cloud-readiness assumptions checked and their result;
+- remediation owner and concrete repair request when deployment cannot proceed;
 - commands/actions performed or intentionally skipped;
 - public URL(s), if deployed;
 - post-deploy QA target(s), if deployed;

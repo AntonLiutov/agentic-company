@@ -59,7 +59,7 @@ def test_console_support_loads_multi_service_sample_by_default():
 
     assert "I want a small web app for managing team tasks." in requirements
     assert "current Azure integration" in requirements
-    assert "working app link and a short report" in requirements
+    assert "working app link and a short, business-facing demo report" in requirements
 
 
 def test_artifact_groups_for_run_group_state_artifacts_by_agent(tmp_path):
@@ -609,6 +609,69 @@ def test_delivery_overview_corrects_completed_handoff_and_stale_assigned_agents(
     assert {feature.assigned_agent for feature in overview.features} == {""}
 
 
+def test_delivery_overview_does_not_count_previous_sprint_handoff_for_current_sprint(tmp_path):
+    run_dir = tmp_path / "run"
+    (run_dir / "handoff" / "sprints" / "sprint-01").mkdir(parents=True)
+    (run_dir / "handoff" / "sprints" / "sprint-01" / "release-report.html").write_text(
+        "<html>sprint 1 ready</html>",
+        encoding="utf-8",
+    )
+    (run_dir / ".delivery-state.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run",
+                "stage": "team_lead",
+                "status": "deployment_deployed",
+                "team_lead_sprint_id": "sprint-02",
+                "deployment_status": "deployed",
+                "work_board": {
+                    "sprint_id": "sprint-02",
+                    "items": [
+                        {
+                            "item_id": "DEPLOY",
+                            "title": "Azure Dev Deployment",
+                            "sprint_id": "sprint-02",
+                            "status": "pending",
+                            "lane": "todo",
+                            "owner_agent": "deployment-agent",
+                            "delivery_order": 1,
+                        },
+                        {
+                            "item_id": "QA-LIVE",
+                            "title": "Live Azure Flow And Design Checks",
+                            "sprint_id": "sprint-02",
+                            "status": "pending",
+                            "lane": "todo",
+                            "owner_agent": "qa-agent",
+                            "delivery_order": 2,
+                        },
+                        {
+                            "item_id": "HANDOFF",
+                            "title": "Business-Facing Demo Report",
+                            "sprint_id": "sprint-02",
+                            "status": "pending",
+                            "lane": "todo",
+                            "owner_agent": "documentation-handoff-agent",
+                            "delivery_order": 3,
+                        },
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    overview = delivery_overview_for_run(run_dir)
+
+    assert overview.handoff_status == ""
+    assert overview.completed_feature_count == 1
+    assert {feature.feature_id: feature.status for feature in overview.features} == {
+        "DEPLOY": "deployed",
+        "QA-LIVE": "pending",
+        "HANDOFF": "pending",
+    }
+
+
 def test_delivery_overview_reads_all_team_lead_histories(tmp_path):
     run_dir = tmp_path / "run"
     team_lead_dir = run_dir / "team-lead"
@@ -635,6 +698,155 @@ def test_delivery_overview_reads_all_team_lead_histories(tmp_path):
 
     assert [step.step for step in overview.team_lead_steps] == [1, 2]
     assert [step.target for step in overview.team_lead_steps] == ["F1", "F2"]
+
+
+def test_delivery_overview_recovers_team_lead_history_from_events_when_history_is_truncated(
+    tmp_path,
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "events.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "agent_id": "team-lead-agent",
+                        "event": "team_lead_decision",
+                        "data": {
+                            "decision": {
+                                "tool": "inspect_sprint_status",
+                                "target": "sprint-01",
+                                "reason": "Inspect first pass.",
+                            }
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "agent_id": "team-lead-agent",
+                        "event": "team_lead_tool_completed",
+                        "data": {"status": "running"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "agent_id": "team-lead-agent",
+                        "event": "team_lead_decision",
+                        "data": {
+                            "decision": {
+                                "tool": "run_fullstack",
+                                "target": "US-05",
+                                "reason": "Continue sprint.",
+                            }
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "agent_id": "team-lead-agent",
+                        "event": "team_lead_tool_completed",
+                        "data": {"status": "fullstack_feature_implemented"},
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    team_lead_dir = run_dir / "team-lead"
+    team_lead_dir.mkdir()
+    (team_lead_dir / "sprint-01-history.json").write_text(
+        json.dumps(
+            {
+                "steps": [
+                    {
+                        "tool": "run_fullstack",
+                        "target": "US-05",
+                        "reason": "Continue sprint.",
+                        "result_status": "fullstack_feature_implemented",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    overview = delivery_overview_for_run(run_dir)
+
+    assert [step.tool for step in overview.team_lead_steps] == [
+        "inspect_sprint_status",
+        "run_fullstack",
+    ]
+    assert [step.status for step in overview.team_lead_steps] == [
+        "running",
+        "fullstack_feature_implemented",
+    ]
+
+
+def test_delivery_overview_current_work_maps_deployment_stage_to_deploy_item(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / ".delivery-state.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run",
+                "run_dir": str(run_dir),
+                "stage": "team_lead",
+                "status": "team_lead_sprint_started",
+                "agent_call_correlation_id": "DEPLOY",
+                "agent_execution_agent_id": "deployment-agent",
+                "work_board": {
+                    "items": [
+                        {
+                            "item_id": "DEPLOY",
+                            "title": "Azure Dev Deployment",
+                            "status": "pending",
+                            "lane": "todo",
+                            "owner_agent": "deployment-agent",
+                            "assigned_agent": "deployment-agent",
+                            "delivery_order": 1,
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "events.jsonl").write_text(
+        json.dumps(
+            {
+                "agent_id": "team-lead-agent",
+                "event": "team_lead_worker_started",
+                "data": {"node": "deployment", "active_feature_id": None},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "agent_id": "deployment-agent",
+                "event": "deployment_started",
+                "data": {"release_strategy": "release_batch"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    overview = delivery_overview_for_run(run_dir)
+
+    assert overview.current_work is not None
+    assert overview.current_work.stage == "deployment"
+    assert overview.current_work.feature_id == "DEPLOY"
+    assert overview.current_work.title == "Azure Dev Deployment"
+    assert overview.current_work.status == "in_progress"
+    assert overview.current_work.lane == "doing"
+    assert overview.current_work.assigned_agent == "deployment-agent"
+    assert len(overview.features) == 1
+    assert overview.features[0].feature_id == "DEPLOY"
+    assert overview.features[0].active is True
+    assert overview.features[0].status == "in_progress"
+    assert overview.features[0].lane == "doing"
+    assert overview.features[0].assigned_agent == "deployment-agent"
 
 
 def test_console_status_label_keeps_qa_uppercase():
