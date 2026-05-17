@@ -486,14 +486,16 @@ def test_handoff_agent_maps_handoff_status_and_artifacts(tmp_path):
         run_dir=run_dir,
         target_project_dir=target_dir,
     )
+    state["handoff_scope"] = "sprint_handoff"
+    state["handoff_sprint_id"] = "sprint-01"
     runner = FakeRunner(
         AgentRunResult(
             agent_id="handoff-codex-agent",
             status="handoff_ready",
             output_artifacts=[
-                "09-handoff-summary.md",
-                "handoff/release-report.html",
-                "handoff/release-evidence.json",
+                "handoff/sprints/sprint-01/09-handoff-summary.md",
+                "handoff/sprints/sprint-01/release-report.html",
+                "handoff/sprints/sprint-01/release-evidence.json",
             ],
             summary="ready",
         )
@@ -507,19 +509,19 @@ def test_handoff_agent_maps_handoff_status_and_artifacts(tmp_path):
     assert result["completed_nodes"] == ["handoff"]
     assert result["artifacts"] == [
         {
-            "path": "09-handoff-summary.md",
+            "path": "handoff/sprints/sprint-01/09-handoff-summary.md",
             "kind": "handoff",
             "owner_agent": "handoff-codex-agent",
             "visibility": "user",
         },
         {
-            "path": "handoff/release-report.html",
+            "path": "handoff/sprints/sprint-01/release-report.html",
             "kind": "handoff",
             "owner_agent": "handoff-codex-agent",
             "visibility": "user",
         },
         {
-            "path": "handoff/release-evidence.json",
+            "path": "handoff/sprints/sprint-01/release-evidence.json",
             "kind": "handoff",
             "owner_agent": "handoff-codex-agent",
             "visibility": "user",

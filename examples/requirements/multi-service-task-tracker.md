@@ -14,15 +14,15 @@ through these statuses:
 - `Blocked`
 - `In progress`
 - `In review`
-- `In deployment`
 - `Resolved`
 - `Closed`
 
-The board should be comfortable to use when there are many tasks, with scrollable
-columns or a scrollable task area. Each task should show who it is assigned to
-and a user-friendly date and time for the latest status change, for example
-`May 16, 2026, 14:35`. A simple status history is useful if it can be added
-without making the app complex.
+The board should be comfortable to use when there are many tasks. The task board
+or main task area should work as one scrollable workspace, so users can browse a
+large board smoothly while keeping the status layout easy to understand. Each
+task should show who it is assigned to and a user-friendly date and time for the
+latest status change, for example `May 16, 2026, 14:35`. A simple status history
+is useful if it can be added without making the app complex.
 
 Users should be able to filter the board by assignee, including tasks assigned
 to a specific user and tasks assigned to `No one`.
@@ -35,6 +35,19 @@ Please make the design modern, clear, and polished enough for a demo showcase.
 Use internet research to reference strong examples of lightweight task-management
 and productivity app design, then create an interface that feels immediately
 useful, attractive, and easy to understand.
+
+Use a refined dark product palette: a near-black ink foundation, layered graphite
+panels, cool slate borders, bright cyan primary actions, and soft violet or
+indigo highlights for focus, selection, and active states. Keep any warm colors
+subtle and reserved for warnings or important status signals. The result should
+feel premium, crisp, energetic, and demo-worthy while still being readable and
+comfortable for real task work.
+
+Use color intentionally: task cards should be easy to scan, status columns should
+be visually distinct without becoming noisy, selected filters and active states
+should be obvious, and timestamps and assignee labels should remain highly
+readable. Use subtle depth, borders, spacing, and hover states to make the board
+feel polished on both desktop and mobile.
 
 This is for an internal demo, so please keep it simple. I do not need passwords,
 roles, complex permissions, notifications, comments, file attachments, or a full

@@ -183,7 +183,7 @@ def _write_quality_execution_request(
         model=(
             agent_env_value("QUALITY_CODEX_MODEL", delivery_state)
             or agent_env_value("AGENT_CODEX_MODEL", delivery_state)
-            or "gpt-5.5"
+            or "gpt-5.3-codex"
         ),
         input_artifacts=_quality_input_artifacts(delivery_state),
         expected_outputs=[

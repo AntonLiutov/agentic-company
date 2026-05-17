@@ -43,6 +43,12 @@ class DeliveryState(TypedDict):
     team_lead_sprint_id: NotRequired[str]
     agent_call_message_id: NotRequired[str | None]
     agent_call_correlation_id: NotRequired[str | None]
+    handoff_scope: NotRequired[str]
+    handoff_sprint_id: NotRequired[str]
+    handoff_output_dir: NotRequired[str]
+    handoff_expected_outputs: NotRequired[list[str]]
+    final_project_report: NotRequired[str]
+    final_project_artifacts: NotRequired[list[str]]
     codex_threads_by_agent: NotRequired[dict[str, str]]
 
 

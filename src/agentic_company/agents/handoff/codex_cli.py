@@ -12,6 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from agentic_company.agents.handoff.contracts import (
+    FINAL_PROJECT_REPORT_SCOPE,
+    SPRINT_HANDOFF_SCOPE,
+    HandoffContractPaths,
+    handoff_contract_paths_for_scope,
+)
 from agentic_company.integrations.codex import (
     DEFAULT_CODEX_SANDBOX,
     build_codex_exec_command,
@@ -27,7 +33,6 @@ from agentic_company.platform.executions import (
     extract_codex_thread_id,
 )
 from agentic_company.platform.messages import (
-    AgentMessageStore,
     render_incoming_messages_for_prompt,
 )
 from agentic_company.platform.models import AgentRunResult, ExecutionRequest
@@ -43,21 +48,11 @@ HANDOFF_STATUSES = {"ready", "blocked", "failed", "unknown"}
 HANDOFF_SUMMARY_MARKDOWN = "09-handoff-summary.md"
 HANDOFF_REPORT_HTML = "handoff/release-report.html"
 HANDOFF_EVIDENCE_JSON = "handoff/release-evidence.json"
-SPRINT_SCOPE_PATTERN = re.compile(r"\bsprint[-_\s]?\d+\b", re.IGNORECASE)
 
 CommandExecutor = Callable[
     [Sequence[str], str, int, Path, Path],
     subprocess.CompletedProcess[str],
 ]
-
-
-@dataclass(frozen=True, slots=True)
-class HandoffContractPaths:
-    """Canonical handoff artifact paths for one handoff scope."""
-
-    summary: str
-    html: str
-    evidence: str
 
 
 @dataclass(slots=True)
@@ -369,6 +364,13 @@ Platform execution id:
 Execution intent:
 {request.execution_intent or "(not provided)"}
 
+Handoff scope contract:
+- handoff_scope: {request.handoff_scope or "(missing)"}
+- handoff_sprint_id: {request.handoff_sprint_id or "(none)"}
+- handoff_output_dir: {request.handoff_output_dir or "(not provided)"}
+- handoff_expected_outputs:
+{json.dumps(request.handoff_expected_outputs, indent=2)}
+
 Release context:
 - Feature queue and acceptance criteria are in upstream planning artifacts and
   the current delivery execution request.
@@ -472,53 +474,20 @@ The evidence JSON must be valid JSON and include at least:
 ```
 
 If the handoff is ready, the Markdown and HTML should be understandable by a
-non-engineering stakeholder. If this is a sprint handoff, keep it scoped to that
-sprint. If this is a project/final handoff, consolidate the completed sprint
-handoffs and project-level evidence. If blocked, failed, or unknown, explain
-exactly which evidence prevents client-ready handoff and what should happen
-next.
+non-engineering stakeholder. For `sprint_handoff`, keep it scoped to the named
+sprint only. For `final_project_report`, consolidate completed sprint handoffs
+and project-level evidence. If blocked, failed, or unknown, explain exactly
+which evidence prevents client-ready handoff and what should happen next.
 {repair_note}
 """
 
 
 def handoff_contract_paths(request: ExecutionRequest, run_dir: Path) -> HandoffContractPaths:
-    """Return scoped handoff artifact paths for the current Handoff request."""
+    """Return scoped handoff artifact paths from the explicit Handoff request."""
 
-    message = (
-        AgentMessageStore(run_dir).get(request.parent_message_id)
-        if request.parent_message_id
-        else None
-    )
-    explicit_scope_text = " ".join(
-        part
-        for part in [
-            request.execution_intent,
-            request.active_feature.get("id") if request.active_feature else "",
-            message.correlation_id if message else "",
-        ]
-        if part
-    )
-    if SPRINT_SCOPE_PATTERN.search(explicit_scope_text):
-        sprint_id = _handoff_sprint_id(explicit_scope_text, request)
-        return HandoffContractPaths(
-            summary=f"handoff/sprints/{sprint_id}/09-handoff-summary.md",
-            html=f"handoff/sprints/{sprint_id}/release-report.html",
-            evidence=f"handoff/sprints/{sprint_id}/release-evidence.json",
-        )
-
-    normalized = explicit_scope_text.lower()
-    if any(token in normalized for token in ("project handoff", "final handoff", "whole project")):
-        return HandoffContractPaths(
-            summary="handoff/project/09-handoff-summary.md",
-            html="handoff/project/release-report.html",
-            evidence="handoff/project/release-evidence.json",
-        )
-
-    sprint_id = _handoff_sprint_id(explicit_scope_text, request)
-    return HandoffContractPaths(
-        summary=f"handoff/sprints/{sprint_id}/09-handoff-summary.md",
-        html=f"handoff/sprints/{sprint_id}/release-report.html",
-        evidence=f"handoff/sprints/{sprint_id}/release-evidence.json",
+    return handoff_contract_paths_for_scope(
+        request.handoff_scope,
+        sprint_id=request.handoff_sprint_id,
     )
 
 
@@ -586,7 +555,11 @@ def _execution_id(request: ExecutionRequest) -> str:
     return build_agent_execution_id(
         run_id=request.run_id,
         agent_id=HANDOFF_CODEX_AGENT_ID,
-        target=request.active_feature.get("id") if request.active_feature else "sprint",
+        target=(
+            request.handoff_sprint_id
+            if request.handoff_scope == SPRINT_HANDOFF_SCOPE
+            else FINAL_PROJECT_REPORT_SCOPE
+        ),
         intent=request.execution_intent or "handoff",
     )
 
@@ -656,17 +629,6 @@ def _write_contract_failure_artifacts(
         encoding="utf-8",
     )
     return f"{report}\nHANDOFF_STATUS: failed\n"
-
-
-def _handoff_sprint_id(scope_text: str, request: ExecutionRequest) -> str:
-    match = SPRINT_SCOPE_PATTERN.search(scope_text)
-    if match:
-        return match.group(0).lower().replace("_", "-").replace(" ", "-")
-    for feature in request.feature_queue:
-        sprint_id = str(feature.get("sprint_id") or "").strip()
-        if sprint_id:
-            return sprint_id
-    return "sprint-01"
 
 
 def _handoff_recovery_candidates(

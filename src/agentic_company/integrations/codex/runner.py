@@ -18,10 +18,15 @@ CODEX_UV_CACHE_DIR_ENV = "AGENTIC_CODEX_UV_CACHE_DIR"
 CODEX_DENO_DIR_ENV = "AGENTIC_CODEX_DENO_DIR"
 CODEX_NPM_CACHE_ENV = "AGENTIC_CODEX_NPM_CACHE"
 CODEX_REASONING_EFFORT_ENV = "AGENTIC_CODEX_REASONING_EFFORT"
+CODEX_SERVICE_TIER_ENV = "AGENTIC_CODEX_SERVICE_TIER"
+CODEX_API_KEY_ENV = "CODEX_API_KEY"
+DEFAULT_CODEX_MODEL = "gpt-5.3-codex"
 DEFAULT_CODEX_SANDBOX = "danger-full-access"
-DEFAULT_CODEX_REASONING_EFFORT = "high"
+DEFAULT_CODEX_REASONING_EFFORT = "medium"
+DEFAULT_CODEX_SERVICE_TIER = "fast"
 VALID_CODEX_SANDBOXES = {"read-only", "workspace-write", "danger-full-access"}
 VALID_CODEX_REASONING_EFFORTS = {"low", "medium", "high", "xhigh"}
+VALID_CODEX_SERVICE_TIERS = {"fast", "standard"}
 
 
 def build_codex_exec_command(
@@ -120,6 +125,10 @@ def codex_exec_config_args_from_env() -> list[str]:
         "--config",
         f'model_reasoning_effort="{codex_reasoning_effort_from_env()}"',
     ]
+    service_tier = codex_service_tier_from_env()
+    if service_tier == "fast":
+        config_args.extend(["--config", 'service_tier="fast"'])
+
     inherit_env = os.getenv(CODEX_INHERIT_ENV_ENV, "1").strip().lower()
     if inherit_env in {"0", "false", "no", "off"}:
         return config_args
@@ -140,10 +149,25 @@ def codex_reasoning_effort_from_env() -> str:
     return configured
 
 
+def codex_service_tier_from_env() -> str:
+    configured = os.getenv(CODEX_SERVICE_TIER_ENV, DEFAULT_CODEX_SERVICE_TIER).strip()
+    if not configured:
+        return DEFAULT_CODEX_SERVICE_TIER
+    if configured not in VALID_CODEX_SERVICE_TIERS:
+        allowed = ", ".join(sorted(VALID_CODEX_SERVICE_TIERS))
+        raise ValueError(f"{CODEX_SERVICE_TIER_ENV} must be one of: {allowed}")
+    return configured
+
+
 def build_codex_exec_environment(target_project_dir: Path) -> dict[str, str]:
     """Build the environment inherited by Codex specialist subprocesses."""
 
     env = _codex_subprocess_env()
+    if not env.get(CODEX_API_KEY_ENV, "").strip():
+        raise RuntimeError(
+            f"{CODEX_API_KEY_ENV} is required for npm Codex CLI execution. "
+            "Set it explicitly in the repo .env or process environment."
+        )
     env.setdefault(
         "UV_CACHE_DIR",
         env.get(CODEX_UV_CACHE_DIR_ENV, str(target_project_dir / ".uv-cache")),
@@ -163,6 +187,7 @@ def _codex_subprocess_env() -> dict[str, str]:
     """Build host-tool environment inherited by Codex specialist subprocesses."""
 
     env = dict(os.environ)
+    _prepend_repo_local_node_to_path(env)
     if "AZURE_CONFIG_DIR" not in env:
         azure_config = Path.home() / ".azure"
         if azure_config.exists():
@@ -173,6 +198,40 @@ def _codex_subprocess_env() -> dict[str, str]:
         env["DOCKER_CLI_PLUGIN_EXTRA_DIRS"] = os.pathsep.join(plugin_dirs)
 
     return env
+
+
+def _prepend_repo_local_node_to_path(env: dict[str, str]) -> None:
+    node_bin_dir = _repo_local_node_bin_dir()
+    if node_bin_dir is None:
+        return
+
+    path_key = "Path" if os.name == "nt" else "PATH"
+    existing_path = env.get(path_key) or env.get("PATH") or ""
+    path_parts = [part for part in existing_path.split(os.pathsep) if part]
+    if str(node_bin_dir) not in path_parts:
+        env[path_key] = os.pathsep.join([str(node_bin_dir), *path_parts])
+
+
+def _repo_local_node_bin_dir(repo_root: Path | None = None) -> Path | None:
+    root = repo_root or Path(__file__).resolve().parents[4]
+    node_root = root / "ops" / "codex-npm-smoke" / ".tools" / "node"
+    if os.name == "nt":
+        candidates = sorted(
+            node_root.glob("node-v*-win-*"),
+            key=lambda path: path.name,
+            reverse=True,
+        )
+        for candidate in candidates:
+            if (candidate / "node.exe").exists():
+                return candidate
+        return None
+
+    candidates = sorted(node_root.glob("node-v*-linux-*"), key=lambda path: path.name, reverse=True)
+    for candidate in candidates:
+        bin_dir = candidate / "bin"
+        if (bin_dir / "node").exists():
+            return bin_dir
+    return None
 
 
 def _codex_host_tool_dirs() -> list[str]:

@@ -4,6 +4,13 @@
 
 Goal: make the repo safe to move, archive, and deploy without local noise.
 
+Status: completed for the current demo branch. Local run folders, environment
+files, virtualenvs, smoke outputs, npm Codex installs, Node downloads, and cache
+directories are ignored and left local. `runs/` is not deleted as part of this
+workstream; the repo requirement is that those artifacts do not become tracked
+or appear as source changes after demo runs. Tracked files were checked for
+known secret/internal-value patterns before closing this stream.
+
 Tasks:
 
 | ID | Task | Owner | Acceptance |
@@ -16,6 +23,12 @@ Tasks:
 ## Workstream B: VM Preparation
 
 Goal: make the platform runnable on a clean VM.
+
+Status: completed for the current demo VM. The VM has the required runtime
+tools, a systemd-managed console service, Docker access for the VM user, Azure
+CLI with managed identity login, and a private `.env` with demo deployment
+defaults. Exact cloud identifiers and public URLs must stay in private
+environment files or validation evidence, not committed docs.
 
 Tasks:
 
@@ -30,18 +43,33 @@ Tasks:
 
 Goal: remove workstation/VS Code dependency for Codex usage.
 
+Status: completed for the current demo VM. Codex runs through the local npm
+package under `ops/codex-npm-smoke/`, uses `CODEX_API_KEY`, and does not depend
+on the VS Code extension binary or interactive ChatGPT login.
+
 Tasks:
 
 | ID | Task | Owner | Acceptance |
 | --- | --- | --- | --- |
-| DVR-C1 | Document npm Codex install | DevOps | `npm install -g @openai/codex` path is documented |
-| DVR-C2 | Document API-key auth | DevOps | `OPENAI_API_KEY` stdin login path is documented |
-| DVR-C3 | Add startup/preflight check for Codex | Developer | Failure message says exactly how to install/login |
-| DVR-C4 | Test `codex exec` on VM | DevOps | Minimal non-interactive command succeeds and logs version/session evidence |
+| DVR-C1 | Document npm Codex install | DevOps | Local `@openai/codex` install under `ops/codex-npm-smoke/.codex-npm/` is documented |
+| DVR-C2 | Document API-key auth | DevOps | `CODEX_API_KEY` setup is documented; no legacy alias is required |
+| DVR-C3 | Add startup/preflight check for Codex | Developer | Smoke script fails clearly if npm Codex, Node, web search, or `CODEX_API_KEY` is missing |
+| DVR-C4 | Test `codex exec` on VM | DevOps | Non-interactive smoke succeeds and writes ignored evidence under `ops/codex-npm-smoke/outputs/` |
 
 ## Workstream D: VM Run Validation
 
 Goal: prove the same flow runs outside the development workstation.
+
+Status: completed for the current demo VM without rerunning the expensive E2E
+flow. VM `ruff`, format check, and `pytest` passed. The accepted VM run completed
+through Head with deployed app evidence, post-deploy QA passed, no recorded
+blockers, screenshots/browser evidence, deployment refs, and handoff refs
+captured in VM-local ignored artifacts. The public demo URL and cloud resource
+details are intentionally not committed to this public repository; they remain
+available in VM-local run evidence and Azure. Residual note: Azure Container Apps
+served the live app successfully, but revision metadata/logs showed a SQLite
+database-lock startup issue on one revision, so PostgreSQL remains the preferred
+durable shared persistence path for follow-up hardening.
 
 Tasks:
 
@@ -87,4 +115,3 @@ Tasks:
 5. Capture screenshots.
 6. Prepare presentation and video materials.
 7. Start web console implementation in a separate branch if time remains.
-

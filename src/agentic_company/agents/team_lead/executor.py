@@ -242,14 +242,15 @@ def build_team_lead_executor_prompt(
                 "the inspector says can_complete_sprint=true."
             ),
             (
-                "Every sprint gets its own sprint handoff. Use the current sprint id as the "
-                "run_handoff target, and tell Handoff this is a sprint-scoped handoff. Keep "
-                "that sprint handoff request scoped only to the sprint. The sprint handoff "
+                "Every sprint gets its own sprint handoff. Call run_handoff with "
+                "handoff_scope='sprint_handoff' and sprint_id set to the current sprint id. "
+                "Keep that sprint handoff request scoped only to the sprint. The sprint handoff "
                 "response must return artifact_refs; those refs are the evidence passed "
                 "upstream. If the current sprint is the final planned sprint or no later "
-                "sprint has pending work, make a separate run_handoff call with an explicit "
-                "project/final target after the sprint handoff is accepted. That project/final "
-                "handoff must also return artifact_refs. Only call complete_sprint after actual "
+                "sprint has pending work, make a separate run_handoff call with "
+                "handoff_scope='final_project_report' and an empty sprint_id after the sprint "
+                "handoff is accepted. That project/final handoff must also return artifact_refs. "
+                "Only call complete_sprint after actual "
                 "Handoff-owned sprint/project evidence refs are available and accepted. "
                 "Do not create or request wrapper folders, alias paths, duplicate reports, "
                 "or copied files when the Handoff Agent already returned readable refs. "
@@ -345,10 +346,13 @@ Operate like a real team lead:
 - for local-only/no-deployment sprints, request handoff from local QA evidence
   after active sprint work is done;
 - sanity-check the handoff response and returned artifact refs before accepting it;
-- create one sprint-scoped handoff for every sprint using the current sprint id,
+- create one sprint-scoped handoff for every sprint by calling `run_handoff`
+  with `handoff_scope="sprint_handoff"` and `sprint_id` set to the current
+  sprint id,
   and treat the returned artifact_refs as the sprint evidence passed upstream;
-- on the final planned sprint, make a separate Handoff call with an explicit
-  project/final target after the sprint handoff is accepted, require returned
+- on the final planned sprint, make a separate Handoff call with
+  `handoff_scope="final_project_report"` and empty `sprint_id` after the sprint
+  handoff is accepted, require returned
   artifact_refs for that project handoff, then accept that project handoff too;
 - use actual Handoff-owned artifact refs as the contract. Do not request
   duplicate Team Lead wrapper folders, alias reports, or copied files merely to
@@ -380,15 +384,15 @@ implementation, QA, deployment, or handoff artifacts.
 
 Handoff review protocol:
 - after active sprint work and required gates are done, call `run_handoff` for
-  the current sprint target and make clear it is a sprint-scoped handoff;
+  `handoff_scope="sprint_handoff"` and the current `sprint_id`;
 - if a required gate is blocked, still call `run_handoff` for the current sprint
-  target before `block_sprint`; ask Handoff to produce a blocked/partial sprint
+  scope before `block_sprint`; ask Handoff to produce a blocked/partial sprint
   report with completed work, QA evidence, blocker evidence, and next steps;
 - inspect the Handoff Agent response and returned artifact refs;
 - if the response is clear and artifacts are present, accept those actual refs;
 - for the final planned sprint only, call `run_handoff` again with a separate
-  project/final handoff target, inspect/accept that response's actual refs, and
-  only then call `inspect_sprint_status` and `complete_sprint`;
+  `handoff_scope="final_project_report"` request, inspect/accept that response's
+  actual refs, and only then call `inspect_sprint_status` and `complete_sprint`;
 - when calling `complete_sprint`, ensure the Team Lead response/result carries
   the accepted handoff artifact refs back to Head Agent;
 - if artifacts/status are unclear or mismatched, call `codex_review` with the
@@ -420,9 +424,19 @@ def langchain_tools(toolbox: TeamLeadToolbox) -> list[Callable[..., str]]:
         """Delegate post-deployment release QA to the QA Agent."""
         return toolbox.run_post_deploy_qa(target or None, reason, message)
 
-    def run_handoff(target: str = "", reason: str = "", message: str = "") -> str:
-        """Delegate sprint handoff report creation to the Handoff Agent."""
-        return toolbox.run_handoff(target or None, reason, message)
+    def run_handoff(
+        handoff_scope: str,
+        sprint_id: str = "",
+        reason: str = "",
+        message: str = "",
+    ) -> str:
+        """Delegate handoff packaging using an explicit scope contract.
+
+        Use handoff_scope="sprint_handoff" with sprint_id for sprint reports.
+        Use handoff_scope="final_project_report" with empty sprint_id for the
+        final project report.
+        """
+        return toolbox.run_handoff(handoff_scope, sprint_id, reason, message)
 
     def codex_review(
         target_agent: str = "",

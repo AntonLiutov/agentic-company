@@ -26,6 +26,10 @@ class ExecutionRequest:
     execution_intent: str = ""
     parent_message_id: str = ""
     codex_resume_thread_id: str = ""
+    handoff_scope: str = ""
+    handoff_sprint_id: str = ""
+    handoff_output_dir: str = ""
+    handoff_expected_outputs: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)

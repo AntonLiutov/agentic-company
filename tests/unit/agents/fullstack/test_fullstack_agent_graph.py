@@ -227,7 +227,7 @@ def _write_execution_request(
                 "agent_version": "0.1.0",
                 "maturity_level": "L6 Codex Agent",
                 "provider": "codex",
-                "model": "gpt-5.5",
+                "model": "gpt-5.3-codex",
                 "target_project_dir": str(run_dir / "generated-project"),
                 "input_artifacts": ["05-implementation-brief.md"],
                 "expected_outputs": ["api/app.py", "web/app.py"],

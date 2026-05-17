@@ -34,7 +34,7 @@ BUSINESS_ANALYSIS_DIR = "upstream-planning"
 BUSINESS_ANALYSIS_REQUEST = f"{BUSINESS_ANALYSIS_DIR}/business-analysis-request.json"
 BUSINESS_ANALYSIS_MD = f"{BUSINESS_ANALYSIS_DIR}/business-analysis.md"
 BUSINESS_ANALYSIS_JSON = f"{BUSINESS_ANALYSIS_DIR}/business-analysis.json"
-DEFAULT_BUSINESS_ANALYST_MODEL = "gpt-5.5"
+DEFAULT_BUSINESS_ANALYST_MODEL = "gpt-5.3-codex"
 
 BUSINESS_ANALYST_AGENT_SYSTEM_PROMPT = """
 You are the Business Analyst Agent for agentic-company.

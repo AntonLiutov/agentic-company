@@ -98,7 +98,7 @@ The first output should be both human-readable and machine-readable:
 - Keep the first version simple and fast.
 - Do not require Docker Compose for the first local MVP.
 - Use `gpt-4o-mini` as the default model example for generic LLM config.
-- Keep GPT-5.5/Codex as the first serious execution worker direction.
+- Keep gpt-5.3-codex as the first fast execution worker direction.
 - Do not adopt LangChain or LangGraph until the workflow becomes dynamic enough to justify it.
 - Keep agent handoffs explicit through artifacts.
 

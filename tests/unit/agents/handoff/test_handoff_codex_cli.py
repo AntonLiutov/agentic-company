@@ -2,6 +2,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from agentic_company.agents.handoff.codex_cli import (
     HANDOFF_EVIDENCE_JSON,
     HANDOFF_REPORT_HTML,
@@ -11,6 +13,7 @@ from agentic_company.agents.handoff.codex_cli import (
     handoff_contract_paths,
     read_handoff_contract,
 )
+from agentic_company.agents.handoff.contracts import FINAL_PROJECT_REPORT_SCOPE
 from agentic_company.platform.messages import AgentMessage, AgentMessageStore
 from agentic_company.platform.models import ExecutionRequest
 
@@ -144,28 +147,22 @@ def test_handoff_codex_prompt_includes_upstream_agent_message(tmp_path):
     assert "Create the release report for the reviewed sprint scope." in prompt
 
 
-def test_handoff_contract_paths_scope_project_handoff_from_message(tmp_path):
+def test_handoff_contract_paths_use_explicit_final_project_scope(tmp_path):
     run_dir = tmp_path / "run"
     target_dir = run_dir / "generated-project"
     run_dir.mkdir()
-    request = _execution_request(run_dir, target_dir)
-    AgentMessageStore(run_dir).append(
-        AgentMessage(
-            message_id="msg-project",
-            from_agent="team-lead-agent",
-            to_agent="documentation-handoff-agent",
-            intent="request_handoff",
-            content="Create the final project handoff across all completed sprints.",
-            correlation_id="project handoff",
-        )
+    request = _execution_request(
+        run_dir,
+        target_dir,
+        handoff_scope=FINAL_PROJECT_REPORT_SCOPE,
+        handoff_sprint_id="",
     )
-    request.parent_message_id = "msg-project"
 
     paths = handoff_contract_paths(request, run_dir)
 
-    assert paths.summary == "handoff/project/09-handoff-summary.md"
-    assert paths.html == "handoff/project/release-report.html"
-    assert paths.evidence == "handoff/project/release-evidence.json"
+    assert paths.summary == "handoff/project/final/09-handoff-summary.md"
+    assert paths.html == "handoff/project/final/release-report.html"
+    assert paths.evidence == "handoff/project/final/release-evidence.json"
 
 
 def test_handoff_contract_paths_keep_explicit_sprint_scope_over_future_project_note(tmp_path):
@@ -195,6 +192,15 @@ def test_handoff_contract_paths_keep_explicit_sprint_scope_over_future_project_n
     assert paths.evidence == "handoff/sprints/sprint-01/release-evidence.json"
 
 
+def test_handoff_contract_paths_require_explicit_scope(tmp_path):
+    run_dir = tmp_path / "run"
+    target_dir = run_dir / "generated-project"
+    request = _execution_request(run_dir, target_dir, handoff_scope="", handoff_sprint_id="")
+
+    with pytest.raises(ValueError, match="handoff_scope"):
+        handoff_contract_paths(request, run_dir)
+
+
 def test_handoff_contract_accepts_artifacts_without_status_line(tmp_path):
     run_dir = tmp_path / "run"
     target_dir = run_dir / "generated-project"
@@ -222,14 +228,20 @@ def _write_execution_request(run_dir: Path, target_dir: Path) -> None:
     )
 
 
-def _execution_request(run_dir: Path, target_dir: Path) -> ExecutionRequest:
+def _execution_request(
+    run_dir: Path,
+    target_dir: Path,
+    *,
+    handoff_scope: str = "sprint_handoff",
+    handoff_sprint_id: str = "sprint-01",
+) -> ExecutionRequest:
     return ExecutionRequest(
         run_id=run_dir.name,
         agent_id="fullstack-agent",
         agent_version="0.1.0",
         maturity_level="L6 Codex Agent",
         provider="codex",
-        model="gpt-5.5",
+        model="gpt-5.3-codex",
         target_project_dir=str(target_dir),
         input_artifacts=["01-intake-brief.json", "04-workflow-plan.json"],
         expected_outputs=[],
@@ -237,4 +249,22 @@ def _execution_request(run_dir: Path, target_dir: Path) -> ExecutionRequest:
         constraints=[],
         feature_queue=[{"id": "F1", "title": "Create tasks", "delivery_order": 1}],
         completed_feature_ids=["F1"],
+        handoff_scope=handoff_scope,
+        handoff_sprint_id=handoff_sprint_id,
+        handoff_output_dir=(
+            f"handoff/sprints/{handoff_sprint_id}"
+            if handoff_scope == "sprint_handoff"
+            else "handoff/project/final"
+        ),
+        handoff_expected_outputs=[
+            f"handoff/sprints/{handoff_sprint_id}/09-handoff-summary.md",
+            f"handoff/sprints/{handoff_sprint_id}/release-report.html",
+            f"handoff/sprints/{handoff_sprint_id}/release-evidence.json",
+        ]
+        if handoff_scope == "sprint_handoff"
+        else [
+            "handoff/project/final/09-handoff-summary.md",
+            "handoff/project/final/release-report.html",
+            "handoff/project/final/release-evidence.json",
+        ],
     )
