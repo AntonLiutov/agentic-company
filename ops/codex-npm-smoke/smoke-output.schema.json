@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary_markdown", "milan_weather_markdown"],
+  "properties": {
+    "summary_markdown": {
+      "type": "string",
+      "description": "Short business-readable Markdown summary of the repository."
+    },
+    "milan_weather_markdown": {
+      "type": "string",
+      "description": "Markdown weather report for Milan, Italy, including exact date, temperature, conditions, and source link when available."
+    }
+  }
+}

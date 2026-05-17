@@ -220,7 +220,7 @@ class HeadToolbox:
             correlation_id=target or "company-delivery",
             model=agent_env_value("HEAD_STATUS_INSPECTOR_CODEX_MODEL", promoted)
             or agent_env_value("AGENT_CODEX_MODEL", promoted)
-            or "gpt-5.5",
+            or "gpt-5.3-codex",
             execution_id=build_agent_execution_id(
                 run_id=str(promoted["run_id"]),
                 agent_id=HEAD_AGENT_ID,

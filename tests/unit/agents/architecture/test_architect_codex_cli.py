@@ -27,7 +27,7 @@ def test_architecture_prompt_scopes_codex_to_architecture_artifacts(tmp_path):
     )
     request = {
         "run_id": "run",
-        "model": "gpt-5.5",
+        "model": "gpt-5.3-codex",
         "requirements_artifact": "00-requirements.md",
         "input_artifacts": [BUSINESS_ANALYSIS_MD, BUSINESS_ANALYSIS_JSON],
         "expected_outputs": [ARCHITECTURE_MD, ARCHITECTURE_JSON, ARCHITECTURE_MMD],
@@ -106,7 +106,7 @@ def test_architect_codex_runner_maps_valid_contract_to_completed_result(tmp_path
             {
                 "run_id": "run",
                 "agent_id": "architect-agent",
-                "model": "gpt-5.5",
+                "model": "gpt-5.3-codex",
                 "requirements_artifact": "00-requirements.md",
                 "input_artifacts": [BUSINESS_ANALYSIS_MD, BUSINESS_ANALYSIS_JSON],
                 "expected_outputs": [ARCHITECTURE_MD, ARCHITECTURE_JSON, ARCHITECTURE_MMD],

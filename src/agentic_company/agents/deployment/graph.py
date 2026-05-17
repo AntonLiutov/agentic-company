@@ -162,7 +162,7 @@ def _write_deployment_execution_request(run_dir: Path, delivery_state: DeliveryS
         model=(
             agent_env_value("DEPLOYMENT_CODEX_MODEL", delivery_state)
             or agent_env_value("AGENT_CODEX_MODEL", delivery_state)
-            or "gpt-5.5"
+            or "gpt-5.3-codex"
         ),
         input_artifacts=_deployment_input_artifacts(delivery_state),
         expected_outputs=[

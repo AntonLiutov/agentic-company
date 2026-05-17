@@ -10,6 +10,11 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 from uuid import uuid4
 
+from agentic_company.agents.handoff.contracts import (
+    FINAL_PROJECT_REPORT_SCOPE,
+    SPRINT_HANDOFF_SCOPE,
+    handoff_contract_paths_for_scope,
+)
 from agentic_company.agents.registry import route_for_node
 from agentic_company.agents.team_lead.contracts import (
     TeamLeadDecision,
@@ -280,15 +285,36 @@ class TeamLeadToolbox:
 
     def run_handoff(
         self,
-        target: str | None = None,
+        handoff_scope: str,
+        sprint_id: str = "",
         reason: str = "",
         message: str = "",
     ) -> str:
         if limit_response := self._limit_response(message):
             return limit_response
-        return self._run_worker(
-            "run_handoff", target or self.sprint_id, reason, message, self.workers.handoff
-        )
+        try:
+            contract_paths = handoff_contract_paths_for_scope(
+                handoff_scope,
+                sprint_id=sprint_id,
+            )
+        except ValueError as exc:
+            self._record(
+                "run_handoff",
+                handoff_scope or None,
+                reason or "Handoff requested with an invalid scope contract.",
+                message,
+                result_status="team_lead_handoff_contract_invalid",
+            )
+            return self._tool_response(f"Handoff not run: {exc}")
+
+        target = sprint_id if handoff_scope == SPRINT_HANDOFF_SCOPE else FINAL_PROJECT_REPORT_SCOPE
+        updated = {**self.delivery_state}
+        updated["handoff_scope"] = handoff_scope
+        updated["handoff_sprint_id"] = sprint_id
+        updated["handoff_output_dir"] = str(Path(contract_paths.summary).parent)
+        updated["handoff_expected_outputs"] = contract_paths.as_list()
+        self.delivery_state = cast(DeliveryState, updated)
+        return self._run_worker("run_handoff", target, reason, message, self.workers.handoff)
 
     def codex_review(
         self,
@@ -406,7 +432,7 @@ class TeamLeadToolbox:
             correlation_id=target or self.sprint_id,
             model=env_value("TEAM_LEAD_STATUS_INSPECTOR_CODEX_MODEL", self.delivery_state)
             or env_value("AGENT_CODEX_MODEL", self.delivery_state)
-            or "gpt-5.5",
+            or "gpt-5.3-codex",
             execution_id=build_agent_execution_id(
                 run_id=str(self.delivery_state["run_id"]),
                 agent_id=TEAM_LEAD_AGENT_ID,

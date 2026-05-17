@@ -115,6 +115,10 @@ def load_execution_request(run_dir: Path) -> ExecutionRequest:
         execution_intent=str(payload.get("execution_intent") or ""),
         parent_message_id=str(payload.get("parent_message_id") or ""),
         codex_resume_thread_id=str(payload.get("codex_resume_thread_id") or ""),
+        handoff_scope=str(payload.get("handoff_scope") or ""),
+        handoff_sprint_id=str(payload.get("handoff_sprint_id") or ""),
+        handoff_output_dir=str(payload.get("handoff_output_dir") or ""),
+        handoff_expected_outputs=list(payload.get("handoff_expected_outputs") or []),
     )
 
 
@@ -130,6 +134,10 @@ def build_execution_request_payload(
     target_project_dir: str | None = None,
     active_feature: Mapping[str, Any] | None = None,
     codex_resume_thread_id: str = "",
+    handoff_scope: str = "",
+    handoff_sprint_id: str = "",
+    handoff_output_dir: str = "",
+    handoff_expected_outputs: Sequence[str] | None = None,
     agent_version: str = "0.1.0",
     maturity_level: str = "L6 Codex Agent",
     provider: str = "codex",
@@ -144,7 +152,7 @@ def build_execution_request_payload(
         or delivery_state.get("target_project_dir")
         or str(Path(str(delivery_state["run_dir"])) / "generated-project")
     )
-    return {
+    payload = {
         "run_id": str(delivery_state["run_id"]),
         "agent_id": agent_id,
         "agent_version": agent_version,
@@ -164,6 +172,14 @@ def build_execution_request_payload(
         "parent_message_id": str(delivery_state.get("agent_call_message_id") or ""),
         "codex_resume_thread_id": codex_resume_thread_id,
     }
+    if handoff_scope:
+        payload["handoff_scope"] = handoff_scope
+        payload["handoff_sprint_id"] = handoff_sprint_id
+    if handoff_output_dir:
+        payload["handoff_output_dir"] = handoff_output_dir
+    if handoff_expected_outputs is not None:
+        payload["handoff_expected_outputs"] = list(handoff_expected_outputs)
+    return payload
 
 
 def write_execution_request(run_dir: Path, payload: Mapping[str, Any]) -> None:
@@ -182,6 +198,10 @@ def update_execution_request_context(
     feature_queue: list[dict[str, Any]] | None = None,
     active_feature: dict[str, Any] | None = None,
     completed_feature_ids: list[str] | None = None,
+    handoff_scope: str = "",
+    handoff_sprint_id: str = "",
+    handoff_output_dir: str = "",
+    handoff_expected_outputs: list[str] | None = None,
 ) -> None:
     """Persist the current tool-call execution context into the run request."""
 
@@ -202,4 +222,12 @@ def update_execution_request_context(
         payload["active_feature"] = active_feature
     if completed_feature_ids is not None:
         payload["completed_feature_ids"] = completed_feature_ids
+    if handoff_scope:
+        payload["handoff_scope"] = handoff_scope
+    if handoff_sprint_id or handoff_scope:
+        payload["handoff_sprint_id"] = handoff_sprint_id
+    if handoff_output_dir:
+        payload["handoff_output_dir"] = handoff_output_dir
+    if handoff_expected_outputs is not None:
+        payload["handoff_expected_outputs"] = handoff_expected_outputs
     write_json_artifact(request_path, payload)

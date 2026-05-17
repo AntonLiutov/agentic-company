@@ -11,6 +11,11 @@ from agentic_company.agents.handoff.codex_cli import (
     HANDOFF_CODEX_AGENT_ID,
     HandoffCodexRunner,
 )
+from agentic_company.agents.handoff.contracts import (
+    FINAL_PROJECT_REPORT_SCOPE,
+    SPRINT_HANDOFF_SCOPE,
+    handoff_contract_paths_for_scope,
+)
 from agentic_company.platform.agent_contracts import (
     append_downstream_response,
     artifact_refs,
@@ -136,6 +141,10 @@ def _prepare_context(state: HandoffAgentGraphState) -> HandoffAgentGraphState:
         execution_intent=str(delivery_state.get("agent_execution_intent") or ""),
         parent_message_id=str(delivery_state.get("agent_call_message_id") or ""),
         codex_resume_thread_id=codex_resume_thread_id(delivery_state, HANDOFF_CODEX_AGENT_ID),
+        handoff_scope=str(delivery_state.get("handoff_scope") or ""),
+        handoff_sprint_id=str(delivery_state.get("handoff_sprint_id") or ""),
+        handoff_output_dir=str(delivery_state.get("handoff_output_dir") or ""),
+        handoff_expected_outputs=list(delivery_state.get("handoff_expected_outputs", [])),
     )
     event_log = run_dir / "events.jsonl"
     event_log.parent.mkdir(parents=True, exist_ok=True)
@@ -150,28 +159,28 @@ def _prepare_context(state: HandoffAgentGraphState) -> HandoffAgentGraphState:
 
 
 def _write_handoff_execution_request(run_dir: Path, delivery_state: DeliveryState) -> None:
+    contract_paths = handoff_contract_paths_for_scope(
+        str(delivery_state.get("handoff_scope") or ""),
+        sprint_id=str(delivery_state.get("handoff_sprint_id") or ""),
+    )
     request = build_execution_request_payload(
         delivery_state,
         agent_id=HANDOFF_AGENT_ID,
         model=(
             agent_env_value("HANDOFF_CODEX_MODEL", delivery_state)
             or agent_env_value("AGENT_CODEX_MODEL", delivery_state)
-            or "gpt-5.5"
+            or "gpt-5.3-codex"
         ),
         input_artifacts=_handoff_input_artifacts(delivery_state),
-        expected_outputs=[
-            "09-handoff-summary.md",
-            "handoff/release-report.html",
-            "handoff/release-evidence.json",
-        ],
+        expected_outputs=contract_paths.as_list(),
         instructions=[
             (
                 "Read the current Team Lead request, work board, delivery artifacts, "
                 "QA evidence, deployment results, and prior handoff artifacts."
             ),
             (
-                "Create the requested sprint or project handoff package using the scope "
-                "from the incoming request."
+                "Create the requested handoff package using the explicit handoff_scope, "
+                "handoff_sprint_id, and handoff_expected_outputs from the execution request."
             ),
             "Return explicit artifact refs for every handoff file produced or referenced.",
             (
@@ -185,6 +194,10 @@ def _write_handoff_execution_request(run_dir: Path, delivery_state: DeliveryStat
             "Do not overwrite unrelated handoff scopes; use scope-aware paths when requested.",
         ],
         codex_resume_thread_id=codex_resume_thread_id(delivery_state, HANDOFF_CODEX_AGENT_ID),
+        handoff_scope=str(delivery_state.get("handoff_scope") or ""),
+        handoff_sprint_id=str(delivery_state.get("handoff_sprint_id") or ""),
+        handoff_output_dir=str(Path(contract_paths.summary).parent),
+        handoff_expected_outputs=contract_paths.as_list(),
     )
     write_execution_request(run_dir, request)
 
@@ -261,8 +274,19 @@ def _apply_handoff_result(state: HandoffAgentGraphState) -> HandoffAgentGraphSta
         updated,
         from_agent=HANDOFF_AGENT_ID,
         result=result,
-        default_correlation_id=str(updated.get("team_lead_sprint_id") or ""),
+        default_correlation_id=_handoff_correlation_id(updated),
     )
+    if updated.get("handoff_scope") == FINAL_PROJECT_REPORT_SCOPE and status == "ready":
+        final_artifacts = [
+            path
+            for path in list(updated.get("handoff_expected_outputs", []))
+            if isinstance(path, str) and path
+        ]
+        updated["final_project_report"] = next(
+            (path for path in final_artifacts if path.endswith("/release-report.html")),
+            "handoff/project/final/release-report.html",
+        )
+        updated["final_project_artifacts"] = final_artifacts or list(result.output_artifacts)
     return {**state, "delivery_state": updated}
 
 
@@ -279,6 +303,9 @@ def _handoff_user_prompt(state: DeliveryState) -> str:
             "deployment_status": state.get("deployment_status"),
             "public_urls": state.get("public_urls", []),
             "agent_call_message_id": state.get("agent_call_message_id"),
+            "handoff_scope": state.get("handoff_scope"),
+            "handoff_sprint_id": state.get("handoff_sprint_id"),
+            "handoff_expected_outputs": state.get("handoff_expected_outputs", []),
         },
         indent=2,
         sort_keys=True,
@@ -291,3 +318,11 @@ def _unique_paths(paths: list[str]) -> list[str]:
         if path and path not in unique:
             unique.append(path)
     return unique
+
+
+def _handoff_correlation_id(state: DeliveryState) -> str:
+    if state.get("handoff_scope") == SPRINT_HANDOFF_SCOPE:
+        return str(state.get("handoff_sprint_id") or state.get("team_lead_sprint_id") or "")
+    if state.get("handoff_scope") == FINAL_PROJECT_REPORT_SCOPE:
+        return FINAL_PROJECT_REPORT_SCOPE
+    return str(state.get("agent_call_correlation_id") or state.get("team_lead_sprint_id") or "")

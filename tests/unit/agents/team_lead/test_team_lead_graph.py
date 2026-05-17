@@ -60,7 +60,15 @@ class ScriptedExecutor:
             status_inspector=self.status_inspector,
         )
         for tool, target, reason in self.calls:
-            getattr(toolbox, tool)(target=target, reason=reason, message=reason)
+            if tool == "run_handoff":
+                getattr(toolbox, tool)(
+                    handoff_scope="sprint_handoff",
+                    sprint_id=target or "",
+                    reason=reason,
+                    message=reason,
+                )
+            else:
+                getattr(toolbox, tool)(target=target, reason=reason, message=reason)
         return toolbox.result()
 
 
@@ -494,7 +502,12 @@ def test_complete_sprint_accepts_handoff_artifacts_without_code_enforced_codex_r
         status_inspector=FakeStatusInspector(),
     )
 
-    toolbox.run_handoff(target="sprint-01", reason="Create handoff.", message="Create handoff.")
+    toolbox.run_handoff(
+        handoff_scope="sprint_handoff",
+        sprint_id="sprint-01",
+        reason="Create handoff.",
+        message="Create handoff.",
+    )
     toolbox.inspect_sprint_status(
         target="sprint-01",
         reason="Confirm handoff evidence before completion.",
@@ -550,7 +563,12 @@ def test_team_lead_accepts_second_handoff_version_after_one_codex_review(tmp_pat
         status_inspector=FakeStatusInspector(),
     )
 
-    toolbox.run_handoff(target="sprint-01", reason="Create handoff.", message="Create handoff.")
+    toolbox.run_handoff(
+        handoff_scope="sprint_handoff",
+        sprint_id="sprint-01",
+        reason="Create handoff.",
+        message="Create handoff.",
+    )
     toolbox.codex_review(
         target_agent="documentation-handoff-agent",
         purpose="Review handoff report.",
@@ -560,7 +578,8 @@ def test_team_lead_accepts_second_handoff_version_after_one_codex_review(tmp_pat
         reason="Review handoff.",
     )
     toolbox.run_handoff(
-        target="sprint-01",
+        handoff_scope="sprint_handoff",
+        sprint_id="sprint-01",
         reason="Revise handoff from review.",
         message=reviewer.content,
     )
@@ -975,7 +994,12 @@ def test_team_lead_tools_do_not_block_deployment_or_handoff_by_policy(tmp_path):
         toolbox.run_deployment(target="sprint-01", reason="Try deploy.", message="Deploy.")
     )
     handoff_response = json.loads(
-        toolbox.run_handoff(target="sprint-01", reason="Handoff.", message="Create handoff.")
+        toolbox.run_handoff(
+            handoff_scope="sprint_handoff",
+            sprint_id="sprint-01",
+            reason="Handoff.",
+            message="Create handoff.",
+        )
     )
 
     assert deployment_response["status"] == "initialized"

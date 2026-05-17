@@ -37,7 +37,7 @@ ARCHITECTURE_JSON = f"{ARCHITECTURE_DIR}/architecture.json"
 ARCHITECTURE_MMD = f"{ARCHITECTURE_DIR}/architecture.mmd"
 BUSINESS_ANALYSIS_MD = f"{ARCHITECTURE_DIR}/business-analysis.md"
 BUSINESS_ANALYSIS_JSON = f"{ARCHITECTURE_DIR}/business-analysis.json"
-DEFAULT_ARCHITECT_MODEL = "gpt-5.5"
+DEFAULT_ARCHITECT_MODEL = "gpt-5.3-codex"
 
 ARCHITECT_AGENT_SYSTEM_PROMPT = """
 You are the Architect Agent for agentic-company.

@@ -213,6 +213,21 @@ HANDOFF_ARTIFACTS = [
     ("09-handoff-summary.md", "Handoff summary", "Documentation / Handoff Agent"),
     ("handoff/release-report.html", "Release report", "Documentation / Handoff Agent"),
     ("handoff/release-evidence.json", "Release evidence", "Documentation / Handoff Agent"),
+    (
+        "handoff/project/final/09-handoff-summary.md",
+        "Final project handoff summary",
+        "Documentation / Handoff Agent",
+    ),
+    (
+        "handoff/project/final/release-report.html",
+        "Final project release report",
+        "Documentation / Handoff Agent",
+    ),
+    (
+        "handoff/project/final/release-evidence.json",
+        "Final project release evidence",
+        "Documentation / Handoff Agent",
+    ),
 ]
 
 DEPLOYMENT_DETAIL_ARTIFACTS = [
@@ -1229,6 +1244,8 @@ def _stage_from_artifacts(run_dir: Path) -> str:
 
 def _handoff_report_exists(run_dir: Path, *, sprint_id: str = "") -> bool:
     handoff_dir = run_dir / "handoff"
+    if (handoff_dir / "project" / "final" / "release-report.html").exists():
+        return True
     if (handoff_dir / "release-report.html").exists():
         return True
     if sprint_id:

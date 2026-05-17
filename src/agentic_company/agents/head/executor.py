@@ -347,8 +347,8 @@ was returned by Team Lead as an artifact ref. Codex Review should inspect the
 returned refs and the run-local artifact registry first. If it finds readable
 handoff artifacts that satisfy the delivery evidence, accept them instead of
 asking Team Lead to duplicate or rename files.
-Handoff-owned refs under `handoff/sprints/...` and `handoff/project/...` are
-canonical delivery evidence. Do not require Team Lead to copy them into
+Handoff-owned refs under `handoff/sprints/...` and `handoff/project/final/...`
+are canonical delivery evidence. Do not require Team Lead to copy them into
 `upstream-planning`, create wrapper deliverables files, or publish alias reports
 unless a downstream tool explicitly returned that as its own contract.
 If Team Lead's wording says a sprint or project is complete but the direct

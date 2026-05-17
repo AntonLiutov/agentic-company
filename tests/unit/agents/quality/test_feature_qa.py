@@ -118,7 +118,7 @@ def _create_feature_run(tmp_path: Path) -> tuple[Path, DeliveryState]:
                 "agent_version": "0.1.0",
                 "maturity_level": "L6 Codex Agent",
                 "provider": "codex",
-                "model": "gpt-5.5",
+                "model": "gpt-5.3-codex",
                 "target_project_dir": str(target_dir),
                 "input_artifacts": ["05-implementation-brief.md"],
                 "expected_outputs": ["README.md"],

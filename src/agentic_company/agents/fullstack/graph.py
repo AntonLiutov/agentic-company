@@ -288,7 +288,7 @@ def _write_feature_execution_request(
     request = build_execution_request_payload(
         delivery_state,
         agent_id="fullstack-agent",
-        model=agent_env_value("FULLSTACK_CODEX_MODEL", delivery_state) or "gpt-5.5",
+        model=agent_env_value("FULLSTACK_CODEX_MODEL", delivery_state) or "gpt-5.3-codex",
         input_artifacts=upstream_artifacts,
         expected_outputs=[
             "README.md",

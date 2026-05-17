@@ -161,7 +161,7 @@ def test_delivery_graph_runtime_hydrates_feature_queue_from_existing_execution_r
                 "agent_version": "0.1.0",
                 "maturity_level": "L6 Codex Agent",
                 "provider": "codex",
-                "model": "gpt-5.5",
+                "model": "gpt-5.3-codex",
                 "target_project_dir": str(run_dir / "generated-project"),
                 "input_artifacts": [],
                 "expected_outputs": [],

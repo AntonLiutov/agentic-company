@@ -1,0 +1,6 @@
+.codex-npm/
+.codex-home/
+.npm-cache/
+.tools/
+.env
+outputs/

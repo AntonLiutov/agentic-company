@@ -38,7 +38,7 @@ class CodexReviewRequest:
     artifact_refs: list[str] = field(default_factory=list)
     target_agent: str | None = None
     correlation_id: str | None = None
-    model: str = "gpt-5.5"
+    model: str = "gpt-5.3-codex"
     execution_id: str = ""
     codex_resume_thread_id: str = ""
 

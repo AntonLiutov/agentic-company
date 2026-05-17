@@ -22,7 +22,7 @@ def test_business_analysis_prompt_scopes_codex_to_analysis_artifacts(tmp_path):
     )
     request = {
         "run_id": "run",
-        "model": "gpt-5.5",
+        "model": "gpt-5.3-codex",
         "requirements_artifact": "00-requirements.md",
         "expected_outputs": [BUSINESS_ANALYSIS_MD, BUSINESS_ANALYSIS_JSON],
         "incoming_messages": (
@@ -106,7 +106,7 @@ def test_business_analyst_codex_runner_maps_valid_contract_to_completed_result(t
             {
                 "run_id": "run",
                 "agent_id": "business-analyst-agent",
-                "model": "gpt-5.5",
+                "model": "gpt-5.3-codex",
                 "requirements_artifact": "00-requirements.md",
                 "expected_outputs": [BUSINESS_ANALYSIS_MD, BUSINESS_ANALYSIS_JSON],
                 "codex_resume_thread_id": "",

@@ -47,7 +47,7 @@ class StatusInspectionRequest:
     status_context: Mapping[str, Any]
     artifact_refs: list[str] = field(default_factory=list)
     correlation_id: str = ""
-    model: str = "gpt-5.5"
+    model: str = "gpt-5.3-codex"
     execution_id: str = ""
     codex_resume_thread_id: str = ""
 

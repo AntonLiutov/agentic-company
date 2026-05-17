@@ -81,11 +81,12 @@ def test_codex_cli_runner_invokes_codex_exec_with_planning_context(
     assert not (run_dir / "09-handoff-summary.md").exists()
     assert not (run_dir / "12-deployment-request.md").exists()
     assert command[:2] == ["codex-test", "exec"]
-    assert command[command.index("--model") + 1] == "gpt-5.5"
+    assert command[command.index("--model") + 1] == "gpt-5.3-codex"
     config_values = [
         command[index + 1] for index, value in enumerate(command) if value == "--config"
     ]
-    assert 'model_reasoning_effort="high"' in config_values
+    assert 'model_reasoning_effort="medium"' in config_values
+    assert 'service_tier="fast"' in config_values
     assert "shell_environment_policy.inherit=all" in config_values
     assert command[command.index("--sandbox") + 1] == DEFAULT_CODEX_SANDBOX
     assert command[command.index("--cd") + 1] == str(run_dir / "generated-project")
@@ -281,7 +282,64 @@ def test_codex_cli_runner_can_retry_after_failed_summary(tmp_path, write_sample_
     assert calls == 2
 
 
-def test_resolve_codex_binary_falls_back_to_latest_chatgpt_extension(tmp_path):
+def test_resolve_codex_binary_prefers_explicit_env_override(tmp_path):
+    npm_bin = tmp_path / "ops" / "codex-npm-smoke" / ".codex-npm" / "node_modules" / ".bin"
+    npm_bin.mkdir(parents=True)
+    codex = npm_bin / "codex.cmd"
+    codex.write_text("", encoding="utf-8")
+
+    resolved = resolve_codex_binary(
+        env={"CODEX_BINARY": "C:\\custom\\codex.exe"},
+        repo_root=tmp_path,
+        path_lookup=lambda _name: "ignored",
+    )
+
+    assert resolved == "C:\\custom\\codex.exe"
+
+
+def test_resolve_codex_binary_auto_prefers_repo_local_npm_codex(tmp_path):
+    npm_bin = tmp_path / "ops" / "codex-npm-smoke" / ".codex-npm" / "node_modules" / ".bin"
+    npm_bin.mkdir(parents=True)
+    codex = npm_bin / "codex.cmd"
+    codex.write_text("", encoding="utf-8")
+
+    resolved = resolve_codex_binary(
+        env={},
+        repo_root=tmp_path,
+        path_lookup=lambda _name: "ignored",
+    )
+
+    assert resolved == str(codex)
+
+
+def test_resolve_codex_binary_uses_chatgpt_extension_when_mode_is_extension(tmp_path):
+    extension_root = (
+        tmp_path
+        / ".vscode"
+        / "extensions"
+        / "openai.chatgpt-26.422.30944-win32-x64"
+        / "bin"
+        / "windows-x86_64"
+    )
+    extension_root.mkdir(parents=True)
+    codex = extension_root / "codex.exe"
+    codex.write_text("", encoding="utf-8")
+
+    npm_bin = tmp_path / "ops" / "codex-npm-smoke" / ".codex-npm" / "node_modules" / ".bin"
+    npm_bin.mkdir(parents=True)
+    (npm_bin / "codex.cmd").write_text("", encoding="utf-8")
+
+    resolved = resolve_codex_binary(
+        env={"AGENTIC_CODEX_BINARY_MODE": "extension"},
+        repo_root=tmp_path,
+        home=tmp_path,
+        path_lookup=lambda _name: None,
+    )
+
+    assert resolved == str(codex)
+
+
+def test_resolve_codex_binary_uses_chatgpt_extension_when_legacy_flag_is_allowed(tmp_path):
     extension_root = (
         tmp_path
         / ".vscode"
@@ -295,7 +353,8 @@ def test_resolve_codex_binary_falls_back_to_latest_chatgpt_extension(tmp_path):
     codex.write_text("", encoding="utf-8")
 
     resolved = resolve_codex_binary(
-        env={},
+        env={"AGENTIC_CODEX_ALLOW_EXTENSION_BINARY": "1"},
+        repo_root=tmp_path,
         home=tmp_path,
         path_lookup=lambda _name: None,
     )
@@ -303,14 +362,40 @@ def test_resolve_codex_binary_falls_back_to_latest_chatgpt_extension(tmp_path):
     assert resolved == str(codex)
 
 
-def test_resolve_codex_binary_prefers_env_override(tmp_path):
+def test_resolve_codex_binary_rejects_invalid_mode(tmp_path):
+    try:
+        resolve_codex_binary(
+            env={"AGENTIC_CODEX_BINARY_MODE": "spaceship"},
+            repo_root=tmp_path,
+            home=tmp_path,
+            path_lookup=lambda _name: None,
+        )
+    except ValueError as exc:
+        assert "AGENTIC_CODEX_BINARY_MODE must be one of" in str(exc)
+    else:
+        raise AssertionError("Expected invalid Codex binary mode to fail fast.")
+
+
+def test_resolve_codex_binary_skips_chatgpt_extension_by_default(tmp_path):
+    extension_root = (
+        tmp_path
+        / ".vscode"
+        / "extensions"
+        / "openai.chatgpt-26.422.30944-win32-x64"
+        / "bin"
+        / "windows-x86_64"
+    )
+    extension_root.mkdir(parents=True)
+    (extension_root / "codex.exe").write_text("", encoding="utf-8")
+
     resolved = resolve_codex_binary(
-        env={"CODEX_BINARY": "C:\\custom\\codex.exe"},
+        env={},
+        repo_root=tmp_path,
         home=tmp_path,
-        path_lookup=lambda _name: "ignored",
+        path_lookup=lambda _name: None,
     )
 
-    assert resolved == "C:\\custom\\codex.exe"
+    assert resolved == "codex"
 
 
 def test_parse_codex_event_sections_handles_completed_agent_messages_and_file_changes():
@@ -431,7 +516,9 @@ def test_append_raw_codex_event_redacts_secret_values(tmp_path):
                 "type": "item.completed",
                 "item": {
                     "type": "command_execution",
-                    "aggregated_output": "OPENAI_API_KEY=sk-secretsecretsecret",
+                    "aggregated_output": (
+                        "OPENAI_API_KEY=sk-secretsecretsecret\nCODEX_API_KEY=sk-codexsecretsecret"
+                    ),
                 },
             }
         ),
@@ -440,6 +527,7 @@ def test_append_raw_codex_event_redacts_secret_values(tmp_path):
     raw_text = raw_path.read_text(encoding="utf-8")
 
     assert "sk-secretsecretsecret" not in raw_text
+    assert "sk-codexsecretsecret" not in raw_text
     assert "***REDACTED***" in raw_text
 
 
@@ -472,7 +560,7 @@ def _execution_request(
         agent_version="0.1.0",
         maturity_level="L6 Codex Agent",
         provider="codex",
-        model="gpt-5.5",
+        model="gpt-5.3-codex",
         target_project_dir=str(run_dir / "generated-project"),
         input_artifacts=["05-implementation-brief.md"],
         expected_outputs=["api/app.py"],

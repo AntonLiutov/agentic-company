@@ -409,13 +409,13 @@ def test_head_agent_coordinates_business_analyst_and_architect_through_messages(
         worker_state["artifacts"] = [
             *worker_state.get("artifacts", []),
             {
-                "path": "handoff/project/09-handoff-summary.md",
+                "path": "handoff/project/final/09-handoff-summary.md",
                 "kind": "handoff",
                 "owner_agent": "handoff-codex-agent",
                 "visibility": "user",
             },
             {
-                "path": "handoff/project/release-report.html",
+                "path": "handoff/project/final/release-report.html",
                 "kind": "handoff",
                 "owner_agent": "handoff-codex-agent",
                 "visibility": "user",
@@ -429,8 +429,8 @@ def test_head_agent_coordinates_business_analyst_and_architect_through_messages(
                 status="team_lead_sprint_handoff_ready",
                 output_artifacts=[
                     "team-lead/sprint-01-result.json",
-                    "handoff/project/09-handoff-summary.md",
-                    "handoff/project/release-report.html",
+                    "handoff/project/final/09-handoff-summary.md",
+                    "handoff/project/final/release-report.html",
                 ],
                 summary="Sprint delivered.",
             ),
