@@ -1,0 +1,47 @@
+﻿{% extends "base.html" %}
+{% block title %}Settings &middot; Agentic Delivery Lab{% endblock %}
+{% block page_title %}Settings{% endblock %}
+{% block content %}
+  <section class="grid two">
+    <section class="panel">
+      <h2>OpenAI</h2>
+      {% if credential %}
+        <p class="success">Saved key: {{ credential.masked_value }}</p>
+        {% if credential.storage_mode == "local_demo" %}
+          <p class="hint">Saved for this workspace. The full key is never shown.</p>
+        {% endif %}
+      {% else %}
+        <p class="hint">Add a key before starting private projects.</p>
+      {% endif %}
+      <form class="settings-key-form" method="post" action="/settings/openai">
+        <label>OpenAI API key<input name="api_key" type="password" autocomplete="off" placeholder="sk-..."></label>
+        <button class="primary" type="submit">Save</button>
+      </form>
+      {% if credential %}
+        <form class="settings-delete-form" method="post" action="/settings/openai/delete">
+          <button class="danger" type="submit">Delete key</button>
+        </form>
+      {% endif %}
+    </section>
+    <div class="panel">
+      <h2>Defaults</h2>
+      <div class="settings-list">
+        <p><strong>Planning</strong><span>gpt-4.1</span></p>
+        <p><strong>Building</strong><span>gpt-5.3-codex / Medium</span></p>
+        <p><strong>Speed</strong><span>Standard</span></p>
+      </div>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>Readiness</h2>
+    <div class="status-strip">
+      {% for check in checks %}
+        <div class="status-dot-row" title="{{ check.detail }}">
+          <span class="status-dot {{ 'ok' if check.ok == 'true' else 'bad' }}"></span>
+          <span>{{ check.name }}</span>
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+{% endblock %}
+

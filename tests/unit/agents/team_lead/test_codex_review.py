@@ -116,9 +116,7 @@ def test_codex_review_prompt_is_generic_and_uses_question_as_source_of_truth(tmp
             purpose="Review handoff.",
             question="Is the handoff business aligned?",
             artifact_refs=[
-                "09-handoff-summary.md",
-                "handoff/sprints/sprint-02/client-report.html",
-                "handoff/release-evidence.json",
+                "handoff/sprints/sprint-02/release-report.html",
             ],
         )
     )

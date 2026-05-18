@@ -23,7 +23,7 @@ def test_handoff_agent_graph_creates_execution_request_when_missing(tmp_path):
     assert request["agent_id"] == "documentation-handoff-agent"
     assert request["handoff_scope"] == "sprint_handoff"
     assert request["handoff_sprint_id"] == "sprint-01"
-    assert "handoff/sprints/sprint-01/09-handoff-summary.md" in request["expected_outputs"]
+    assert request["expected_outputs"] == ["handoff/sprints/sprint-01/release-report.html"]
     assert runner.agent_ids == ["documentation-handoff-agent"]
     assert result["delivery_state"]["status"] == "handoff_ready"
 
@@ -36,9 +36,7 @@ def test_handoff_agent_graph_records_final_project_report_refs(tmp_path):
     state["handoff_sprint_id"] = ""
     runner = RequestReadingHandoffRunner(
         output_artifacts=[
-            "handoff/project/final/09-handoff-summary.md",
             "handoff/project/final/release-report.html",
-            "handoff/project/final/release-evidence.json",
         ]
     )
 
@@ -50,11 +48,7 @@ def test_handoff_agent_graph_records_final_project_report_refs(tmp_path):
     request = json.loads((run_dir / "delivery" / "execution-request.json").read_text())
     delivery_state = result["delivery_state"]
     assert request["handoff_scope"] == "final_project_report"
-    assert request["expected_outputs"] == [
-        "handoff/project/final/09-handoff-summary.md",
-        "handoff/project/final/release-report.html",
-        "handoff/project/final/release-evidence.json",
-    ]
+    assert request["expected_outputs"] == ["handoff/project/final/release-report.html"]
     assert delivery_state["final_project_report"] == ("handoff/project/final/release-report.html")
     assert delivery_state["final_project_artifacts"] == request["expected_outputs"]
 
@@ -63,8 +57,7 @@ class RequestReadingHandoffRunner:
     def __init__(self, output_artifacts: list[str] | None = None) -> None:
         self.agent_ids: list[str] = []
         self.output_artifacts = output_artifacts or [
-            "handoff/sprints/sprint-01/09-handoff-summary.md",
-            "handoff/sprints/sprint-01/release-evidence.json",
+            "handoff/sprints/sprint-01/release-report.html",
         ]
 
     def run(self, run_dir):

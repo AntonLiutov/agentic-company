@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ def write_event(
     data: dict[str, object],
 ) -> None:
     payload = {
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "timestamp": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "run_id": run_id,
         "agent_id": agent_id,
         "event": event,

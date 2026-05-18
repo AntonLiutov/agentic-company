@@ -656,10 +656,10 @@ def _is_handoff_release_report(path: str) -> bool:
 
 
 def _latest_handoff_summary_path(run_dir: Path) -> Path:
-    scoped = sorted((run_dir / "handoff").glob("**/09-handoff-summary.md"))
+    scoped = sorted((run_dir / "handoff").glob("**/release-report.html"))
     if scoped:
         return scoped[-1]
-    return run_dir / "09-handoff-summary.md"
+    return run_dir / "handoff" / "release-report.html"
 
 
 def _deployment_stage(

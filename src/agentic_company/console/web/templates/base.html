@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Agentic Delivery Lab{% endblock %}</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', path='favicon.svg') }}?v={{ asset_version }}">
+    <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v={{ asset_version }}">
+  </head>
+  <body id="top" class="{% block body_class %}{% endblock %}">
+    {% if user %}
+      <aside class="sidebar">
+        <a class="brand" href="/dashboard">
+          <span class="brand-mark">{% include "partials_logo.html" %}</span>
+          <span class="brand-text">
+            <strong>Agentic Delivery Lab</strong>
+            <small>AI delivery workspace</small>
+          </span>
+        </a>
+        <button class="sidebar-toggle" type="button" data-sidebar-toggle title="Collapse sidebar">Menu</button>
+        <nav class="nav">
+          <a href="/dashboard" data-short="D" title="Dashboard">Dashboard</a>
+          <a href="/projects" data-short="P" title="Projects">Projects</a>
+          <a href="/projects/new" data-short="N" title="New Project">New Project</a>
+          <a href="/public-demo" data-short="Show" title="Showcase">Showcase</a>
+          <a href="/agents" data-short="A" title="Agents">Agents</a>
+          <a href="/artifacts" data-short="R" title="Reports">Reports</a>
+          <a href="/settings" data-short="S" title="Settings">Settings</a>
+        </nav>
+        <form class="logout" method="post" action="/logout">
+          <button type="submit">Logout</button>
+        </form>
+      </aside>
+      <main class="app-main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">AI delivery workspace</p>
+            <h1>{% block page_title %}Agentic Delivery Lab{% endblock %}</h1>
+          </div>
+          <div class="user-pill">{{ user.username }}</div>
+        </header>
+        {% block content %}{% endblock %}
+        <button class="scroll-top" type="button" data-scroll-top title="Back to top" aria-label="Back to top">↑</button>
+      </main>
+    {% else %}
+      <main class="auth-main">
+        {% block auth_content %}{% endblock %}
+      </main>
+    {% endif %}
+    <script src="{{ url_for('static', path='app.js') }}?v={{ asset_version }}"></script>
+    {% block scripts %}{% endblock %}
+  </body>
+</html>

@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}{{ artifact_title }} &middot; Agentic Delivery Lab{% endblock %}
+{% block page_title %}Report{% endblock %}
+{% block content %}
+  <section class="panel artifact-view">
+    <div class="panel-heading">
+      <div>
+        <p class="eyebrow">{{ payload.kind|title }} report</p>
+        <h2>{{ artifact_title }}</h2>
+      </div>
+      <div class="button-row">
+        {% if payload.kind == "html" %}
+          <a class="button" href="?raw=1" target="_blank" rel="noopener">Open report</a>
+        {% endif %}
+        <a class="button" href="javascript:history.back()">Back</a>
+      </div>
+    </div>
+    {% if payload.kind == "markdown" %}
+      <div class="markdown-body">{{ payload.content|safe }}</div>
+    {% elif payload.kind == "csv" %}
+      <div class="table-scroll">
+        <table>
+          {% for row in payload.rows %}
+            <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+          {% endfor %}
+        </table>
+      </div>
+    {% elif payload.kind == "html" %}
+      <iframe
+        class="html-preview"
+        sandbox="allow-popups allow-popups-to-escape-sandbox"
+        srcdoc="{{ ('<base target=&quot;_blank&quot;>' ~ payload.content)|e }}"
+      ></iframe>
+    {% elif payload.kind == "mermaid" %}
+      <div class="mermaid-frame">
+        <pre class="mermaid">{{ payload.content }}</pre>
+      </div>
+    {% else %}
+      <pre>{{ payload.content }}</pre>
+    {% endif %}
+  </section>
+{% endblock %}
+{% block scripts %}
+  {% if payload.kind == "mermaid" %}
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({
+        startOnLoad: true,
+        theme: "dark",
+        securityLevel: "strict",
+        flowchart: { curve: "basis", htmlLabels: true }
+      });
+    </script>
+  {% endif %}
+{% endblock %}

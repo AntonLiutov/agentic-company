@@ -196,7 +196,7 @@ def _write_handoff_execution_request(run_dir: Path, delivery_state: DeliveryStat
         codex_resume_thread_id=codex_resume_thread_id(delivery_state, HANDOFF_CODEX_AGENT_ID),
         handoff_scope=str(delivery_state.get("handoff_scope") or ""),
         handoff_sprint_id=str(delivery_state.get("handoff_sprint_id") or ""),
-        handoff_output_dir=str(Path(contract_paths.summary).parent),
+        handoff_output_dir=str(Path(contract_paths.html).parent),
         handoff_expected_outputs=contract_paths.as_list(),
     )
     write_execution_request(run_dir, request)
@@ -243,7 +243,7 @@ def _apply_handoff_result(state: HandoffAgentGraphState) -> HandoffAgentGraphSta
     delivery_state = state["delivery_state"]
     event_log = Path(state["run_dir"]) / "events.jsonl"
     primary_artifact = (
-        result.output_artifacts[0] if result.output_artifacts else "09-handoff-summary.md"
+        result.output_artifacts[0] if result.output_artifacts else "release-report.html"
     )
     write_event(
         event_log,

@@ -18,6 +18,7 @@ from agentic_company.console.support import (
     missing_required_env_keys,
     read_events,
     read_required_configuration,
+    request_codex_execution_stop,
     review_completed,
     run_codex_execution,
     saved_env_keys,
@@ -609,6 +610,64 @@ def test_delivery_overview_corrects_completed_handoff_and_stale_assigned_agents(
     assert {feature.assigned_agent for feature in overview.features} == {""}
 
 
+def test_delivery_overview_closes_stale_review_items_after_successful_final_delivery(tmp_path):
+    run_dir = tmp_path / "run"
+    (run_dir / "handoff" / "sprints" / "sprint-01").mkdir(parents=True)
+    (run_dir / "handoff" / "sprints" / "sprint-01" / "release-report.html").write_text(
+        "<html>ready</html>",
+        encoding="utf-8",
+    )
+    (run_dir / ".delivery-state.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run",
+                "stage": "head",
+                "status": "head_delivery_completed",
+                "qa_status": "passed",
+                "deployment_status": "deployed",
+                "active_feature_id": "F2",
+                "blockers": [],
+                "work_board": {
+                    "sprint_id": "sprint-01",
+                    "active_item_id": "F2",
+                    "items": [
+                        {
+                            "item_id": "F1",
+                            "title": "Completed feature",
+                            "sprint_id": "sprint-01",
+                            "status": "qa_passed",
+                            "lane": "done",
+                            "owner_agent": "fullstack-agent",
+                            "delivery_order": 1,
+                        },
+                        {
+                            "item_id": "F2",
+                            "title": "Stale review feature",
+                            "sprint_id": "sprint-01",
+                            "status": "implemented",
+                            "lane": "review",
+                            "active": True,
+                            "owner_agent": "fullstack-agent",
+                            "assigned_agent": "documentation-handoff-agent",
+                            "delivery_order": 2,
+                        },
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    overview = delivery_overview_for_run(run_dir)
+    stale = next(feature for feature in overview.features if feature.feature_id == "F2")
+
+    assert overview.completed_feature_count == 2
+    assert stale.status == "qa_passed"
+    assert stale.lane == "done"
+    assert stale.active is False
+    assert stale.assigned_agent == ""
+
+
 def test_delivery_overview_does_not_count_previous_sprint_handoff_for_current_sprint(tmp_path):
     run_dir = tmp_path / "run"
     (run_dir / "handoff" / "sprints" / "sprint-01").mkdir(parents=True)
@@ -1019,6 +1078,17 @@ def test_codex_execution_running_detects_feature_scoped_log(tmp_path):
     feature_log.write_text("status=running\n", encoding="utf-8")
 
     assert codex_execution_running(run_dir)
+
+
+def test_request_codex_execution_stop_marks_run_not_running(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / ".codex-execution.status").write_text("running\n", encoding="utf-8")
+
+    request_codex_execution_stop(run_dir)
+
+    assert not codex_execution_running(run_dir)
+    assert (run_dir / ".stop-requested").exists()
 
 
 def test_codex_execution_running_detects_execution_scoped_log(tmp_path):

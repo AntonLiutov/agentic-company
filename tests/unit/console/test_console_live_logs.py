@@ -81,6 +81,28 @@ def test_friendly_log_entries_include_delivery_graph_events(tmp_path: Path):
     assert "Delivery graph completed" in rendered
 
 
+def test_friendly_log_entries_do_not_drop_completed_demo_history(tmp_path: Path):
+    events = [
+        {
+            "timestamp": f"2026-04-27T10:{minute // 60:02d}:{minute % 60:02d}",
+            "agent_id": "head-agent",
+            "event": "head_agent_completed",
+            "data": {"status": "done"},
+        }
+        for minute in range(220)
+    ]
+
+    entries = friendly_log_entries(
+        events,
+        [],
+        qa_log=tmp_path / "missing-qa.log",
+        deployment_log=tmp_path / "missing-deployment.log",
+    )
+
+    assert len(entries) == 220
+    assert "2026-04-27 10:00:00 - Head Agent completed" in entries[0]
+
+
 def test_friendly_log_entries_include_team_lead_decisions(tmp_path: Path):
     rendered = "\n".join(
         friendly_log_entries(

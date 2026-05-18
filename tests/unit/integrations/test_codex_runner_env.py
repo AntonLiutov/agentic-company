@@ -72,6 +72,7 @@ def test_codex_exec_command_allows_host_cli_config_dirs(monkeypatch, tmp_path: P
 
 def test_codex_exec_environment_requires_codex_api_key(monkeypatch, tmp_path: Path):
     monkeypatch.delenv("CODEX_API_KEY", raising=False)
+    monkeypatch.delenv("AGENTIC_CODEX_BINARY_MODE", raising=False)
 
     try:
         build_codex_exec_environment(tmp_path)
@@ -81,9 +82,23 @@ def test_codex_exec_environment_requires_codex_api_key(monkeypatch, tmp_path: Pa
         raise AssertionError("Expected CODEX_API_KEY requirement to fail fast.")
 
 
+def test_codex_exec_environment_reads_run_local_env(monkeypatch, tmp_path: Path):
+    run_dir = tmp_path / "run"
+    target_dir = run_dir / "generated-project"
+    target_dir.mkdir(parents=True)
+    (target_dir / ".env").write_text("CODEX_API_KEY=sk-run-local\n", encoding="utf-8")
+    monkeypatch.delenv("CODEX_API_KEY", raising=False)
+    monkeypatch.delenv("AGENTIC_CODEX_BINARY_MODE", raising=False)
+
+    env = build_codex_exec_environment(target_dir)
+
+    assert env["CODEX_API_KEY"] == "sk-run-local"
+
+
 def test_codex_exec_environment_sets_tool_caches_when_api_key_exists(monkeypatch, tmp_path: Path):
     target_dir = tmp_path / "generated-project"
     monkeypatch.setenv("CODEX_API_KEY", "sk-test")
+    monkeypatch.delenv("AGENTIC_CODEX_BINARY_MODE", raising=False)
 
     env = build_codex_exec_environment(target_dir)
 
@@ -91,6 +106,39 @@ def test_codex_exec_environment_sets_tool_caches_when_api_key_exists(monkeypatch
     assert env["UV_CACHE_DIR"] == str(target_dir / ".uv-cache")
     assert env["DENO_DIR"] == str(target_dir / ".deno-cache")
     assert env["npm_config_cache"] == str(target_dir / ".npm-cache")
+
+
+def test_codex_exec_environment_strips_api_key_for_extension_mode(monkeypatch, tmp_path: Path):
+    target_dir = tmp_path / "generated-project"
+    monkeypatch.setenv("CODEX_API_KEY", "sk-test")
+    monkeypatch.setenv("AGENTIC_CODEX_BINARY_MODE", "extension")
+
+    env = build_codex_exec_environment(target_dir)
+
+    assert "CODEX_API_KEY" not in env
+    assert env["UV_CACHE_DIR"] == str(target_dir / ".uv-cache")
+
+
+def test_codex_exec_environment_strips_api_key_for_extension_binary(monkeypatch, tmp_path: Path):
+    target_dir = tmp_path / "generated-project"
+    monkeypatch.setenv("CODEX_API_KEY", "sk-test")
+    monkeypatch.delenv("AGENTIC_CODEX_BINARY_MODE", raising=False)
+    monkeypatch.setenv(
+        "CODEX_BINARY",
+        str(
+            tmp_path
+            / ".vscode"
+            / "extensions"
+            / "openai.chatgpt-test"
+            / "bin"
+            / "windows-x86_64"
+            / "codex.exe"
+        ),
+    )
+
+    env = build_codex_exec_environment(target_dir)
+
+    assert "CODEX_API_KEY" not in env
 
 
 def test_repo_local_node_bin_dir_detects_portable_node(tmp_path: Path):
@@ -109,7 +157,7 @@ def test_repo_local_node_bin_dir_detects_portable_node(tmp_path: Path):
     assert _repo_local_node_bin_dir(tmp_path) == expected
 
 
-def test_codex_exec_command_defaults_to_medium_reasoning_and_fast_service_tier(
+def test_codex_exec_command_defaults_to_medium_reasoning_and_standard_service_tier(
     monkeypatch, tmp_path: Path
 ):
     monkeypatch.delenv("AGENTIC_CODEX_REASONING_EFFORT", raising=False)
@@ -125,9 +173,9 @@ def test_codex_exec_command_defaults_to_medium_reasoning_and_fast_service_tier(
     )
 
     assert codex_reasoning_effort_from_env() == "medium"
-    assert codex_service_tier_from_env() == "fast"
+    assert codex_service_tier_from_env() == "standard"
     assert 'model_reasoning_effort="medium"' in command
-    assert 'service_tier="fast"' in command
+    assert 'service_tier="fast"' not in command
 
 
 def test_codex_exec_command_allows_reasoning_override(monkeypatch, tmp_path: Path):

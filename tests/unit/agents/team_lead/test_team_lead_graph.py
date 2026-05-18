@@ -369,7 +369,7 @@ def test_team_lead_agent_executor_calls_tools_selected_by_executor(tmp_path):
             "artifacts": [
                 *state.get("artifacts", []),
                 {
-                    "path": "handoff/sprints/sprint-01/09-handoff-summary.md",
+                    "path": "handoff/sprints/sprint-01/release-report.html",
                     "kind": "handoff",
                     "owner_agent": "documentation-handoff-agent",
                     "visibility": "user",
@@ -410,7 +410,7 @@ def test_team_lead_agent_executor_calls_tools_selected_by_executor(tmp_path):
     assert team_lead_result["status"] == "handoff_ready"
     assert team_lead_result["handoff_status"] == "ready"
     assert team_lead_result["completed_features"] == ["F1", "F2"]
-    assert "handoff/sprints/sprint-01/09-handoff-summary.md" in team_lead_result["artifact_refs"]
+    assert "handoff/sprints/sprint-01/release-report.html" in team_lead_result["artifact_refs"]
     history = json.loads((tmp_path / "team-lead" / "sprint-01-history.json").read_text())
     assert [step["tool"] for step in history["steps"]][-3:] == [
         "codex_review",
@@ -479,7 +479,7 @@ def test_complete_sprint_accepts_handoff_artifacts_without_code_enforced_codex_r
             "artifacts": [
                 *state.get("artifacts", []),
                 {
-                    "path": "handoff/sprints/sprint-01/09-handoff-summary.md",
+                    "path": "handoff/sprints/sprint-01/release-report.html",
                     "kind": "handoff",
                     "owner_agent": "documentation-handoff-agent",
                     "visibility": "user",
@@ -663,7 +663,7 @@ def test_team_lead_can_route_failed_qa_back_to_fullstack_by_tool_call(tmp_path):
             "artifacts": [
                 *state.get("artifacts", []),
                 {
-                    "path": "handoff/sprints/sprint-01/09-handoff-summary.md",
+                    "path": "handoff/sprints/sprint-01/release-report.html",
                     "kind": "handoff",
                     "owner_agent": "documentation-handoff-agent",
                     "visibility": "user",

@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}{{ detail.card.title }} &middot; Agentic Delivery Lab{% endblock %}
+{% block page_title %}Work Item{% endblock %}
+{% block content %}
+  <section class="workspace-head task-detail-head">
+    <div>
+      <h2>{{ detail.card.title }}</h2>
+      <div class="compact-meta">
+        <span>{{ detail.card.sprint }}</span>
+        <span>{{ detail.card.owner }}</span>
+        {% if detail.card.elapsed_label %}
+          <span class="duration-pill" data-duration-start="{{ detail.card.started_at }}" data-duration-end="{{ detail.card.completed_at }}">{{ detail.card.elapsed_label }}</span>
+        {% endif %}
+        {% if detail.card.artifact_count %}<span>{{ detail.card.artifact_count }} report{{ "" if detail.card.artifact_count == 1 else "s" }}</span>{% endif %}
+      </div>
+    </div>
+    <div class="status-stack">
+      <span class="badge status-badge"><i></i>{{ detail.card.status }}</span>
+      <a class="button" href="/projects/{{ project.id }}?tab=board#task-{{ detail.card.id }}">Back to board</a>
+    </div>
+  </section>
+
+  <section class="task-detail-layout">
+    <article class="panel task-activity-panel">
+      <h2>Activity</h2>
+      {% if detail.activity_groups %}
+        <div class="activity-owner-list">
+          {% for group in detail.activity_groups %}
+            <details class="activity-owner-group" data-detail-key="activity-{{ group.owner }}" open>
+              <summary>{{ group.owner }} <span>{{ group.count }}</span></summary>
+              <div class="log-list">
+                {% for log in group.logs %}
+                  <article class="log-entry">{{ log|safe }}</article>
+                {% endfor %}
+              </div>
+            </details>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="empty">Activity will appear here when this item is active.</p>
+      {% endif %}
+    </article>
+    <article class="panel task-reports-panel">
+      <h2>Reports</h2>
+      {% if detail.reports %}
+        <div class="artifact-list compact">
+          {% for artifact in detail.reports %}
+            <a class="artifact-row" href="/artifacts/{{ run.id }}/{{ artifact.path }}">
+              <span>{{ artifact.label }}</span>
+              <small>{{ artifact.business_agent }} &middot; {{ artifact.kind }}</small>
+            </a>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="empty">No user-facing reports are attached to this item yet.</p>
+      {% endif %}
+    </article>
+  </section>
+{% endblock %}

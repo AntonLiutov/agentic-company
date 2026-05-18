@@ -311,7 +311,7 @@ class TeamLeadToolbox:
         updated = {**self.delivery_state}
         updated["handoff_scope"] = handoff_scope
         updated["handoff_sprint_id"] = sprint_id
-        updated["handoff_output_dir"] = str(Path(contract_paths.summary).parent)
+        updated["handoff_output_dir"] = str(Path(contract_paths.html).parent)
         updated["handoff_expected_outputs"] = contract_paths.as_list()
         self.delivery_state = cast(DeliveryState, updated)
         return self._run_worker("run_handoff", target, reason, message, self.workers.handoff)

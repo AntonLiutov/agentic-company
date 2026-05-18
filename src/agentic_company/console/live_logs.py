@@ -22,7 +22,7 @@ def friendly_log_entries(
             phase="Deployment",
         ),
     ]
-    return [entry for _, entry in sorted(entries, key=lambda entry: entry[0])[-180:]]
+    return [entry for _, entry in sorted(entries, key=lambda entry: entry[0])]
 
 
 def command_progress_entries(path: Path, *, agent: str, phase: str) -> list[tuple[str, str]]:

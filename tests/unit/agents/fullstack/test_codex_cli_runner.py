@@ -17,8 +17,9 @@ from agentic_company.platform.artifacts import EXECUTION_REQUEST_ARTIFACT
 
 
 def test_codex_cli_runner_invokes_codex_exec_with_planning_context(
-    tmp_path, write_sample_requirements
+    tmp_path, write_sample_requirements, monkeypatch
 ):
+    monkeypatch.delenv("AGENTIC_CODEX_SERVICE_TIER", raising=False)
     run_dir = _create_planning_run(tmp_path, write_sample_requirements)
     calls: list[tuple[Sequence[str], str, int, Path]] = []
 
@@ -86,7 +87,7 @@ def test_codex_cli_runner_invokes_codex_exec_with_planning_context(
         command[index + 1] for index, value in enumerate(command) if value == "--config"
     ]
     assert 'model_reasoning_effort="medium"' in config_values
-    assert 'service_tier="fast"' in config_values
+    assert 'service_tier="fast"' not in config_values
     assert "shell_environment_policy.inherit=all" in config_values
     assert command[command.index("--sandbox") + 1] == DEFAULT_CODEX_SANDBOX
     assert command[command.index("--cd") + 1] == str(run_dir / "generated-project")

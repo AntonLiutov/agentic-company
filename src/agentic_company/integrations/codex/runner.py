@@ -8,7 +8,10 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
-from agentic_company.integrations.codex.cli import resolve_codex_binary
+from agentic_company.integrations.codex.cli import (
+    AGENTIC_CODEX_BINARY_MODE_ENV,
+    resolve_codex_binary,
+)
 from agentic_company.integrations.codex.events import append_raw_codex_event
 from agentic_company.integrations.commands import StreamedCommand, stream_command
 
@@ -23,7 +26,7 @@ CODEX_API_KEY_ENV = "CODEX_API_KEY"
 DEFAULT_CODEX_MODEL = "gpt-5.3-codex"
 DEFAULT_CODEX_SANDBOX = "danger-full-access"
 DEFAULT_CODEX_REASONING_EFFORT = "medium"
-DEFAULT_CODEX_SERVICE_TIER = "fast"
+DEFAULT_CODEX_SERVICE_TIER = "standard"
 VALID_CODEX_SANDBOXES = {"read-only", "workspace-write", "danger-full-access"}
 VALID_CODEX_REASONING_EFFORTS = {"low", "medium", "high", "xhigh"}
 VALID_CODEX_SERVICE_TIERS = {"fast", "standard"}
@@ -163,11 +166,16 @@ def build_codex_exec_environment(target_project_dir: Path) -> dict[str, str]:
     """Build the environment inherited by Codex specialist subprocesses."""
 
     env = _codex_subprocess_env()
-    if not env.get(CODEX_API_KEY_ENV, "").strip():
+    _merge_run_local_env(env, target_project_dir)
+    if _uses_extension_binary_mode(env):
+        env.pop(CODEX_API_KEY_ENV, None)
+    elif not env.get(CODEX_API_KEY_ENV, "").strip():
         raise RuntimeError(
             f"{CODEX_API_KEY_ENV} is required for npm Codex CLI execution. "
             "Set it explicitly in the repo .env or process environment."
         )
+    if not env.get(CODEX_API_KEY_ENV, "").strip():
+        env.pop(CODEX_API_KEY_ENV, None)
     env.setdefault(
         "UV_CACHE_DIR",
         env.get(CODEX_UV_CACHE_DIR_ENV, str(target_project_dir / ".uv-cache")),
@@ -181,6 +189,33 @@ def build_codex_exec_environment(target_project_dir: Path) -> dict[str, str]:
         env.get(CODEX_NPM_CACHE_ENV, str(target_project_dir / ".npm-cache")),
     )
     return env
+
+
+def _merge_run_local_env(env: dict[str, str], target_project_dir: Path) -> None:
+    """Allow web-console run-local env files to configure Codex subprocesses."""
+
+    for env_path in (
+        target_project_dir / ".env",
+        target_project_dir / "generated-project" / ".env",
+    ):
+        if not env_path.exists():
+            continue
+        for key, value in _read_env_file(env_path).items():
+            env[key] = value
+
+
+def _uses_extension_binary_mode(env: dict[str, str]) -> bool:
+    mode = env.get(AGENTIC_CODEX_BINARY_MODE_ENV, "").strip().lower()
+    if mode == "extension":
+        return True
+    configured_binary = env.get("CODEX_BINARY", "").replace("\\", "/").lower()
+    return bool(
+        configured_binary
+        and (
+            "/.vscode/extensions/openai.chatgpt-" in configured_binary
+            or "/.cursor/extensions/openai.chatgpt-" in configured_binary
+        )
+    )
 
 
 def _codex_subprocess_env() -> dict[str, str]:
@@ -198,6 +233,18 @@ def _codex_subprocess_env() -> dict[str, str]:
         env["DOCKER_CLI_PLUGIN_EXTRA_DIRS"] = os.pathsep.join(plugin_dirs)
 
     return env
+
+
+def _read_env_file(env_path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in env_path.read_text(encoding="utf-8-sig").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        if key.strip():
+            values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
 
 
 def _prepend_repo_local_node_to_path(env: dict[str, str]) -> None:

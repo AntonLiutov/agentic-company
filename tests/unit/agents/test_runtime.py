@@ -327,6 +327,80 @@ def test_langchain_specialist_agent_executor_allows_no_reasoning_effort(
     assert captured["model"] == {"model": "gpt-4.1", "reasoning_effort": None}
 
 
+def test_langchain_runtime_omits_reasoning_for_gpt_4_1(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("AGENT_LLM_MODEL", "gpt-4.1")
+    monkeypatch.setenv("AGENT_REASONING_EFFORT", "medium")
+    state = initial_delivery_state(run_id="run", run_dir=tmp_path)
+    captured: dict[str, object] = {}
+
+    def create_agent_factory(model, tools, system_prompt):
+        captured["model"] = model
+        return FakeAgent([])
+
+    runtime = LangChainCreateAgentRuntime(
+        chat_model_factory=lambda model, api_key, reasoning_effort: {
+            "model": model,
+            "reasoning_effort": reasoning_effort,
+        },
+        create_agent_factory=create_agent_factory,
+    )
+
+    runtime.invoke(
+        LangChainAgentRequest(
+            agent_id="test-agent",
+            system_prompt="system",
+            user_prompt="user",
+            tools=[],
+            delivery_state=state,
+            max_steps=1,
+            default_model="gpt-4.1",
+        )
+    )
+
+    assert captured["model"] == {"model": "gpt-4.1", "reasoning_effort": None}
+
+
+def test_langchain_runtime_keeps_reasoning_for_reasoning_models(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("AGENT_LLM_MODEL", "gpt-5.5")
+    monkeypatch.setenv("AGENT_REASONING_EFFORT", "high")
+    state = initial_delivery_state(run_id="run", run_dir=tmp_path)
+    captured: dict[str, object] = {}
+
+    def create_agent_factory(model, tools, system_prompt):
+        captured["model"] = model
+        return FakeAgent([])
+
+    runtime = LangChainCreateAgentRuntime(
+        chat_model_factory=lambda model, api_key, reasoning_effort: {
+            "model": model,
+            "reasoning_effort": reasoning_effort,
+        },
+        create_agent_factory=create_agent_factory,
+    )
+
+    runtime.invoke(
+        LangChainAgentRequest(
+            agent_id="test-agent",
+            system_prompt="system",
+            user_prompt="user",
+            tools=[],
+            delivery_state=state,
+            max_steps=1,
+            default_model="gpt-5.5",
+        )
+    )
+
+    assert captured["model"] == {"model": "gpt-5.5", "reasoning_effort": "high"}
+
+
 def test_agent_env_value_reads_generated_project_env(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.chdir(tmp_path)

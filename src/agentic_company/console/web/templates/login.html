@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}{{ "Register" if mode == "register" else "Login" }} &middot; Agentic Delivery Lab{% endblock %}
+{% block body_class %}auth-body{% endblock %}
+{% block auth_content %}
+  <section class="auth-panel">
+    <div class="auth-copy">
+      <div class="auth-visual" role="img" aria-label="Agentic Delivery Lab banner">
+        <div class="auth-brand">
+          <span class="brand-mark large">{% include "partials_logo.html" %}</span>
+          <p class="eyebrow">Agentic Delivery Lab</p>
+        </div>
+        <div class="auth-message">
+          <h1>Turn product ideas into shipped demos.</h1>
+          <p>An AI delivery team plans, builds, reviews, publishes, and prepares clear business reports.</p>
+          <div class="auth-proof-row" aria-label="Delivery flow">
+            <span>Plan</span>
+            <span>Build</span>
+            <span>Review</span>
+            <span>Ship</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <form class="auth-card" method="post" action="/{{ 'register' if mode == 'register' else 'login' }}">
+      <h2>{{ "Create account" if mode == "register" else "Welcome back" }}</h2>
+      {% if error %}<div class="alert">{{ error }}</div>{% endif %}
+      {% if mode == "register" %}
+        <label>Email<input name="email" type="email" autocomplete="email" required></label>
+        <label>Username<input name="username" autocomplete="username" required></label>
+      {% else %}
+        <label>Email or username<input name="identifier" autocomplete="username" required></label>
+      {% endif %}
+      <label>Password<input name="password" type="password" autocomplete="{{ 'new-password' if mode == 'register' else 'current-password' }}" required></label>
+      <button class="primary" type="submit">{{ "Register" if mode == "register" else "Login" }}</button>
+      <p class="form-note">
+        {% if mode == "register" %}
+          Already registered? <a href="/login">Login</a>
+        {% else %}
+          New here? <a href="/register">Create an account</a> &middot; <a href="/forgot-password">Forgot password?</a>
+        {% endif %}
+      </p>
+    </form>
+  </section>
+{% endblock %}
