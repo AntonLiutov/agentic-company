@@ -1,0 +1,224 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} &middot; Agentic Delivery Lab{% endblock %}
+{% block page_title %}{{ project.name }}{% endblock %}
+{% block content %}
+  <section class="workspace-head" {% if run %}data-run-id="{{ run.id }}"{% endif %}>
+    <div>
+      <h2>{{ project.name }}</h2>
+      <div class="compact-meta">
+        <span>{{ "Showcase" if project.visibility == "public_demo" else "Private" }}</span>
+        <span>{{ project.mode|project_type_label }}</span>
+        <span>{{ project.complexity|scope_size_label }}</span>
+        {% if run_timing.started_at %}
+          <span class="duration-pill" data-duration-start="{{ run_timing.started_at }}" data-duration-end="{{ run_timing.completed_at }}">{{ run_timing.elapsed_label }}</span>
+        {% endif %}
+      </div>
+    </div>
+    <div class="status-stack">
+      <span id="live-run-status" class="badge status-badge">
+        <i></i>{{ (run.status if run else project.status)|status_label }}
+      </span>
+      {% if project.generated_app_url %}<a class="button" href="{{ project.generated_app_url }}" target="_blank">Open App</a>{% endif %}
+      {% if run and project.owner_user_id == user.id and run_running %}
+        <form method="post" action="/projects/{{ project.id }}/stop" data-confirm="Stop this project after the current step finishes?">
+          <button class="danger" type="submit">Stop</button>
+        </form>
+      {% endif %}
+      {% if can_restart %}
+        <form method="post" action="/projects/{{ project.id }}/restart">
+          <button class="primary" type="submit">Restart Project</button>
+        </form>
+      {% endif %}
+      {% if project.owner_user_id == user.id and project.visibility != "public_demo" and showcase_ready %}
+        <form method="post" action="/projects/{{ project.id }}/promote" data-confirm="Make this project visible as a showcase to all users?">
+          <button type="submit">Make Showcase</button>
+        </form>
+      {% elif project.owner_user_id == user.id and project.visibility == "public_demo" %}
+        <form method="post" action="/projects/{{ project.id }}/demote" data-confirm="Remove this project from showcase?">
+          <button type="submit">Make Private</button>
+        </form>
+      {% endif %}
+      {% if project.visibility != "public_demo" %}
+        <form method="post" action="/projects/{{ project.id }}/delete" data-confirm="Delete this project from your workspace?">
+          <button class="danger" type="submit">Delete</button>
+        </form>
+      {% endif %}
+    </div>
+  </section>
+
+  <nav class="tabs">
+    {% for item in ["overview", "board", "logs", "agents", "artifacts", "handoff"] %}
+      <a class="{{ 'active' if tab == item else '' }}" href="/projects/{{ project.id }}?tab={{ item }}">{{ "Reports" if item == "artifacts" else "Release" if item == "handoff" else item.title() }}</a>
+    {% endfor %}
+  </nav>
+
+  {% if tab == "overview" and project_request_html %}
+    <section class="panel request-panel">
+      <details class="drawer" data-detail-key="project-request">
+        <summary>Project request</summary>
+        <div class="request-body markdown-preview">{{ project_request_html|safe }}</div>
+      </details>
+    </section>
+  {% endif %}
+
+  {% if not run %}
+    <section class="panel"><p class="empty">No delivery has started yet.</p></section>
+  {% elif tab == "overview" %}
+    <section class="grid metrics" data-live-fragment="metrics">
+      <article class="metric"><span>Stage</span><strong>{{ overview.stage|status_label }}</strong></article>
+      <article class="metric"><span>Work items</span><strong>{{ overview.completed_feature_count }}/{{ overview.total_feature_count }}</strong></article>
+      <article class="metric"><span>Quality</span><strong>{{ (overview.qa_status or "pending")|status_label }}</strong></article>
+      <article class="metric"><span>Publishing</span><strong>{{ (overview.deployment_status or "pending")|status_label }}</strong></article>
+      <article class="metric"><span>Report</span><strong>{{ (overview.handoff_status or "pending")|status_label }}</strong></article>
+    </section>
+    <section class="panel" data-live-fragment="delivery-journey">
+      <h2>Delivery Journey</h2>
+      {% if overview_blockers %}
+        <div class="alert">Needs attention: {{ overview_blockers|join("; ") }}</div>
+      {% endif %}
+        <p>{{ overview.topology_summary or "The delivery summary will appear as the team prepares planning, build, quality, publishing, and release reports." }}</p>
+      {% if overview.deployment_targets %}
+        <div class="button-row">
+          {% for target in overview.deployment_targets %}
+            <a class="button" href="{{ target.url }}" target="_blank">{{ target.label }}</a>
+          {% endfor %}
+        </div>
+      {% endif %}
+    </section>
+    <section class="panel" data-live-fragment="work-plan">
+      <h2>Work Plan</h2>
+      {% for group in work_plan_groups %}
+        <details class="drawer" data-detail-key="work-plan-{{ group.name }}" open>
+          <summary>{{ group.name }} &middot; {{ group.count }} item{{ "" if group.count == 1 else "s" }}</summary>
+          <div class="mini-card-grid">
+            {% for card in group.cards %}
+              <div class="mini-card">
+                <strong>{{ card.title }}</strong>
+                <small>
+                  {{ card.owner }} &middot; {{ card.status }}
+                  {% if card.elapsed_label %}
+                    &middot; <span class="duration-inline" data-duration-start="{{ card.started_at }}" data-duration-end="{{ card.completed_at }}">{{ card.elapsed_label }}</span>
+                  {% endif %}
+                  {% if card.artifact_count %} &middot; {{ card.artifact_count }} report{{ "" if card.artifact_count == 1 else "s" }}{% endif %}
+                </small>
+              </div>
+            {% endfor %}
+          </div>
+        </details>
+      {% endfor %}
+    </section>
+    <section class="panel">
+      <div class="panel-heading">
+        <h2>Live Activity</h2>
+        <a class="button small" href="/projects/{{ project.id }}?tab=logs">Open all</a>
+      </div>
+      {% if activity_groups %}
+        <div class="activity-owner-list compact-activity" data-live-logs-run="{{ run.id }}">
+          {% for group in activity_groups %}
+            <details class="activity-owner-group" data-detail-key="overview-activity-{{ group.owner }}" open>
+              <summary>{{ group.owner }} <span>{{ group.count }}</span></summary>
+              <div class="log-list">
+                {% for log in group.logs[-8:] %}
+                  <article class="log-entry">{{ log|safe }}</article>
+                {% endfor %}
+              </div>
+            </details>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="activity-owner-list compact-activity" data-live-logs-run="{{ run.id }}">
+          <p class="empty">Activity will appear as work progresses.</p>
+        </div>
+      {% endif %}
+    </section>
+  {% elif tab == "board" %}
+    <section class="panel board-panel" data-live-fragment="board">
+      <div class="panel-heading">
+        <h2>Delivery Board</h2>
+        <span class="badge">Planning and sprint work</span>
+      </div>
+      {% for group in sprint_board_groups %}
+        <details class="drawer board-drawer" data-detail-key="board-{{ group.sprint }}" open>
+          <summary>{{ group.sprint }} &middot; {{ group.count }} item{{ "" if group.count == 1 else "s" }}</summary>
+          <div class="board-wrap">
+            <div class="board">
+              {% for column_id, column_label in board_columns %}
+                <div class="board-column">
+                  <h3>{{ column_label }} <span>{{ group.columns.get(column_id, [])|length }}</span></h3>
+                  {% for card in group.columns.get(column_id, []) %}
+                    <a id="task-{{ card.id }}" class="task-card" href="/projects/{{ project.id }}/tasks/{{ card.id }}">
+                      <div>
+                        <strong>{{ card.title }}</strong>
+                        <small>{{ card.id }} &middot; {{ card.owner }}</small>
+                      </div>
+                      <footer>
+                        <span>{{ group.sprint }}</span>
+                        <span class="task-card-chips">
+                          {% if card.elapsed_label %}
+                            <span class="duration-chip" data-duration-start="{{ card.started_at }}" data-duration-end="{{ card.completed_at }}">{{ card.elapsed_label }}</span>
+                          {% endif %}
+                          {% if card.artifact_count %}<span class="report-chip">{{ card.artifact_count }} report{{ "" if card.artifact_count == 1 else "s" }}</span>{% endif %}
+                        </span>
+                      </footer>
+                    </a>
+                  {% endfor %}
+                </div>
+              {% endfor %}
+            </div>
+          </div>
+        </details>
+      {% endfor %}
+    </section>
+  {% elif tab == "logs" %}
+    <section class="panel">
+      <div class="panel-heading">
+        <h2>Activity</h2>
+        <span class="badge">{{ logs|length }}</span>
+      </div>
+      {% if activity_groups %}
+        <div class="activity-owner-list" data-live-logs-run="{{ run.id }}">
+          {% for group in activity_groups %}
+            <details class="activity-owner-group" data-detail-key="activity-{{ group.owner }}" open>
+              <summary>{{ group.owner }} <span>{{ group.count }}</span></summary>
+              <div class="log-list">
+                {% for log in group.logs %}
+                  <article class="log-entry">{{ log|safe }}</article>
+                {% endfor %}
+              </div>
+            </details>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="activity-owner-list" data-live-logs-run="{{ run.id }}">
+          <p class="empty">Activity will appear as work progresses.</p>
+        </div>
+      {% endif %}
+    </section>
+  {% elif tab == "agents" %}
+    {% include "partials_agents.html" %}
+  {% elif tab == "artifacts" %}
+    {% include "partials_artifacts.html" %}
+  {% elif tab == "handoff" %}
+    <section class="panel">
+      <h2>Release Report</h2>
+      {% set handoffs = [] %}
+      {% for artifact in business_artifacts %}
+        {% if "handoff" in artifact.path or "release-report" in artifact.path %}
+          {% set _ = handoffs.append(artifact) %}
+        {% endif %}
+      {% endfor %}
+      {% if handoffs %}
+        <div class="artifact-list">
+          {% for artifact in handoffs %}
+            <a class="artifact-row" href="/artifacts/{{ run.id }}/{{ artifact.path }}">
+              <span>{{ artifact.label }}</span>
+              <small>{{ artifact.business_agent }}</small>
+            </a>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="empty">The final release report will appear when it is ready.</p>
+      {% endif %}
+    </section>
+  {% endif %}
+{% endblock %}

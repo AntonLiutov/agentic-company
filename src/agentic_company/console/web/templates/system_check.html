@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Readiness &middot; Agentic Delivery Lab{% endblock %}
+{% block page_title %}Readiness{% endblock %}
+{% block content %}
+  <section class="panel">
+    <div class="panel-heading">
+      <h2>Readiness</h2>
+      <a class="button" href="/settings">Open Settings</a>
+    </div>
+    <div class="status-strip">
+      {% for check in checks %}
+        <div class="status-dot-row" title="{{ check.detail }}">
+          <span class="status-dot {{ 'ok' if check.ok == 'true' else 'bad' }}"></span>
+          <span>{{ check.name }}</span>
+        </div>
+      {% endfor %}
+      <div class="status-dot-row" data-speech-check title="Voice input depends on the visitor's browser.">
+        <span class="status-dot"></span>
+        <span>Browser speech</span>
+      </div>
+    </div>
+  </section>
+{% endblock %}

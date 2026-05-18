@@ -1,0 +1,54 @@
+<section class="panel">
+  <div class="panel-heading">
+    <h2>Reports</h2>
+    <span class="badge">{{ business_artifacts|length }}</span>
+  </div>
+  {% if task_report_groups %}
+    <h3 class="section-label">Reports by work item</h3>
+    {% for group in task_report_groups %}
+      <details class="drawer" data-detail-key="reports-task-{{ group.sprint }}" open>
+        <summary>{{ group.sprint }} &middot; {{ group.count }} item{{ "" if group.count == 1 else "s" }}</summary>
+        <div class="task-report-list">
+          {% for item in group.tasks %}
+            <article id="task-{{ item.card.id }}" class="task-report-card">
+              <div>
+                <strong>{{ item.card.title }}</strong>
+                <small>{{ item.card.id }} &middot; {{ item.card.owner }} &middot; {{ item.card.status }}</small>
+              </div>
+              {% if item.reports %}
+                <div class="artifact-list compact">
+                  {% for artifact in item.reports %}
+                    <a class="artifact-row" href="/artifacts/{{ run.id }}/{{ artifact.path }}">
+                      <span>{{ artifact.label }}</span>
+                      <small>{{ artifact.business_agent }}</small>
+                    </a>
+                  {% endfor %}
+                </div>
+              {% else %}
+                <p class="empty">No user-friendly reports attached yet.</p>
+              {% endif %}
+            </article>
+          {% endfor %}
+        </div>
+      </details>
+    {% endfor %}
+  {% endif %}
+  {% if business_artifact_phase_groups %}
+    <h3 class="section-label">All reports</h3>
+    {% for group in business_artifact_phase_groups %}
+      <details class="drawer" data-detail-key="reports-phase-{{ group.phase }}" {{ "open" if loop.first else "" }}>
+        <summary>{{ group.phase }} &middot; {{ group.count }} report{{ "" if group.count == 1 else "s" }}</summary>
+        <div class="artifact-list grouped">
+          {% for artifact in group.artifacts %}
+            <a class="artifact-row" href="/artifacts/{{ run.id }}/{{ artifact.path }}">
+              <span>{{ artifact.label }}</span>
+              <small>{{ artifact.business_agent }}</small>
+            </a>
+          {% endfor %}
+        </div>
+      </details>
+    {% endfor %}
+  {% elif not task_report_groups %}
+    <p class="empty">Reports will appear as work progresses.</p>
+  {% endif %}
+</section>

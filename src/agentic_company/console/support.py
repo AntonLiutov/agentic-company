@@ -210,22 +210,10 @@ DEPLOYMENT_ARTIFACTS = [
 ]
 
 HANDOFF_ARTIFACTS = [
-    ("09-handoff-summary.md", "Handoff summary", "Documentation / Handoff Agent"),
     ("handoff/release-report.html", "Release report", "Documentation / Handoff Agent"),
-    ("handoff/release-evidence.json", "Release evidence", "Documentation / Handoff Agent"),
-    (
-        "handoff/project/final/09-handoff-summary.md",
-        "Final project handoff summary",
-        "Documentation / Handoff Agent",
-    ),
     (
         "handoff/project/final/release-report.html",
         "Final project release report",
-        "Documentation / Handoff Agent",
-    ),
-    (
-        "handoff/project/final/release-evidence.json",
-        "Final project release evidence",
         "Documentation / Handoff Agent",
     ),
 ]
@@ -381,9 +369,14 @@ def load_sample_requirements(
     return sample_requirements_path(root, filename).read_text(encoding="utf-8")
 
 
-def create_console_run(requirements_text: str, output_root: Path | None = None) -> Path:
+def create_console_run(
+    requirements_text: str,
+    output_root: Path | None = None,
+    *,
+    run_id_prefix: str = "console",
+) -> Path:
     output_base = output_root or repo_root() / "runs"
-    run_id = _run_id()
+    run_id = _run_id(run_id_prefix)
     output_dir = output_base / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
     requirements_path = output_dir / "00-requirements.md"
@@ -446,13 +439,16 @@ def start_azure_deployment(run_dir: Path) -> int:
 def codex_execution_running(run_dir: Path) -> bool:
     if _summary_has_failed(run_dir):
         return False
-    thread = _CODEX_THREADS.get(str(run_dir))
-    if thread and thread.is_alive():
-        return True
     status_text = _read_codex_status(run_dir)
     if status_text.startswith(("failed", "completed", "stopped")):
         return False
+    thread = _CODEX_THREADS.get(str(run_dir))
+    if thread and thread.is_alive():
+        return True
     if status_text.startswith(("starting", "running")):
+        if _execution_status_is_stale(run_dir):
+            LOGGER.info("Ignoring stale Codex running status run_dir=%s", run_dir)
+            return False
         state = _read_delivery_state(run_dir)
         if _delivery_execution_terminal(state):
             return _delivery_terminal_requires_review(state) and not review_completed(run_dir)
@@ -466,6 +462,51 @@ def codex_execution_running(run_dir: Path) -> bool:
     if _feature_codex_log_paths(run_dir):
         return True
     return False
+
+
+def request_codex_execution_stop(run_dir: Path) -> Path:
+    """Request a cooperative stop for a web-console delivery run."""
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    stop_path = run_dir / ".stop-requested"
+    stop_path.write_text("stopped_by_user\n", encoding="utf-8")
+    _codex_status_path(run_dir).write_text("stopped\nreason=user_requested\n", encoding="utf-8")
+    return stop_path
+
+
+def _execution_status_is_stale(run_dir: Path) -> bool:
+    if _CODEX_THREADS.get(str(run_dir)):
+        return False
+    latest_activity = _latest_execution_activity_mtime(run_dir)
+    if latest_activity <= 0:
+        return False
+    return time.time() - latest_activity > 120
+
+
+def _latest_execution_activity_mtime(run_dir: Path) -> float:
+    candidates = [
+        run_dir / ".codex-execution.status",
+        run_dir / ".delivery-state.json",
+        run_dir / "events.jsonl",
+    ]
+    for directory in (
+        run_dir / "upstream-planning",
+        run_dir / "codex",
+        run_dir / "qa",
+        run_dir / "deployment",
+        run_dir / "handoff",
+        run_dir / "team-lead",
+        run_dir / "head",
+    ):
+        if directory.exists():
+            candidates.extend(path for path in directory.rglob("*") if path.is_file())
+    mtimes = []
+    for path in candidates:
+        try:
+            mtimes.append(path.stat().st_mtime)
+        except OSError:
+            continue
+    return max(mtimes, default=0)
 
 
 def azure_deployment_running(run_dir: Path) -> bool:
@@ -679,14 +720,18 @@ def delivery_overview_for_run(run_dir: Path) -> DeliveryOverview:
         )
         for feature in feature_queue
     ]
-    _apply_deployment_completion_to_features(
-        features,
-        deployment_status=str(
-            state.get("deployment_status") or deployment_result.get("status") or ""
-        ),
-    )
+    deployment_status = str(state.get("deployment_status") or deployment_result.get("status") or "")
+    _apply_deployment_completion_to_features(features, deployment_status=deployment_status)
     handoff_status = _handoff_status(run_dir, state)
     _apply_handoff_completion_to_features(features, handoff_status=handoff_status)
+    qa_status = str(state.get("qa_status") or _feature_queue_qa_status(features, run_dir))
+    _apply_terminal_success_completion_to_features(
+        features,
+        state=state,
+        qa_status=qa_status,
+        deployment_status=deployment_status,
+        handoff_status=handoff_status,
+    )
     _apply_current_worker_to_features(features, run_dir, state)
     team_lead_steps = _team_lead_steps(run_dir)
 
@@ -696,10 +741,8 @@ def delivery_overview_for_run(run_dir: Path) -> DeliveryOverview:
         status=str(state.get("status") or "planning_ready"),
         active_feature_id=active_feature_id,
         features=features,
-        qa_status=str(state.get("qa_status") or _feature_queue_qa_status(features, run_dir)),
-        deployment_status=str(
-            state.get("deployment_status") or deployment_result.get("status") or ""
-        ),
+        qa_status=qa_status,
+        deployment_status=deployment_status,
         handoff_status=handoff_status,
         topology_summary=str(deployment_result.get("topology_summary") or ""),
         deployment_targets=_deployment_targets(deployment_result),
@@ -1025,6 +1068,34 @@ def _apply_handoff_completion_to_features(
         if feature.status in {"blocked", "failed"}:
             continue
         feature.status = "handoff_ready"
+        feature.lane = "done"
+        feature.active = False
+        feature.assigned_agent = ""
+
+
+def _apply_terminal_success_completion_to_features(
+    features: list[FeatureProgress],
+    *,
+    state: dict[str, Any],
+    qa_status: str,
+    deployment_status: str,
+    handoff_status: str,
+) -> None:
+    if state.get("blockers"):
+        return
+    terminal_status = str(state.get("status") or "")
+    handoff_ready = handoff_status in {"ready", "handoff_ready", "complete", "completed"}
+    if not (
+        terminal_status == "head_delivery_completed"
+        and qa_status == "passed"
+        and deployment_status == "deployed"
+        and handoff_ready
+    ):
+        return
+    for feature in features:
+        if feature.status in _FEATURE_DONE_STATUSES or feature.status in {"blocked", "failed"}:
+            continue
+        feature.status = "qa_passed"
         feature.lane = "done"
         feature.active = False
         feature.assigned_agent = ""
@@ -1375,10 +1446,6 @@ def _artifact_label_from_path(path: str) -> str:
         )
     elif filename == "release-report.html":
         base = "Client release report"
-    elif filename == "release-evidence.json":
-        base = "Release evidence"
-    elif filename == "09-handoff-summary.md":
-        base = "Handoff summary"
     else:
         base = filename
     return f"{feature} - {base}" if feature else base
@@ -1610,5 +1677,6 @@ def _run_deployment_in_thread(run_dir: Path) -> None:
         LOGGER.exception("Console deployment graph thread failed run_dir=%s", run_dir)
 
 
-def _run_id() -> str:
-    return "console-" + datetime.now().strftime("%Y%m%d-%H%M%S")
+def _run_id(prefix: str = "console") -> str:
+    safe_prefix = prefix.strip().strip("-") or "console"
+    return safe_prefix + "-" + datetime.now().strftime("%Y%m%d-%H%M%S")

@@ -1,0 +1,16 @@
+<section class="agent-grid">
+  {% for agent in agents %}
+    <article class="agent-card">
+      <div class="agent-avatar">{{ agent.initials }}</div>
+      <h3>{{ agent.name }}</h3>
+      <p>{{ agent.detail }}</p>
+      <div class="chip-row">
+        <span class="chip">{{ agent.provider }}</span>
+        <span class="chip">{{ agent.model }}</span>
+        {% if agent.reasoning != "none" %}
+          <span class="chip">{{ agent.reasoning|title }}</span>
+        {% endif %}
+      </div>
+    </article>
+  {% endfor %}
+</section>

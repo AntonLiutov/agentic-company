@@ -493,9 +493,7 @@ def test_handoff_agent_maps_handoff_status_and_artifacts(tmp_path):
             agent_id="handoff-codex-agent",
             status="handoff_ready",
             output_artifacts=[
-                "handoff/sprints/sprint-01/09-handoff-summary.md",
                 "handoff/sprints/sprint-01/release-report.html",
-                "handoff/sprints/sprint-01/release-evidence.json",
             ],
             summary="ready",
         )
@@ -509,19 +507,7 @@ def test_handoff_agent_maps_handoff_status_and_artifacts(tmp_path):
     assert result["completed_nodes"] == ["handoff"]
     assert result["artifacts"] == [
         {
-            "path": "handoff/sprints/sprint-01/09-handoff-summary.md",
-            "kind": "handoff",
-            "owner_agent": "handoff-codex-agent",
-            "visibility": "user",
-        },
-        {
             "path": "handoff/sprints/sprint-01/release-report.html",
-            "kind": "handoff",
-            "owner_agent": "handoff-codex-agent",
-            "visibility": "user",
-        },
-        {
-            "path": "handoff/sprints/sprint-01/release-evidence.json",
             "kind": "handoff",
             "owner_agent": "handoff-codex-agent",
             "visibility": "user",

@@ -125,9 +125,11 @@ class LangChainCreateAgentRuntime:
 
         os.environ.setdefault("OPENAI_API_KEY", api_key)
         model_name = _first_env_value(request.model_env_keys, request.delivery_state)
+        model_name = model_name or request.default_model
         reasoning_effort = _reasoning_effort_for_request(request)
+        reasoning_effort = _reasoning_effort_for_model(model_name, reasoning_effort)
         model = self.chat_model_factory(
-            model_name or request.default_model,
+            model_name,
             api_key,
             reasoning_effort,
         )
@@ -555,6 +557,15 @@ def _reasoning_effort_for_request(request: LangChainAgentRequest) -> str | None:
     if effort == "none":
         return None
     return effort
+
+
+def _reasoning_effort_for_model(model: str, reasoning_effort: str | None) -> str | None:
+    if not reasoning_effort:
+        return None
+    normalized = model.strip().lower()
+    if normalized.startswith(("gpt-5", "o1", "o3", "o4")):
+        return reasoning_effort
+    return None
 
 
 def _default_chat_model_factory(model: str, api_key: str, reasoning_effort: str | None) -> Any:

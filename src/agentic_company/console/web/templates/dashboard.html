@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Dashboard &middot; Agentic Delivery Lab{% endblock %}
+{% block page_title %}Dashboard{% endblock %}
+{% block content %}
+  <section class="hero-band">
+    <div>
+      <h2>Welcome, {{ user.username }}</h2>
+    </div>
+    <a class="button primary" href="/projects/new">New Project</a>
+  </section>
+
+  <section class="grid two">
+    <article class="panel">
+      <div class="panel-heading">
+        <h2>Recent Projects</h2>
+        <a href="/projects">View all</a>
+      </div>
+      {% if projects %}
+        <div class="table-list">
+          {% for project in projects %}
+            <a class="row-link" href="/projects/{{ project.id }}">
+              <span>
+                <strong>{{ project.name }}</strong>
+                <small>{{ project.mode|project_type_label }} &middot; {{ project.complexity|scope_size_label }}</small>
+                {% if project.request_text %}
+                  <small class="request-preview">{{ project.request_text[:140] }}{{ "..." if project.request_text|length > 140 else "" }}</small>
+                {% endif %}
+              </span>
+              <span class="badge status-badge"><i></i>{{ (project.latest_run_status or project.status)|status_label }}</span>
+            </a>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="empty">No private projects yet. Create one to start.</p>
+      {% endif %}
+    </article>
+
+    <article class="panel accent-panel compact-panel">
+      <p class="eyebrow">Showcase</p>
+      {% if public_demo %}
+        <a class="button" href="/projects/{{ public_demo.id }}">Open</a>
+      {% else %}
+        <p class="empty">Not added yet.</p>
+      {% endif %}
+    </article>
+  </section>
+
+  <section class="panel">
+    <div class="panel-heading">
+      <h2>Readiness</h2>
+      <a href="/settings">Settings</a>
+    </div>
+    <div class="status-strip">
+      {% for check in checks %}
+        <div class="status-dot-row mini-status {{ 'ok' if check.ok == 'true' else 'bad' }}" title="{{ check.name }}: {{ check.detail }}">
+          <span class="status-dot {{ 'ok' if check.ok == 'true' else 'bad' }}"></span>
+          <span>{{ check.name }}</span>
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+{% endblock %}

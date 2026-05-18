@@ -192,6 +192,27 @@ class DeliveryGraphRuntime:
             raise ValueError(f"Delivery graph node is not configured: {node_name}")
 
         def run(state: DeliveryState) -> DeliveryState:
+            stop_path = Path(state["run_dir"]) / ".stop-requested"
+            if stop_path.exists():
+                stopped: DeliveryState = {**state}
+                stopped["status"] = "stopped"
+                stopped["blockers"] = [*stopped.get("blockers", []), "Stopped by user"]
+                write_event(
+                    event_log,
+                    run_id,
+                    GRAPH_AGENT_ID,
+                    "delivery_graph_node_skipped",
+                    {
+                        "node": node_name,
+                        "stage": stopped["stage"],
+                        "status": stopped["status"],
+                        "reason": "user_requested_stop",
+                    },
+                )
+                self.save_state(Path(stopped["run_dir"]), stopped)
+                self._write_state_event(event_log, stopped)
+                return stopped
+
             blockers = state.get("blockers", [])
             if blockers:
                 write_event(

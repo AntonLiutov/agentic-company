@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}New Project &middot; Agentic Delivery Lab{% endblock %}
+{% block page_title %}New Project{% endblock %}
+{% block content %}
+  <form class="panel run-form" method="post" action="/projects">
+    <div class="panel-heading">
+      <div>
+        <p class="eyebrow">New project</p>
+        <h2>Describe what the agent team should build.</h2>
+      </div>
+      <button class="primary" type="submit" {% if not credential %}disabled title="Add your OpenAI key in Settings first."{% endif %}>Start Project</button>
+    </div>
+    {% if error %}
+      <div class="alert compact-alert">{{ error }}</div>
+    {% elif not credential %}
+      <div class="alert compact-alert">
+        Add your OpenAI key in <a href="/settings">Settings</a> before starting.
+      </div>
+    {% endif %}
+    <div class="form-grid">
+      <label>Project name<input name="name" placeholder="Team Task Tracker" required></label>
+      <label>Project type
+        <select name="mode">
+          <option value="simple_prototype">Simple prototype</option>
+          <option value="internal_tool">Internal tool</option>
+          <option value="platform_improvement">Platform improvement</option>
+          <option value="ui_web_app">UI/web app</option>
+        </select>
+      </label>
+      <label>Scope size
+        <select name="complexity">
+          <option value="simple">Small</option>
+          <option value="medium">Medium</option>
+          <option value="complex">Large</option>
+        </select>
+      </label>
+      <label>Agent model
+        <select name="agent_model">
+          {% for model in agent_models %}
+            <option value="{{ model }}" {{ "selected" if model == "gpt-4.1" else "" }}>{{ model }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Build model
+        <select name="codex_model">
+          {% for model in codex_models %}
+            <option value="{{ model }}" {{ "selected" if model == "gpt-5.3-codex" else "" }}>{{ model }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Reasoning
+        <select name="codex_reasoning">
+          {% for option in reasoning_options %}
+            <option value="{{ option }}" {{ "selected" if option == "medium" else "" }}>{{ option|title }}{{ " (default)" if option == "medium" else "" }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Speed
+        <select name="service_tier">
+          {% for tier in service_tiers %}
+            <option value="{{ tier }}" {{ "selected" if tier == "standard" else "" }}>{{ tier|title }}{{ " (default)" if tier == "standard" else "" }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <label class="full">Product request
+      <textarea id="request-text" name="request_text" rows="8" placeholder="Paste or dictate the product request here..." required></textarea>
+    </label>
+    <div id="formatted-request-view" class="formatted-request hidden"></div>
+    <div class="button-row">
+      <button class="secondary" type="button" data-voice-target="request-text">Start dictation</button>
+      <button class="secondary" type="button" data-format-target="request-text">Format with AI</button>
+      <button class="secondary hidden" type="button" data-edit-target="request-text">Edit request</button>
+      <span class="hint">These choices help the team plan the right path.</span>
+    </div>
+    <div class="voice-preview hidden" data-voice-preview></div>
+    <div id="format-preview" class="preview-panel hidden"></div>
+  </form>
+{% endblock %}

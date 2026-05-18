@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Reports &middot; Agentic Delivery Lab{% endblock %}
+{% block page_title %}Reports{% endblock %}
+{% block content %}
+  <section class="panel">
+    <h2>Choose a project to inspect reports</h2>
+    <div class="artifact-list">
+      {% if public_demo %}
+        <a class="artifact-row" href="/projects/{{ public_demo.id }}?tab=artifacts">
+          <span>{{ public_demo.name }}</span><small>Showcase</small>
+        </a>
+      {% endif %}
+      {% for project in projects %}
+        <a class="artifact-row" href="/projects/{{ project.id }}?tab=artifacts">
+          <span>{{ project.name }}</span><small>{{ (project.latest_run_status or project.status)|status_label }}</small>
+        </a>
+      {% else %}
+        <p class="empty">No private project reports yet.</p>
+      {% endfor %}
+    </div>
+  </section>
+{% endblock %}
