@@ -97,9 +97,13 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request) -> Response:
         user = optional_user(request)
-        if user:
-            return redirect("/dashboard")
-        return redirect("/login")
+        return render(
+            request,
+            "landing.html",
+            user=None,
+            workspace_href="/dashboard" if user else "/login",
+            showcase_href="/public-demo" if user else "/login",
+        )
 
     @app.get("/login", response_class=HTMLResponse)
     def login_page(request: Request) -> HTMLResponse:

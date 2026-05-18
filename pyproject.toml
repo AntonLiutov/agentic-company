@@ -47,6 +47,7 @@ where = ["src"]
     "templates/*.html",
     "static/*",
     "static/agents/*.png",
+    "static/brand/*.png",
     "static/sponsors/*.ico",
     "static/sponsors/*.svg",
 ]
