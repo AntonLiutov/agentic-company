@@ -36,6 +36,20 @@ AGENT_MODEL_OPTIONS = [
     "gpt-5.5",
 ]
 
+AGENT_PROVIDER_OPTIONS = [
+    ("google_gemini", "Google Gemini"),
+    ("openai", "OpenAI"),
+]
+
+GEMINI_MODEL_OPTIONS = [
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite",
+    "gemini-3.1-pro-preview",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-pro",
+]
+
 CODEX_MODEL_OPTIONS = [
     "gpt-5.3-codex",
     "gpt-5.5",
@@ -107,6 +121,18 @@ STATUS_LABELS = {
     "team_lead": "Delivery Lead",
     "team_lead_feature_selected": "Feature Selected",
     "team_lead_sprint_handoff_ready": "Release Report Ready",
+}
+
+AGENT_ICON_FILES = {
+    "Coordinator": "coordinator.png",
+    "Business Analyst": "business-analyst.png",
+    "Solution Architect": "solution-architect.png",
+    "Delivery Planner": "delivery-planner.png",
+    "Delivery Lead": "delivery-lead.png",
+    "Builder": "builder.png",
+    "Quality Reviewer": "quality-reviewer.png",
+    "Publisher": "publisher.png",
+    "Release Reporter": "release-reporter.png",
 }
 
 BOARD_COLUMNS = [
@@ -243,6 +269,11 @@ def scope_size_label(complexity: str) -> str:
         "medium": "Medium",
         "complex": "Large",
     }.get(complexity, complexity.title())
+
+
+def agent_icon_path(agent_name: str) -> str:
+    filename = AGENT_ICON_FILES.get(agent_name, "coordinator.png")
+    return f"/static/agents/{filename}"
 
 
 def board_cards_for_run(run_dir: Path) -> dict[str, list[BoardCard]]:
@@ -1020,14 +1051,14 @@ def _display_log_timestamp(timestamp: str) -> str:
 
 
 def agent_catalog() -> list[dict[str, str]]:
-    return [
+    agents = [
         {
             "name": "Coordinator",
             "initials": "CO",
             "detail": "Plans the delivery journey and delegates work.",
-            "model": "gpt-4.1",
+            "model": "OpenAI or Gemini",
             "reasoning": "none",
-            "provider": "OpenAI",
+            "provider": "Planning model",
         },
         {
             "name": "Business Analyst",
@@ -1057,9 +1088,9 @@ def agent_catalog() -> list[dict[str, str]]:
             "name": "Delivery Lead",
             "initials": "DL",
             "detail": "Coordinates build, quality review, publishing, and reporting.",
-            "model": "gpt-4.1",
+            "model": "OpenAI or Gemini",
             "reasoning": "none",
-            "provider": "OpenAI",
+            "provider": "Planning model",
         },
         {
             "name": "Builder",
@@ -1094,6 +1125,7 @@ def agent_catalog() -> list[dict[str, str]]:
             "provider": "Build engine",
         },
     ]
+    return [{**agent, "icon": agent_icon_path(agent["name"])} for agent in agents]
 
 
 def artifact_payload(run_dir: Path, artifact_path: str) -> dict[str, Any]:
@@ -1360,9 +1392,15 @@ def _plain_markdown_links(text: str) -> str:
     return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"`\1`", text)
 
 
-def system_checks(openai_key_configured: bool | None = None) -> list[dict[str, str]]:
+def system_checks(
+    openai_key_configured: bool | None = None,
+    gemini_key_configured: bool | None = None,
+) -> list[dict[str, str]]:
     if openai_key_configured is None:
         openai_key_configured = bool(os.getenv("OPENAI_API_KEY") or os.getenv("CODEX_API_KEY"))
+    if gemini_key_configured is None:
+        gemini_key_configured = bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
+    voice_available = bool(os.getenv("SPEECHMATICS_API_KEY"))
     codex_available = bool(_codex_binary())
     docker_available = bool(shutil.which("docker"))
     azure_available = bool(shutil.which("az"))
@@ -1375,6 +1413,20 @@ def system_checks(openai_key_configured: bool | None = None) -> list[dict[str, s
             "Ready to start projects."
             if openai_key_configured
             else "Add your key in Settings before starting.",
+        ),
+        _check(
+            "Gemini key",
+            gemini_key_configured,
+            "Gemini can power agent planning."
+            if gemini_key_configured
+            else "Add a Gemini key to use Google models.",
+        ),
+        _check(
+            "Voice input",
+            voice_available,
+            "Live dictation is available."
+            if voice_available
+            else "Browser dictation fallback is available when supported.",
         ),
         _check(
             "Builder",
@@ -1655,23 +1707,27 @@ def format_request_text(text: str) -> str:
 
 
 def format_request_text_with_llm(text: str, *, api_key: str = "") -> str:
-    """Use an LLM to structure a request, with the local formatter as fallback."""
+    """Use Gemini to structure a request."""
 
     clean = _normalize_speech_text(text)
     if not clean:
         return ""
     key = api_key.strip()
     if not key:
-        return format_request_text(clean)
+        raise GeminiFormatterUnavailable("Gemini is not configured.")
     try:
-        from langchain_openai import ChatOpenAI
-    except ImportError:
-        return format_request_text(clean)
+        from langchain_google_genai import ChatGoogleGenerativeAI
+    except ImportError as exc:
+        raise GeminiFormatterUnavailable("Gemini formatter dependencies are unavailable.") from exc
 
     prompt = (
         "Format the user's dictated product request into clean Markdown.\n"
         "Preserve 100% of the user's meaning and requested facts.\n"
         "Do not add new requirements, assumptions, technologies, deadlines, or scope.\n"
+        "Do not reduce the request to a generic placeholder.\n"
+        "Keep all concrete details, quantities, interactions, deliverables, constraints, "
+        "acceptance signals, and outcome requests when present.\n"
+        "If the text is unclear, preserve the clearest literal intent instead of deleting it.\n"
         "Remove filler greetings, duplicated speech fragments, and transcription noise.\n"
         "Do not include an Original Dictated Text section or raw transcript.\n"
         "Return only the polished request that the user can approve and edit.\n"
@@ -1687,18 +1743,40 @@ def format_request_text_with_llm(text: str, *, api_key: str = "") -> str:
         f"User text:\n{clean}"
     )
     try:
-        response = ChatOpenAI(
-            api_key=key,
+        response = ChatGoogleGenerativeAI(
+            google_api_key=key,
             model=os.getenv(
                 "AGENTIC_FORMATTER_MODEL",
-                os.getenv("AGENT_LLM_MODEL", "gpt-4.1-mini"),
+                "gemini-3.1-flash-lite",
             ),
             temperature=0,
         ).invoke(prompt)
-    except Exception:
-        return format_request_text(clean)
-    formatted = str(response.content).strip()
-    return formatted + "\n" if formatted else format_request_text(clean)
+    except Exception as exc:
+        raise GeminiFormatterUnavailable("Gemini is not reachable right now.") from exc
+    formatted = _llm_text_content(response.content).strip()
+    if not formatted:
+        raise GeminiFormatterUnavailable("Gemini returned an empty response.")
+    return formatted + "\n"
+
+
+class GeminiFormatterUnavailable(RuntimeError):
+    """Raised when the Gemini-backed request formatter cannot be used."""
+
+
+def _llm_text_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(part for part in parts if part.strip())
+    return str(content)
 
 
 def _normalize_speech_text(text: str) -> str:

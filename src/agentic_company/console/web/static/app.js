@@ -148,72 +148,426 @@ function setupSpeechChecks() {
 const voiceSessions = new Map();
 
 function setupVoiceButtons() {
-  const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
   document.querySelectorAll("[data-voice-target]").forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
       const target = byId(button.getAttribute("data-voice-target"));
       const preview = document.querySelector("[data-voice-preview]");
-      if (!Speech || !target) {
-        alert("Voice input is not supported by this browser. Please type the request.");
-        return;
-      }
       const active = voiceSessions.get(button);
       if (active) {
-        active.manualStop = true;
-        active.recognition.stop();
+        active.stop();
         voiceSessions.delete(button);
         button.textContent = "Start dictation";
+        setLanguagePickerDisabled(false);
         if (preview) preview.classList.add("hidden");
         return;
       }
 
-      const recognition = new Speech();
-      recognition.lang = "en-US";
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      const session = { recognition, manualStop: false };
-      voiceSessions.set(button, session);
-      button.textContent = "Stop dictation";
-      if (preview) {
-        preview.classList.remove("hidden");
-        preview.textContent = "Listening...";
+      if (!target) return;
+      button.textContent = "Listening...";
+      setLanguagePickerDisabled(true);
+      showVoicePreview(preview, "Listening...");
+      try {
+        const session = await startSpeechmaticsDictation(target, preview);
+        voiceSessions.set(button, session);
+        button.textContent = "Stop dictation";
+        return;
+      } catch {
+        try {
+          const session = startBrowserDictation(target, preview);
+          voiceSessions.set(button, session);
+          button.textContent = "Stop dictation";
+          return;
+        } catch {
+          button.textContent = "Start dictation";
+          setLanguagePickerDisabled(false);
+          showVoicePreview(preview, "Voice input is unavailable. Please type your request.");
+        }
       }
-      recognition.onresult = (event) => {
-        const finalParts = [];
-        const interimParts = [];
-        for (let index = event.resultIndex; index < event.results.length; index += 1) {
-          const transcript = event.results[index][0].transcript.trim();
-          if (!transcript) continue;
-          if (event.results[index].isFinal) {
-            finalParts.push(transcript);
-          } else {
-            interimParts.push(transcript);
-          }
-        }
-        if (finalParts.length) {
-          target.value = `${target.value} ${finalParts.join(" ")}`.replace(/\s+/g, " ").trim();
-        }
-        if (preview) {
-          preview.textContent = interimParts.length
-            ? `Listening: ${interimParts.join(" ")}`
-            : "Listening...";
-        }
-      };
-      recognition.onend = () => {
-        if (!session.manualStop) {
-          try {
-            recognition.start();
-            return;
-          } catch {
-            // Browser refused auto-restart; fall through to stopped state.
-          }
-        }
-        voiceSessions.delete(button);
-        button.textContent = "Start dictation";
-        if (preview) preview.classList.add("hidden");
-      };
-      recognition.start();
     });
+  });
+}
+
+async function startSpeechmaticsDictation(target, preview) {
+  if (!navigator.mediaDevices?.getUserMedia || !window.WebSocket) {
+    throw new Error("Speechmatics browser APIs are unavailable.");
+  }
+  const response = await fetch("/api/voice/speechmatics-token", { method: "POST" });
+  if (!response.ok) throw new Error("Voice token unavailable.");
+  const payload = await response.json();
+  if (!payload.enabled || !payload.token || !payload.rt_url) {
+    throw new Error("Speechmatics is disabled.");
+  }
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  const audioContext = new AudioContextClass();
+  const source = audioContext.createMediaStreamSource(stream);
+  const processor = audioContext.createScriptProcessor(4096, 1, 1);
+  const language = selectedDictationLanguage();
+  const socket = new WebSocket(
+    `${payload.rt_url}/${encodeURIComponent(language)}?jwt=${encodeURIComponent(payload.token)}`,
+  );
+  const session = {
+    stopped: false,
+    stop() {
+      this.stopped = true;
+      try {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ message: "EndOfStream" }));
+        }
+      } catch {
+        // Best-effort shutdown.
+      }
+      try {
+        socket.close();
+      } catch {
+        // Best-effort shutdown.
+      }
+      cleanupSpeechmaticsSession(stream, source, processor, audioContext);
+    },
+  };
+  processor.onaudioprocess = (event) => {
+    if (socket.readyState !== WebSocket.OPEN) return;
+    const input = event.inputBuffer.getChannelData(0);
+    socket.send(input.slice(0).buffer);
+  };
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const fail = () => {
+      if (settled || session.stopped) return;
+      settled = true;
+      cleanupSpeechmaticsSession(stream, source, processor, audioContext);
+      setLanguagePickerDisabled(false);
+      reject(new Error("Speechmatics realtime connection failed."));
+    };
+    socket.binaryType = "arraybuffer";
+    socket.onopen = () => {
+      socket.send(
+        JSON.stringify({
+          message: "StartRecognition",
+          audio_format: {
+            type: "raw",
+            encoding: "pcm_f32le",
+            sample_rate: audioContext.sampleRate,
+          },
+          transcription_config: {
+            language,
+            operating_point: "enhanced",
+            enable_partials: true,
+            max_delay: 1,
+          },
+        }),
+      );
+    };
+    socket.onmessage = (event) => {
+      const message = JSON.parse(event.data);
+      if (message.message === "Error") {
+        fail();
+        return;
+      }
+      if (message.message === "RecognitionStarted") {
+        settled = true;
+        source.connect(processor);
+        processor.connect(audioContext.destination);
+        showVoicePreview(preview, "Listening...");
+        resolve(session);
+        return;
+      }
+      if (message.message === "AddPartialTranscript") {
+        const partial = transcriptFromSpeechmaticsMessage(message);
+        if (partial) showVoicePreview(preview, `Listening: ${partial}`);
+        return;
+      }
+      if (message.message === "AddTranscript") {
+        const transcript = transcriptFromSpeechmaticsMessage(message);
+        appendTranscript(target, transcript);
+        showVoicePreview(preview, "Listening...");
+      }
+    };
+    socket.onerror = fail;
+    socket.onclose = () => {
+      if (!settled) fail();
+    };
+  });
+}
+
+function startBrowserDictation(target, preview) {
+  const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Speech) throw new Error("Browser dictation is unavailable.");
+  showVoicePreview(preview, "Listening...");
+  const recognition = new Speech();
+  recognition.lang = browserSpeechLanguage(selectedDictationLanguage());
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  const session = {
+    recognition,
+    manualStop: false,
+    stop() {
+      this.manualStop = true;
+      this.recognition.stop();
+    },
+  };
+  recognition.onresult = (event) => {
+    const finalParts = [];
+    const interimParts = [];
+    for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      const transcript = event.results[index][0].transcript.trim();
+      if (!transcript) continue;
+      if (event.results[index].isFinal) {
+        finalParts.push(transcript);
+      } else {
+        interimParts.push(transcript);
+      }
+    }
+    if (finalParts.length) {
+      appendTranscript(target, finalParts.join(" "));
+    }
+    if (preview) {
+      preview.textContent = interimParts.length
+        ? `Listening: ${interimParts.join(" ")}`
+        : "Listening...";
+    }
+  };
+  recognition.onend = () => {
+    if (!session.manualStop) {
+      try {
+        recognition.start();
+        return;
+      } catch {
+        // Browser refused auto-restart; fall through to stopped state.
+      }
+    }
+    setLanguagePickerDisabled(false);
+    if (preview) preview.classList.add("hidden");
+  };
+  recognition.start();
+  return session;
+}
+
+function cleanupSpeechmaticsSession(stream, source, processor, audioContext) {
+  try {
+    processor.disconnect();
+  } catch {
+    // Already disconnected.
+  }
+  try {
+    source.disconnect();
+  } catch {
+    // Already disconnected.
+  }
+  stream.getTracks().forEach((track) => track.stop());
+  audioContext.close();
+}
+
+function showVoicePreview(preview, text) {
+  if (!preview) return;
+  preview.classList.remove("hidden");
+  preview.textContent = text;
+}
+
+function appendTranscript(target, transcript) {
+  if (!transcript) return;
+  target.value = `${target.value} ${transcript}`.replace(/\s+/g, " ").trim();
+}
+
+function transcriptFromSpeechmaticsMessage(message) {
+  if (message.metadata?.transcript) return message.metadata.transcript.trim();
+  if (!Array.isArray(message.results)) return "";
+  return message.results
+    .map((result) => result.alternatives?.[0]?.content || "")
+    .filter(Boolean)
+    .reduce((text, token) => {
+      if (!text) return token;
+      return /^[.,!?;:%)]$/.test(token) ? `${text}${token}` : `${text} ${token}`;
+    }, "")
+    .trim();
+}
+
+function selectedDictationLanguage() {
+  const hidden = document.querySelector("[data-dictation-language]");
+  return hidden?.value || "en";
+}
+
+function dictationLanguageLabel() {
+  const picker = document.querySelector("[data-language-picker]");
+  return picker?.value || "English";
+}
+
+function browserSpeechLanguage(code) {
+  const mapping = {
+    ar: "ar-SA",
+    ca: "ca-ES",
+    cs: "cs-CZ",
+    da: "da-DK",
+    de: "de-DE",
+    el: "el-GR",
+    en: "en-US",
+    es: "es-ES",
+    fi: "fi-FI",
+    fr: "fr-FR",
+    he: "he-IL",
+    hi: "hi-IN",
+    hu: "hu-HU",
+    id: "id-ID",
+    it: "it-IT",
+    ja: "ja-JP",
+    ko: "ko-KR",
+    nl: "nl-NL",
+    no: "nb-NO",
+    pl: "pl-PL",
+    pt: "pt-PT",
+    ro: "ro-RO",
+    ru: "ru-RU",
+    sk: "sk-SK",
+    sv: "sv-SE",
+    th: "th-TH",
+    tr: "tr-TR",
+    uk: "uk-UA",
+    vi: "vi-VN",
+    yue: "zh-HK",
+    cmn: "zh-CN",
+  };
+  return mapping[code] || code;
+}
+
+function setupLanguagePickers() {
+  document.querySelectorAll("[data-language-picker]").forEach((picker) => {
+    const target = byId(picker.getAttribute("data-language-target"));
+    const optionsPanel = document.querySelector("[data-language-options]");
+    const options = Array.from(document.querySelectorAll("[data-language-option]"));
+    const syncLanguage = () => {
+      const value = picker.value.trim().toLowerCase();
+      const matched = options.find((option) => option.dataset.languageLabel.toLowerCase() === value);
+      const code = matched ? matched.dataset.languageCode : languageCodeFromLabel(picker.value);
+      if (target) target.value = code || "en";
+    };
+    const filterOptions = () => {
+      const query = picker.value.trim().toLowerCase();
+      options.forEach((option) => {
+        const label = `${option.dataset.languageLabel} ${option.dataset.languageCode}`.toLowerCase();
+        option.hidden = Boolean(query) && !label.includes(query);
+      });
+    };
+    picker.addEventListener("input", syncLanguage);
+    picker.addEventListener("input", filterOptions);
+    picker.addEventListener("change", syncLanguage);
+    picker.addEventListener("focus", () => {
+      if (optionsPanel) optionsPanel.classList.add("open");
+    });
+    document.addEventListener("click", (event) => {
+      if (!event.target.closest("[data-language-picker]") && !event.target.closest("[data-language-options]")) {
+        if (optionsPanel) optionsPanel.classList.remove("open");
+      }
+    });
+    options.forEach((option) => {
+      option.addEventListener("click", () => {
+        picker.value = option.dataset.languageLabel;
+        if (target) target.value = option.dataset.languageCode;
+        updateNewProjectSummaries();
+        if (optionsPanel) optionsPanel.classList.remove("open");
+      });
+    });
+    syncLanguage();
+  });
+}
+
+function setupProviderModelSelectors() {
+  document.querySelectorAll("[data-provider-select]").forEach((providerSelect) => {
+    const modelSelect = byId(providerSelect.getAttribute("data-model-target"));
+    if (!modelSelect) return;
+    const syncModels = () => {
+      const provider = providerSelect.value || "openai";
+      const options = Array.from(modelSelect.querySelectorAll("option"));
+      options.forEach((option) => {
+        option.disabled = option.dataset.provider !== provider;
+      });
+      const selected = modelSelect.options[modelSelect.selectedIndex];
+      if (!selected || selected.disabled) {
+        const defaultModel = modelSelect.dataset[provider.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase()) + "Default"];
+        const next = options.find((option) => option.dataset.provider === provider && option.value === defaultModel)
+          || options.find((option) => option.dataset.provider === provider);
+        if (next) modelSelect.value = next.value;
+      }
+      document.querySelectorAll("[data-provider-note]").forEach((note) => {
+        note.classList.toggle("hidden", note.dataset.providerNote !== provider);
+      });
+      updateNewProjectSummaries();
+    };
+    providerSelect.addEventListener("change", syncModels);
+    modelSelect.addEventListener("change", updateNewProjectSummaries);
+    syncModels();
+  });
+}
+
+function selectedOptionText(selector) {
+  const select = document.querySelector(selector);
+  if (!select) return "";
+  return select.options[select.selectedIndex]?.textContent?.trim() || select.value || "";
+}
+
+function updateNewProjectSummaries() {
+  const planning = document.querySelector("[data-planning-summary]");
+  if (planning) {
+    const provider = selectedOptionText("[name='agent_provider']");
+    const model = selectedOptionText("[name='agent_model']");
+    planning.textContent = [provider, model].filter(Boolean).join(" · ");
+  }
+
+  const build = document.querySelector("[data-build-summary]");
+  if (build) {
+    const model = selectedOptionText("[name='codex_model']");
+    const reasoning = selectedOptionText("[name='codex_reasoning']").replace(" (default)", "");
+    const speed = selectedOptionText("[name='service_tier']").replace(" (default)", "");
+    build.textContent = [model, reasoning, speed].filter(Boolean).join(" · ");
+  }
+
+  const voice = document.querySelector("[data-voice-summary]");
+  const picker = document.querySelector("[data-language-picker]");
+  if (voice && picker) voice.textContent = picker.value || "English";
+}
+
+function setupNewProjectSummaries() {
+  ["[name='codex_model']", "[name='codex_reasoning']", "[name='service_tier']", "[data-language-picker]"].forEach((selector) => {
+    document.querySelectorAll(selector).forEach((node) => {
+      node.addEventListener("change", updateNewProjectSummaries);
+      node.addEventListener("input", updateNewProjectSummaries);
+    });
+  });
+  updateNewProjectSummaries();
+}
+
+function setupClickableCards() {
+  document.querySelectorAll("[data-card-href]").forEach((card) => {
+    const open = () => {
+      const href = card.getAttribute("data-card-href");
+      if (href) window.location.href = href;
+    };
+    const isInteractiveTarget = (target) => Boolean(target.closest("a, button, input, select, textarea, label, form"));
+    card.addEventListener("click", (event) => {
+      if (isInteractiveTarget(event.target)) return;
+      open();
+    });
+    card.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      if (isInteractiveTarget(event.target)) return;
+      event.preventDefault();
+      open();
+    });
+  });
+}
+
+function languageCodeFromLabel(value) {
+  const match = value.match(/\(([^)]+)\)\s*$/);
+  return match ? match[1].toLowerCase() : "";
+}
+
+function setLanguagePickerDisabled(disabled) {
+  document.querySelectorAll("[data-language-picker]").forEach((picker) => {
+    picker.disabled = disabled;
+  });
+  document.querySelectorAll("[data-language-option]").forEach((option) => {
+    option.disabled = disabled;
   });
 }
 
@@ -227,31 +581,55 @@ function setupFormatButtons() {
       const formData = new FormData();
       formData.append("text", target.value);
       button.textContent = "Formatting...";
-      const response = await fetch("/api/format-request", { method: "POST", body: formData });
-      const payload = await response.json();
-      preview.classList.remove("hidden");
-      preview.innerHTML = `
-        <h3>Preview</h3>
-        <div class="markdown-preview">${renderMarkdown(payload.formatted)}</div>
-        <button class="primary" type="button" id="apply-format">Use this text</button>
-        <button class="secondary" type="button" id="keep-editing">Keep editing</button>
-      `;
-      byId("apply-format").addEventListener("click", () => {
-        target.value = payload.formatted;
-        target.classList.add("hidden");
-        if (formattedView) {
-          formattedView.classList.remove("hidden");
-          formattedView.innerHTML = renderMarkdown(payload.formatted);
+      try {
+        const response = await fetch("/api/format-request", { method: "POST", body: formData });
+        const payload = await response.json();
+        preview.classList.remove("hidden");
+        if (!payload.ok) {
+          preview.innerHTML = `
+            <h3>Format with Gemini</h3>
+            <p class="alert">${escapeHtml(payload.message || "Gemini formatting is unavailable right now. Your text was not changed.")}</p>
+            <button class="secondary" type="button" id="keep-editing">Keep editing</button>
+          `;
+          byId("keep-editing").addEventListener("click", () => {
+            preview.classList.add("hidden");
+          });
+          return;
         }
-        document.querySelectorAll("[data-edit-target]").forEach((editButton) => {
-          editButton.classList.remove("hidden");
+        preview.innerHTML = `
+          <h3>Preview</h3>
+          <div class="markdown-preview">${renderMarkdown(payload.formatted)}</div>
+          <button class="primary" type="button" id="apply-format">Use this text</button>
+          <button class="secondary" type="button" id="keep-editing">Keep editing</button>
+        `;
+        byId("apply-format").addEventListener("click", () => {
+          target.value = payload.formatted;
+          target.classList.add("hidden");
+          if (formattedView) {
+            formattedView.classList.remove("hidden");
+            formattedView.innerHTML = renderMarkdown(payload.formatted);
+          }
+          document.querySelectorAll("[data-edit-target]").forEach((editButton) => {
+            editButton.classList.remove("hidden");
+          });
+          preview.classList.add("hidden");
         });
-        preview.classList.add("hidden");
-      });
-      byId("keep-editing").addEventListener("click", () => {
-        preview.classList.add("hidden");
-      });
-      button.textContent = "Format with AI";
+        byId("keep-editing").addEventListener("click", () => {
+          preview.classList.add("hidden");
+        });
+      } catch (_) {
+        preview.classList.remove("hidden");
+        preview.innerHTML = `
+          <h3>Format with Gemini</h3>
+          <p class="alert">Sorry, Gemini formatting is not reachable right now. Your text was not changed.</p>
+          <button class="secondary" type="button" id="keep-editing">Keep editing</button>
+        `;
+        byId("keep-editing").addEventListener("click", () => {
+          preview.classList.add("hidden");
+        });
+      } finally {
+        button.textContent = "Format with AI";
+      }
     });
   });
 }
@@ -343,12 +721,32 @@ function setupPersistentDetails() {
 function renderActivityGroup(group) {
   return `
     <details class="activity-owner-group" data-detail-key="activity-${escapeHtml(group.owner)}" open>
-      <summary>${escapeHtml(group.owner)} <span>${group.count}</span></summary>
+      <summary>${agentLabel(group.owner)} <span class="activity-owner-count">${group.count}</span></summary>
       <div class="log-list">
         ${group.logs.map((entry) => `<article class="log-entry">${entry}</article>`).join("")}
       </div>
     </details>
   `;
+}
+
+function agentLabel(owner) {
+  const safeOwner = escapeHtml(owner);
+  return `<span class="agent-label"><img src="${agentIcon(owner)}" alt="" loading="lazy">${safeOwner}</span>`;
+}
+
+function agentIcon(owner) {
+  const icons = {
+    "Coordinator": "coordinator.png",
+    "Business Analyst": "business-analyst.png",
+    "Solution Architect": "solution-architect.png",
+    "Delivery Planner": "delivery-planner.png",
+    "Delivery Lead": "delivery-lead.png",
+    "Builder": "builder.png",
+    "Quality Reviewer": "quality-reviewer.png",
+    "Publisher": "publisher.png",
+    "Release Reporter": "release-reporter.png",
+  };
+  return `/static/agents/${icons[owner] || "coordinator.png"}`;
 }
 
 function renderMarkdown(markdown) {
@@ -392,6 +790,10 @@ function escapeHtml(value) {
 setupSpeechChecks();
 setupSidebarToggle();
 setupScrollTop();
+setupLanguagePickers();
+setupProviderModelSelectors();
+setupNewProjectSummaries();
+setupClickableCards();
 setupVoiceButtons();
 setupFormatButtons();
 setupEditButtons();

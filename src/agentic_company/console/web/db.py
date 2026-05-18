@@ -273,27 +273,33 @@ class ConsoleRepository:
     def list_recent_projects_for_user(self, user_id: int, *, limit: int = 5) -> list[Project]:
         return self.list_projects_for_user(user_id)[:limit]
 
-    def public_demo_project(self) -> Project | None:
-        with self.connect() as conn:
-            row = conn.execute(
-                """
-                SELECT p.*,
-                       r.id AS latest_run_id,
-                       r.status AS latest_run_status,
-                       r.generated_app_url AS generated_app_url
-                FROM projects p
-                LEFT JOIN runs r ON r.id = (
-                    SELECT id FROM runs
-                    WHERE project_id = p.id
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                )
-                WHERE p.visibility = 'public_demo'
-                ORDER BY p.updated_at DESC, p.id DESC
+    def list_public_demo_projects(self, *, limit: int | None = None) -> list[Project]:
+        sql = """
+            SELECT p.*,
+                   r.id AS latest_run_id,
+                   r.status AS latest_run_status,
+                   r.generated_app_url AS generated_app_url
+            FROM projects p
+            LEFT JOIN runs r ON r.id = (
+                SELECT id FROM runs
+                WHERE project_id = p.id
+                ORDER BY created_at DESC
                 LIMIT 1
-                """
-            ).fetchone()
-        return _project(row) if row else None
+            )
+            WHERE p.visibility = 'public_demo'
+            ORDER BY p.updated_at DESC, p.id DESC
+        """
+        params: tuple[int, ...] = ()
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (limit,)
+        with self.connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_project(row) for row in rows]
+
+    def public_demo_project(self) -> Project | None:
+        projects = self.list_public_demo_projects(limit=1)
+        return projects[0] if projects else None
 
     def get_project_for_user(self, project_id: int, user_id: int) -> Project | None:
         with self.connect() as conn:
@@ -574,7 +580,14 @@ class ConsoleRepository:
         now = utc_now()
         with self.connect() as conn:
             project_row = conn.execute(
-                "SELECT id FROM projects WHERE visibility = 'public_demo' LIMIT 1"
+                """
+                SELECT p.id
+                FROM projects p
+                JOIN runs r ON r.project_id = p.id
+                WHERE p.visibility = 'public_demo' AND r.run_dir = ?
+                LIMIT 1
+                """,
+                (str(run_path),),
             ).fetchone()
             if project_row:
                 project_id = int(project_row["id"])

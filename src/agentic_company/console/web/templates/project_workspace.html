@@ -95,7 +95,7 @@
               <div class="mini-card">
                 <strong>{{ card.title }}</strong>
                 <small>
-                  {{ card.owner }} &middot; {{ card.status }}
+                  <span class="agent-label"><img src="{{ card.owner|agent_icon }}" alt="" loading="lazy">{{ card.owner }}</span> &middot; {{ card.status }}
                   {% if card.elapsed_label %}
                     &middot; <span class="duration-inline" data-duration-start="{{ card.started_at }}" data-duration-end="{{ card.completed_at }}">{{ card.elapsed_label }}</span>
                   {% endif %}
@@ -116,7 +116,7 @@
         <div class="activity-owner-list compact-activity" data-live-logs-run="{{ run.id }}">
           {% for group in activity_groups %}
             <details class="activity-owner-group" data-detail-key="overview-activity-{{ group.owner }}" open>
-              <summary>{{ group.owner }} <span>{{ group.count }}</span></summary>
+              <summary><span class="agent-label"><img src="{{ group.owner|agent_icon }}" alt="" loading="lazy">{{ group.owner }}</span> <span class="activity-owner-count">{{ group.count }}</span></summary>
               <div class="log-list">
                 {% for log in group.logs[-8:] %}
                   <article class="log-entry">{{ log|safe }}</article>
@@ -149,7 +149,7 @@
                     <a id="task-{{ card.id }}" class="task-card" href="/projects/{{ project.id }}/tasks/{{ card.id }}">
                       <div>
                         <strong>{{ card.title }}</strong>
-                        <small>{{ card.id }} &middot; {{ card.owner }}</small>
+                        <small>{{ card.id }} &middot; <span class="agent-label"><img src="{{ card.owner|agent_icon }}" alt="" loading="lazy">{{ card.owner }}</span></small>
                       </div>
                       <footer>
                         <span>{{ group.sprint }}</span>
@@ -179,7 +179,7 @@
         <div class="activity-owner-list" data-live-logs-run="{{ run.id }}">
           {% for group in activity_groups %}
             <details class="activity-owner-group" data-detail-key="activity-{{ group.owner }}" open>
-              <summary>{{ group.owner }} <span>{{ group.count }}</span></summary>
+              <summary><span class="agent-label"><img src="{{ group.owner|agent_icon }}" alt="" loading="lazy">{{ group.owner }}</span> <span class="activity-owner-count">{{ group.count }}</span></summary>
               <div class="log-list">
                 {% for log in group.logs %}
                   <article class="log-entry">{{ log|safe }}</article>
@@ -212,7 +212,7 @@
           {% for artifact in handoffs %}
             <a class="artifact-row" href="/artifacts/{{ run.id }}/{{ artifact.path }}">
               <span>{{ artifact.label }}</span>
-              <small>{{ artifact.business_agent }}</small>
+              <small><span class="agent-label"><img src="{{ artifact.business_agent|agent_icon }}" alt="" loading="lazy">{{ artifact.business_agent }}</span></small>
             </a>
           {% endfor %}
         </div>

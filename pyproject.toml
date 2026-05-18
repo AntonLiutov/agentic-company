@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "langchain>=1.0.0",
+    "langchain-google-genai>=4.0.0",
     "langchain-openai>=1.0.0",
     "langgraph>=1.1.9",
     "python-dotenv>=1.0.0",
@@ -42,7 +43,13 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-"agentic_company.console.web" = ["templates/*.html", "static/*"]
+"agentic_company.console.web" = [
+    "templates/*.html",
+    "static/*",
+    "static/agents/*.png",
+    "static/sponsors/*.ico",
+    "static/sponsors/*.svg",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -17,61 +17,156 @@
         Add your OpenAI key in <a href="/settings">Settings</a> before starting.
       </div>
     {% endif %}
-    <div class="form-grid">
-      <label>Project name<input name="name" placeholder="Team Task Tracker" required></label>
-      <label>Project type
-        <select name="mode">
-          <option value="simple_prototype">Simple prototype</option>
-          <option value="internal_tool">Internal tool</option>
-          <option value="platform_improvement">Platform improvement</option>
-          <option value="ui_web_app">UI/web app</option>
-        </select>
-      </label>
-      <label>Scope size
-        <select name="complexity">
-          <option value="simple">Small</option>
-          <option value="medium">Medium</option>
-          <option value="complex">Large</option>
-        </select>
-      </label>
-      <label>Agent model
-        <select name="agent_model">
-          {% for model in agent_models %}
-            <option value="{{ model }}" {{ "selected" if model == "gpt-4.1" else "" }}>{{ model }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>Build model
-        <select name="codex_model">
-          {% for model in codex_models %}
-            <option value="{{ model }}" {{ "selected" if model == "gpt-5.3-codex" else "" }}>{{ model }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>Reasoning
-        <select name="codex_reasoning">
-          {% for option in reasoning_options %}
-            <option value="{{ option }}" {{ "selected" if option == "medium" else "" }}>{{ option|title }}{{ " (default)" if option == "medium" else "" }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>Speed
-        <select name="service_tier">
-          {% for tier in service_tiers %}
-            <option value="{{ tier }}" {{ "selected" if tier == "standard" else "" }}>{{ tier|title }}{{ " (default)" if tier == "standard" else "" }}</option>
-          {% endfor %}
-        </select>
-      </label>
+    <div class="form-sections form-accordions">
+      <details class="form-section form-section-wide" open>
+        <summary>
+          <span>Project</span>
+          <small>Name, type, and scope</small>
+        </summary>
+        <p class="section-hint">Name the idea and set the delivery shape.</p>
+        <div class="form-grid form-grid-three">
+          <label>Project name<input name="name" placeholder="Team Task Tracker" value="{{ form_values.name }}" required></label>
+          <label>Project type
+            <select name="mode">
+              <option value="simple_prototype" {{ "selected" if form_values.mode == "simple_prototype" else "" }}>Simple prototype</option>
+              <option value="internal_tool" {{ "selected" if form_values.mode == "internal_tool" else "" }}>Internal tool</option>
+              <option value="platform_improvement" {{ "selected" if form_values.mode == "platform_improvement" else "" }}>Platform improvement</option>
+              <option value="ui_web_app" {{ "selected" if form_values.mode == "ui_web_app" else "" }}>UI/web app</option>
+            </select>
+          </label>
+          <label>Scope size
+            <select name="complexity">
+              <option value="simple" {{ "selected" if form_values.complexity == "simple" else "" }}>Small</option>
+              <option value="medium" {{ "selected" if form_values.complexity == "medium" else "" }}>Medium</option>
+              <option value="complex" {{ "selected" if form_values.complexity == "complex" else "" }}>Large</option>
+            </select>
+          </label>
+        </div>
+      </details>
+      <details class="form-section" open>
+        <summary>
+          <span>Planning</span>
+          <small data-planning-summary>{{ "Google Gemini" if form_values.agent_provider == "google_gemini" else "OpenAI" }} · {{ form_values.agent_model }}</small>
+        </summary>
+        <p
+          class="section-hint provider-readiness compact-chip"
+          data-provider-note="google_gemini"
+          title="Shared Gemini quota is very limited and may cover only a few small projects per day. If quota is exhausted, a run can stop before completion. Use small projects or add your own Gemini key in Settings."
+        >
+          <span class="status-dot warning-dot"></span> Shared quota
+        </p>
+        <p class="section-hint provider-readiness compact-chip hidden" data-provider-note="openai">
+          <span class="status-dot"></span> Key ready
+        </p>
+        <div class="form-grid form-grid-two">
+          <label>Provider
+            <select name="agent_provider" data-provider-select data-model-target="agent-model-select">
+              {% for value, label in agent_providers %}
+                <option value="{{ value }}" {{ "selected" if value == form_values.agent_provider else "" }}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Model
+            <select id="agent-model-select" name="agent_model" data-openai-default="gpt-4.1" data-google-gemini-default="gemini-3-flash-preview">
+              <optgroup label="OpenAI">
+                {% for model in agent_models %}
+                  <option value="{{ model }}" data-provider="openai" {{ "selected" if model == form_values.agent_model else "" }}>{{ model }}</option>
+                {% endfor %}
+              </optgroup>
+              <optgroup label="Google Gemini">
+                {% for model in gemini_models %}
+                  <option value="{{ model }}" data-provider="google_gemini" {{ "selected" if model == form_values.agent_model else "" }}>{{ model }}</option>
+                {% endfor %}
+              </optgroup>
+            </select>
+          </label>
+        </div>
+      </details>
+      <details class="form-section">
+        <summary>
+          <span>Build settings</span>
+          <small data-build-summary>{{ form_values.codex_model }} · {{ form_values.codex_reasoning|title }} · {{ form_values.service_tier|title }}</small>
+        </summary>
+        <p class="section-hint">Codex uses your OpenAI key to build and publish.</p>
+        <p
+          class="section-hint provider-readiness cost-guidance compact-chip"
+          title="OpenAI usage depends on project size, model choice, speed, retries, and deployment work. For demos, keep requests small and monitor usage."
+        >
+          <span class="status-dot cost-dot"></span> Cost guidance
+        </p>
+        <div class="form-grid form-grid-three">
+          <label>Build model
+            <select name="codex_model">
+              {% for model in codex_models %}
+                <option value="{{ model }}" {{ "selected" if model == form_values.codex_model else "" }}>{{ model }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Reasoning
+            <select name="codex_reasoning">
+              {% for option in reasoning_options %}
+                <option value="{{ option }}" {{ "selected" if option == form_values.codex_reasoning else "" }}>{{ option|title }}{{ " (default)" if option == "medium" else "" }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Speed
+            <select name="service_tier">
+              {% for tier in service_tiers %}
+                <option value="{{ tier }}" {{ "selected" if tier == form_values.service_tier else "" }}>{{ tier|title }}{{ " (default)" if tier == "standard" else "" }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+      </details>
+      <details class="form-section">
+        <summary>
+          <span>Voice settings</span>
+          <small data-voice-summary>{{ dictation_language_label }}</small>
+        </summary>
+        <p class="section-hint">Choose the dictation language before recording.</p>
+        <label class="language-picker">Dictation language
+          <input
+            id="dictation-language-search"
+            value="{{ dictation_language_label }}"
+            list="dictation-language-options"
+            data-language-picker
+            data-language-target="dictation-language-code"
+            autocomplete="off"
+          >
+          <input
+            id="dictation-language-code"
+            name="dictation_language"
+            type="hidden"
+            value="{{ form_values.dictation_language }}"
+            data-dictation-language
+          >
+          <div class="language-picker-options" data-language-options>
+            {% for language in dictation_languages %}
+              <button
+                class="language-option {{ 'recommended' if language.recommended else '' }}"
+                type="button"
+                data-language-option
+                data-language-code="{{ language.code }}"
+                data-language-label="{{ language.name }} ({{ language.code }})"
+              >
+                <span>{{ language.name }}</span>
+                <small>{{ language.code }}</small>
+              </button>
+            {% endfor %}
+          </div>
+        </label>
+      </details>
     </div>
     <label class="full">Product request
-      <textarea id="request-text" name="request_text" rows="8" placeholder="Paste or dictate the product request here..." required></textarea>
+      <textarea id="request-text" name="request_text" rows="8" placeholder="Paste or dictate the product request here..." required>{{ form_values.request_text }}</textarea>
     </label>
     <div id="formatted-request-view" class="formatted-request hidden"></div>
     <div class="button-row">
       <button class="secondary" type="button" data-voice-target="request-text">Start dictation</button>
       <button class="secondary" type="button" data-format-target="request-text">Format with AI</button>
       <button class="secondary hidden" type="button" data-edit-target="request-text">Edit request</button>
-      <span class="hint">These choices help the team plan the right path.</span>
+      <span class="sponsor-chip"><img class="sponsor-icon" src="/static/sponsors/gemini.svg" alt="">Built with Gemini API</span>
+      <span class="sponsor-chip"><img class="sponsor-icon" src="/static/sponsors/speechmatics.ico" alt="">Powered by Speechmatics</span>
     </div>
     <div class="voice-preview hidden" data-voice-preview></div>
     <div id="format-preview" class="preview-panel hidden"></div>

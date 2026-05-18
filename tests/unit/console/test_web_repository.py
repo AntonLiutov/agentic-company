@@ -34,7 +34,27 @@ def test_public_demo_project_visible_to_other_users(tmp_path, monkeypatch):
     project = repo.public_demo_project()
     assert project is not None
     assert project.name == "Demo Journey"
+    assert repo.list_public_demo_projects() == [project]
     assert repo.get_project_for_user(project.id, user.id) is not None
+
+
+def test_seed_public_demo_from_env_does_not_replace_other_showcases(tmp_path, monkeypatch):
+    first_run_dir = tmp_path / "runs" / "first"
+    second_run_dir = tmp_path / "runs" / "second"
+    first_run_dir.mkdir(parents=True)
+    second_run_dir.mkdir(parents=True)
+    repo = ConsoleRepository(tmp_path / "console.db")
+    repo.init_schema()
+
+    monkeypatch.setenv("PUBLIC_DEMO_RUN_DIR", str(first_run_dir))
+    monkeypatch.setenv("PUBLIC_DEMO_PROJECT_NAME", "First Showcase")
+    repo.seed_public_demo_from_env()
+    monkeypatch.setenv("PUBLIC_DEMO_RUN_DIR", str(second_run_dir))
+    monkeypatch.setenv("PUBLIC_DEMO_PROJECT_NAME", "Second Showcase")
+    repo.seed_public_demo_from_env()
+
+    projects = repo.list_public_demo_projects()
+    assert {project.name for project in projects} == {"First Showcase", "Second Showcase"}
 
 
 def test_provider_key_storage_masks_and_deletes(tmp_path, monkeypatch):
@@ -96,6 +116,7 @@ def test_project_can_be_promoted_and_demoted_as_showcase(tmp_path):
 
     assert promoted is not None
     assert promoted.visibility == "public_demo"
+    assert promoted.id in {item.id for item in repo.list_public_demo_projects()}
     assert project.id in {item.id for item in repo.list_projects_for_user(owner.id)}
 
     assert repo.set_project_visibility(project.id, owner.id, "private")

@@ -23,13 +23,49 @@
         </form>
       {% endif %}
     </section>
+    <section class="panel">
+      <h2>Google Gemini</h2>
+      {% if gemini_credential %}
+        <p class="success">Saved key: {{ gemini_credential.masked_value }}</p>
+        {% if gemini_credential.storage_mode == "local_demo" %}
+          <p class="hint">Saved for this workspace. The full key is never shown.</p>
+        {% endif %}
+      {% else %}
+        <p class="hint">
+          {% if platform_gemini_configured %}
+            Platform Gemini is ready. Add your own key only if you want to override it.
+          {% else %}
+            Add a Gemini API key to use Google models for planning.
+          {% endif %}
+        </p>
+      {% endif %}
+      <form class="settings-key-form" method="post" action="/settings/gemini">
+        <label>Gemini API key<input name="api_key" type="password" autocomplete="off" placeholder="AIza..."></label>
+        <button class="primary" type="submit">Save</button>
+      </form>
+      {% if gemini_credential %}
+        <form class="settings-delete-form" method="post" action="/settings/gemini/delete">
+          <button class="danger" type="submit">Delete key</button>
+        </form>
+      {% endif %}
+    </section>
+  </section>
+  <section class="grid two">
     <div class="panel">
       <h2>Defaults</h2>
       <div class="settings-list">
-        <p><strong>Planning</strong><span>gpt-4.1</span></p>
+        <p><strong>Planning</strong><span>OpenAI gpt-4.1 or Gemini 3.1 Flash-Lite</span></p>
         <p><strong>Building</strong><span>gpt-5.3-codex / Medium</span></p>
         <p><strong>Speed</strong><span>Standard</span></p>
       </div>
+    </div>
+    <div class="panel">
+      <h2>Sponsors</h2>
+      <div class="sponsor-row">
+        <span class="sponsor-chip"><img class="sponsor-icon" src="/static/sponsors/gemini.svg" alt="">Built with Gemini API</span>
+        <span class="sponsor-chip"><img class="sponsor-icon" src="/static/sponsors/speechmatics.ico" alt="">Powered by Speechmatics</span>
+      </div>
+      <p class="hint">Speechmatics powers live dictation. Gemini can power agent planning and reasoning.</p>
     </div>
   </section>
   <section class="panel">
@@ -44,4 +80,3 @@
     </div>
   </section>
 {% endblock %}
-

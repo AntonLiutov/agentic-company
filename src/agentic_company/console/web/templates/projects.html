@@ -4,24 +4,28 @@
 {% block content %}
   <section class="panel">
     <div class="panel-heading">
-      <h2>Private Projects</h2>
+      <h2>My Projects</h2>
       <a class="button primary" href="/projects/new">New Project</a>
     </div>
     {% if projects %}
       <div class="project-grid">
         {% for project in projects %}
           <a class="project-card" href="/projects/{{ project.id }}">
-            <span class="badge status-badge"><i></i>{{ (project.latest_run_status or project.status)|status_label }}</span>
-            <h3>{{ project.name }}</h3>
-            <p>{{ project.mode|project_type_label }} &middot; {{ project.complexity|scope_size_label }}</p>
-            {% if project.request_text %}
-              <small class="request-preview">{{ project.request_text[:180] }}{{ "..." if project.request_text|length > 180 else "" }}</small>
-            {% endif %}
-            {% if project.generated_app_url %}
-              <small>Generated app is available</small>
-            {% else %}
-              <small>Latest update: {{ project.updated_at[:16].replace("T", " ") }}</small>
-            {% endif %}
+            <div class="project-card-main">
+              <h3>{{ project.name }}</h3>
+              <p>{{ "Showcase" if project.visibility == "public_demo" else "Private" }} &middot; {{ project.mode|project_type_label }} &middot; {{ project.complexity|scope_size_label }}</p>
+              {% if project.display_request %}
+                <small class="request-preview">{{ project.display_request[:180] }}{{ "..." if project.display_request|length > 180 else "" }}</small>
+              {% endif %}
+              {% if project.generated_app_url %}
+                <small class="project-update">Generated app is available</small>
+              {% else %}
+                <small class="project-update">Latest update: {{ project.updated_at[:16].replace("T", " ") }}</small>
+              {% endif %}
+            </div>
+            <div class="project-card-side">
+              <span class="badge status-badge"><i></i>{{ (project.latest_run_status or project.status)|status_label }}</span>
+            </div>
           </a>
         {% endfor %}
       </div>
