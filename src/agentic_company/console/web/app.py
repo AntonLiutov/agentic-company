@@ -216,7 +216,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         complexity: Annotated[str, Form()] = "simple",
         reasoning: Annotated[str, Form()] = "medium",
         agent_provider: Annotated[str, Form()] = "google_gemini",
-        agent_model: Annotated[str, Form()] = "gemini-3-flash-preview",
+        agent_model: Annotated[str, Form()] = "gemini-3.1-flash-lite",
         codex_model: Annotated[str, Form()] = "gpt-5.3-codex",
         codex_reasoning: Annotated[str, Form()] = "medium",
         service_tier: Annotated[str, Form()] = "standard",
@@ -955,7 +955,7 @@ def new_project_form_values(
     mode: str = "simple_prototype",
     complexity: str = "simple",
     agent_provider: str = "google_gemini",
-    agent_model: str = "gemini-3-flash-preview",
+    agent_model: str = "gemini-3.1-flash-lite",
     codex_model: str = "gpt-5.3-codex",
     codex_reasoning: str = "medium",
     service_tier: str = "standard",
@@ -982,7 +982,7 @@ def normalize_agent_provider(provider: str) -> str:
 
 def normalize_agent_model(provider: str, model: str) -> str:
     if provider == "google_gemini":
-        return model if model in GEMINI_MODEL_OPTIONS else "gemini-3-flash-preview"
+        return model if model in GEMINI_MODEL_OPTIONS else "gemini-3.1-flash-lite"
     return model if model in AGENT_MODEL_OPTIONS else "gpt-4.1"
 
 
@@ -1088,7 +1088,7 @@ def restart_run_settings(repo: ConsoleRepository, project: Project, user: User) 
         )
     return {
         "agent_provider": saved_agent_provider or "google_gemini",
-        "agent_model": saved_agent_model or "gemini-3-flash-preview",
+        "agent_model": saved_agent_model or "gemini-3.1-flash-lite",
         "agent_reasoning": agent_reasoning,
         "codex_model": codex_model,
         "codex_reasoning": latest_env.get("AGENTIC_CODEX_REASONING_EFFORT", "medium"),

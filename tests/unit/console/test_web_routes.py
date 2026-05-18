@@ -46,7 +46,7 @@ def test_new_project_page_renders_dictation_language_picker(tmp_path):
     assert "Planning" in response.text
     assert "Google Gemini" in response.text
     assert "Google Gemini" in response.text
-    assert "gemini-3-flash-preview" in response.text
+    assert "gemini-3.1-flash-lite" in response.text
     assert "Powered by Speechmatics" in response.text
     assert "English (en)" in response.text
     assert "Italian (it)" in response.text
@@ -252,7 +252,7 @@ def test_create_project_can_use_gemini_for_agent_executor(tmp_path, monkeypatch)
             "mode": "simple_prototype",
             "complexity": "simple",
             "agent_provider": "google_gemini",
-            "agent_model": "gemini-3-flash-preview",
+            "agent_model": "gemini-3.1-flash-lite",
             "codex_model": "gpt-5.3-codex",
             "codex_reasoning": "medium",
             "service_tier": "standard",
@@ -265,7 +265,7 @@ def test_create_project_can_use_gemini_for_agent_executor(tmp_path, monkeypatch)
         encoding="utf-8"
     )
     assert "AGENT_LLM_PROVIDER=google_gemini" in env_text
-    assert "AGENT_LLM_MODEL=gemini-3-flash-preview" in env_text
+    assert "AGENT_LLM_MODEL=gemini-3.1-flash-lite" in env_text
     assert "GOOGLE_API_KEY=AIza-project" in env_text
     assert "CODEX_API_KEY=sk-codex-project" in env_text
     assert "OPENAI_API_KEY=sk-codex-project" in env_text

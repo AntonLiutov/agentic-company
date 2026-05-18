@@ -67,7 +67,7 @@
             </select>
           </label>
           <label>Model
-            <select id="agent-model-select" name="agent_model" data-openai-default="gpt-4.1" data-google-gemini-default="gemini-3-flash-preview">
+            <select id="agent-model-select" name="agent_model" data-openai-default="gpt-4.1" data-google-gemini-default="gemini-3.1-flash-lite">
               <optgroup label="OpenAI">
                 {% for model in agent_models %}
                   <option value="{{ model }}" data-provider="openai" {{ "selected" if model == form_values.agent_model else "" }}>{{ model }}</option>
