@@ -27,6 +27,117 @@ def test_register_dashboard_and_logout(tmp_path):
     assert client.post("/logout", follow_redirects=False).status_code == 303
 
 
+def test_new_project_page_renders_dictation_language_picker(tmp_path):
+    app = create_app(ConsoleRepository(tmp_path / "console.db"))
+    client = TestClient(app)
+    client.post(
+        "/register",
+        data={
+            "email": "voice@example.test",
+            "username": "voiceuser",
+            "password": "password-1",
+        },
+    )
+
+    response = client.get("/projects/new")
+
+    assert response.status_code == 200
+    assert "Dictation language" in response.text
+    assert "Planning" in response.text
+    assert "Google Gemini" in response.text
+    assert "Google Gemini" in response.text
+    assert "gemini-3-flash-preview" in response.text
+    assert "Powered by Speechmatics" in response.text
+    assert "English (en)" in response.text
+    assert "Italian (it)" in response.text
+    assert "data-dictation-language" in response.text
+
+
+def test_speechmatics_token_endpoint_disabled_without_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("SPEECHMATICS_API_KEY", raising=False)
+    app = create_app(ConsoleRepository(tmp_path / "console.db"))
+    client = TestClient(app)
+    client.post(
+        "/register",
+        data={
+            "email": "no-voice@example.test",
+            "username": "novoice",
+            "password": "password-1",
+        },
+    )
+
+    response = client.post("/api/voice/speechmatics-token")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["enabled"] is False
+    assert payload["fallback"] == "browser"
+    assert "token" not in payload
+    italian = next(language for language in payload["languages"] if language["code"] == "it")
+    assert italian["name"] == "Italian"
+    assert italian["recommended"] is True
+
+
+def test_speechmatics_token_endpoint_returns_short_lived_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPEECHMATICS_API_KEY", "rc-long-lived-secret")
+    monkeypatch.setenv("SPEECHMATICS_RT_URL", "wss://speech.example.test/v2")
+    monkeypatch.setattr(
+        "agentic_company.console.web.app.create_speechmatics_realtime_token",
+        lambda: "short-lived-token",
+    )
+    app = create_app(ConsoleRepository(tmp_path / "console.db"))
+    client = TestClient(app)
+    client.post(
+        "/register",
+        data={
+            "email": "voice-token@example.test",
+            "username": "voicetoken",
+            "password": "password-1",
+        },
+    )
+
+    response = client.post("/api/voice/speechmatics-token")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["enabled"] is True
+    assert payload["token"] == "short-lived-token"
+    assert payload["rt_url"] == "wss://speech.example.test/v2"
+    assert "rc-long-lived-secret" not in response.text
+
+
+def test_settings_can_save_and_delete_gemini_key(tmp_path):
+    repo = ConsoleRepository(tmp_path / "console.db")
+    app = create_app(repo)
+    client = TestClient(app)
+    client.post(
+        "/register",
+        data={
+            "email": "gemini@example.test",
+            "username": "geminiuser",
+            "password": "password-1",
+        },
+    )
+
+    save_response = client.post(
+        "/settings/gemini",
+        data={"api_key": "AIza-demo-secret"},
+        follow_redirects=False,
+    )
+    settings_response = client.get("/settings")
+
+    assert save_response.status_code == 303
+    assert repo.get_provider_secret(1, "google_gemini") is not None
+    assert "Google Gemini" in settings_response.text
+    assert "Built with Gemini API" in settings_response.text
+    assert "AIza-demo-secret" not in settings_response.text
+
+    delete_response = client.post("/settings/gemini/delete", follow_redirects=False)
+
+    assert delete_response.status_code == 303
+    assert repo.get_provider_secret(1, "google_gemini") is None
+
+
 def test_private_project_not_visible_to_another_user(tmp_path):
     repo = ConsoleRepository(tmp_path / "console.db")
     repo.init_schema()
@@ -83,6 +194,7 @@ def test_create_project_starts_run_with_monkeypatched_runtime(tmp_path, monkeypa
             "request_text": "Build a task tracker",
             "mode": "simple_prototype",
             "complexity": "simple",
+            "agent_provider": "openai",
             "agent_model": "gpt-4.1",
             "codex_model": "gpt-5.3-codex",
             "codex_reasoning": "medium",
@@ -98,9 +210,178 @@ def test_create_project_starts_run_with_monkeypatched_runtime(tmp_path, monkeypa
     )
     assert "OPENAI_API_KEY=sk-test-project" in env_text
     assert "CODEX_API_KEY=sk-test-project" in env_text
+    assert "AGENT_LLM_PROVIDER=openai" in env_text
     assert "AGENT_CODEX_MODEL=gpt-5.3-codex" in env_text
     assert "AGENTIC_CODEX_SERVICE_TIER=standard" in env_text
     assert repo.list_projects_for_user(1)[0].name == "Task Tracker"
+
+
+def test_create_project_can_use_gemini_for_agent_executor(tmp_path, monkeypatch):
+    repo = ConsoleRepository(tmp_path / "console.db")
+    app = create_app(repo)
+    client = TestClient(app)
+    client.post(
+        "/register",
+        data={
+            "email": "gemini-run@example.test",
+            "username": "geminirun",
+            "password": "password-1",
+        },
+    )
+    repo.save_provider_secret(1, "openai", "sk-codex-project")
+    repo.save_provider_secret(1, "google_gemini", "AIza-project")
+    run_root = tmp_path / "runs"
+
+    def fake_create_console_run(username, requirements_text):
+        run_dir = run_root / "console-gemini"
+        run_dir.mkdir(parents=True)
+        (run_dir / "00-requirements.md").write_text(requirements_text, encoding="utf-8")
+        return run_dir
+
+    monkeypatch.setattr(
+        "agentic_company.console.web.app.create_web_console_run",
+        fake_create_console_run,
+    )
+    monkeypatch.setattr("agentic_company.console.web.app.start_codex_execution", lambda run_dir: 1)
+
+    response = client.post(
+        "/projects",
+        data={
+            "name": "Gemini Task",
+            "request_text": "Build a tiny Gemini-routed app",
+            "mode": "simple_prototype",
+            "complexity": "simple",
+            "agent_provider": "google_gemini",
+            "agent_model": "gemini-3-flash-preview",
+            "codex_model": "gpt-5.3-codex",
+            "codex_reasoning": "medium",
+            "service_tier": "standard",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    env_text = (run_root / "console-gemini" / "generated-project" / ".env").read_text(
+        encoding="utf-8"
+    )
+    assert "AGENT_LLM_PROVIDER=google_gemini" in env_text
+    assert "AGENT_LLM_MODEL=gemini-3-flash-preview" in env_text
+    assert "GOOGLE_API_KEY=AIza-project" in env_text
+    assert "CODEX_API_KEY=sk-codex-project" in env_text
+    assert "OPENAI_API_KEY=sk-codex-project" in env_text
+
+
+def test_create_project_can_use_platform_gemini_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENT_GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("GOOGLE_API_KEY", "AIza-platform")
+    repo = ConsoleRepository(tmp_path / "console.db")
+    app = create_app(repo)
+    client = TestClient(app)
+    client.post(
+        "/register",
+        data={
+            "email": "platform-gemini@example.test",
+            "username": "platformgemini",
+            "password": "password-1",
+        },
+    )
+    repo.save_provider_secret(1, "openai", "sk-codex-project")
+    run_root = tmp_path / "runs"
+
+    def fake_create_console_run(username, requirements_text):
+        run_dir = run_root / "console-platform-gemini"
+        run_dir.mkdir(parents=True)
+        (run_dir / "00-requirements.md").write_text(requirements_text, encoding="utf-8")
+        return run_dir
+
+    monkeypatch.setattr(
+        "agentic_company.console.web.app.create_web_console_run",
+        fake_create_console_run,
+    )
+    monkeypatch.setattr("agentic_company.console.web.app.start_codex_execution", lambda run_dir: 1)
+
+    response = client.post(
+        "/projects",
+        data={
+            "name": "Platform Gemini Task",
+            "request_text": "Build a tiny Gemini-routed app",
+            "mode": "simple_prototype",
+            "complexity": "simple",
+            "codex_model": "gpt-5.3-codex",
+            "codex_reasoning": "medium",
+            "service_tier": "standard",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    env_text = (run_root / "console-platform-gemini" / "generated-project" / ".env").read_text(
+        encoding="utf-8"
+    )
+    assert "AGENT_LLM_PROVIDER=google_gemini" in env_text
+    assert "GOOGLE_API_KEY=AIza-platform" in env_text
+
+
+def test_format_request_uses_gemini_key_not_openai_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("GEMINI_FORMATTER_API_KEY", raising=False)
+    monkeypatch.delenv("AGENT_GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("GOOGLE_API_KEY", "AIza-platform-format")
+    repo = ConsoleRepository(tmp_path / "console.db")
+    app = create_app(repo)
+    client = TestClient(app)
+    client.post(
+        "/register",
+        data={
+            "email": "format@example.test",
+            "username": "formatuser",
+            "password": "password-1",
+        },
+    )
+    repo.save_provider_secret(1, "openai", "sk-openai-format")
+    captured: dict[str, str] = {}
+
+    def fake_format(text: str, *, api_key: str = "") -> str:
+        captured["text"] = text
+        captured["api_key"] = api_key
+        return "# Product Request\n\n## Summary\nFormatted by Gemini.\n"
+
+    monkeypatch.setattr("agentic_company.console.web.app.format_request_text_with_llm", fake_format)
+
+    response = client.post("/api/format-request", data={"text": "make a tiny app"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["source"] == "gemini"
+    assert payload["formatted"].startswith("# Product Request")
+    assert captured == {"text": "make a tiny app", "api_key": "AIza-platform-format"}
+
+
+def test_format_request_without_gemini_keeps_text_and_shows_message(tmp_path, monkeypatch):
+    monkeypatch.delenv("GEMINI_FORMATTER_API_KEY", raising=False)
+    monkeypatch.delenv("AGENT_GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    repo = ConsoleRepository(tmp_path / "console.db")
+    app = create_app(repo)
+    client = TestClient(app)
+    client.post(
+        "/register",
+        data={
+            "email": "nogemini@example.test",
+            "username": "nogemini",
+            "password": "password-1",
+        },
+    )
+
+    response = client.post("/api/format-request", data={"text": "keep my original text"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["source"] == "gemini"
+    assert payload["formatted"] == "keep my original text"
+    assert "not configured" in payload["message"]
 
 
 def test_create_project_requires_saved_openai_key(tmp_path, monkeypatch):
@@ -468,6 +749,68 @@ def test_public_demo_project_cannot_be_deleted_by_user(tmp_path, monkeypatch):
     assert repo.public_demo_project() is not None
 
 
+def test_showcase_page_lists_multiple_public_projects_with_owner_private_action(tmp_path):
+    repo = ConsoleRepository(tmp_path / "console.db")
+    repo.init_schema()
+    owner = repo.create_user(
+        email="multi-showcase-owner@example.test",
+        username="multishowcase",
+        password="password-1",
+    )
+    other = repo.create_user(
+        email="multi-showcase-other@example.test",
+        username="othershowcase",
+        password="password-1",
+    )
+    owner_project = repo.create_project(
+        owner_user_id=owner.id,
+        name="Owner Showcase",
+        request_text="",
+        mode="simple_prototype",
+        complexity="simple",
+    )
+    other_project = repo.create_project(
+        owner_user_id=other.id,
+        name="Other Showcase",
+        request_text="other public",
+        mode="simple_prototype",
+        complexity="simple",
+    )
+    owner_run_dir = tmp_path / "runs" / "owner-showcase"
+    owner_run_dir.mkdir(parents=True)
+    (owner_run_dir / "00-requirements.md").write_text(
+        "# Product Request\n\n## Summary\nSeeded showcase request from run folder.\n",
+        encoding="utf-8",
+    )
+    repo.create_run(
+        project_id=owner_project.id,
+        run_uid="owner-showcase",
+        run_dir=owner_run_dir,
+        status="ready",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+    assert repo.set_project_visibility(owner_project.id, owner.id, "public_demo")
+    assert repo.set_project_visibility(other_project.id, other.id, "public_demo")
+    app = create_app(repo)
+    client = TestClient(app)
+    client.cookies.set("agentic_console_session", repo.create_session(owner.id))
+
+    response = client.get("/public-demo")
+    artifacts_response = client.get("/artifacts")
+
+    assert response.status_code == 200
+    assert "Owner Showcase" in response.text
+    assert "Other Showcase" in response.text
+    assert "Seeded showcase request from run folder" in response.text
+    assert "Public project</small>" not in response.text
+    assert f"/projects/{owner_project.id}/demote" in response.text
+    assert f"/projects/{other_project.id}/demote" not in response.text
+    assert artifacts_response.status_code == 200
+    assert "Owner Showcase" in artifacts_response.text
+    assert "Other Showcase" in artifacts_response.text
+
+
 def test_artifact_path_traversal_is_rejected(tmp_path):
     repo = ConsoleRepository(tmp_path / "console.db")
     repo.init_schema()
@@ -695,5 +1038,7 @@ def test_project_agents_tab_shows_agent_catalog(tmp_path):
 
     assert response.status_code == 200
     assert "Coordinator" in response.text
-    assert "OpenAI" in response.text
+    assert "/static/agents/coordinator.png" in response.text
+    assert "/static/agents/release-reporter.png" in response.text
+    assert "OpenAI or Gemini" in response.text
     assert ">none<" not in response.text.lower()

@@ -5,11 +5,11 @@
   <section class="panel">
     <h2>Choose a project to inspect reports</h2>
     <div class="artifact-list">
-      {% if public_demo %}
-        <a class="artifact-row" href="/projects/{{ public_demo.id }}?tab=artifacts">
-          <span>{{ public_demo.name }}</span><small>Showcase</small>
+      {% for project in public_demos %}
+        <a class="artifact-row" href="/projects/{{ project.id }}?tab=artifacts">
+          <span>{{ project.name }}</span><small>Showcase</small>
         </a>
-      {% endif %}
+      {% endfor %}
       {% for project in projects %}
         <a class="artifact-row" href="/projects/{{ project.id }}?tab=artifacts">
           <span>{{ project.name }}</span><small>{{ (project.latest_run_status or project.status)|status_label }}</small>

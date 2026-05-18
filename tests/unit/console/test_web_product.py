@@ -5,6 +5,7 @@ from agentic_company.console.web.product import (
     BoardCard,
     _activity_groups_for_card,
     _business_log_text,
+    _llm_text_content,
     _log_matches_card,
     _reports_for_card,
     agent_catalog,
@@ -49,6 +50,20 @@ def test_format_request_text_structures_dictated_request_without_greeting():
     assert "> hi hi I want" not in formatted
 
 
+def test_llm_text_content_extracts_gemini_text_block():
+    content = [
+        {
+            "type": "text",
+            "text": "# Product Request\n\n## Summary\nDevelop a smart joke app.",
+            "extras": {"signature": "hidden"},
+        }
+    ]
+
+    assert _llm_text_content(content) == (
+        "# Product Request\n\n## Summary\nDevelop a smart joke app."
+    )
+
+
 def test_status_label_hides_internal_agent_and_graph_terms():
     assert status_label("head") == "Coordinator"
     assert status_label("head_delivery_completed") == "Delivery Complete"
@@ -58,18 +73,20 @@ def test_status_label_hides_internal_agent_and_graph_terms():
     assert status_label("feature_queue_qa_completed_deployment_ready") == "Ready for Publishing"
 
 
-def test_agent_catalog_uses_role_initials():
-    initials = {agent["name"]: agent["initials"] for agent in agent_catalog()}
+def test_agent_catalog_uses_role_initials_and_icons():
+    agents = {agent["name"]: agent for agent in agent_catalog()}
 
-    assert initials["Coordinator"] == "CO"
-    assert initials["Business Analyst"] == "BA"
-    assert initials["Solution Architect"] == "SA"
-    assert initials["Delivery Planner"] == "DP"
-    assert initials["Delivery Lead"] == "DL"
-    assert initials["Builder"] == "B"
-    assert initials["Quality Reviewer"] == "QR"
-    assert initials["Publisher"] == "P"
-    assert initials["Release Reporter"] == "RP"
+    assert agents["Coordinator"]["initials"] == "CO"
+    assert agents["Coordinator"]["icon"] == "/static/agents/coordinator.png"
+    assert agents["Business Analyst"]["initials"] == "BA"
+    assert agents["Business Analyst"]["icon"] == "/static/agents/business-analyst.png"
+    assert agents["Solution Architect"]["initials"] == "SA"
+    assert agents["Delivery Planner"]["initials"] == "DP"
+    assert agents["Delivery Lead"]["initials"] == "DL"
+    assert agents["Builder"]["initials"] == "B"
+    assert agents["Quality Reviewer"]["initials"] == "QR"
+    assert agents["Publisher"]["initials"] == "P"
+    assert agents["Release Reporter"]["initials"] == "RP"
 
 
 def test_handoff_reports_expose_only_html_release_reports():

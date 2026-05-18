@@ -1,7 +1,7 @@
 <section class="agent-grid">
   {% for agent in agents %}
     <article class="agent-card">
-      <div class="agent-avatar">{{ agent.initials }}</div>
+      <img class="agent-avatar" src="{{ agent.icon }}" alt="" loading="lazy">
       <h3>{{ agent.name }}</h3>
       <p>{{ agent.detail }}</p>
       <div class="chip-row">

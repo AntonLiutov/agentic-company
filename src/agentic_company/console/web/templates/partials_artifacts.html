@@ -13,14 +13,14 @@
             <article id="task-{{ item.card.id }}" class="task-report-card">
               <div>
                 <strong>{{ item.card.title }}</strong>
-                <small>{{ item.card.id }} &middot; {{ item.card.owner }} &middot; {{ item.card.status }}</small>
+                <small>{{ item.card.id }} &middot; <span class="agent-label"><img src="{{ item.card.owner|agent_icon }}" alt="" loading="lazy">{{ item.card.owner }}</span> &middot; {{ item.card.status }}</small>
               </div>
               {% if item.reports %}
                 <div class="artifact-list compact">
                   {% for artifact in item.reports %}
                     <a class="artifact-row" href="/artifacts/{{ run.id }}/{{ artifact.path }}">
                       <span>{{ artifact.label }}</span>
-                      <small>{{ artifact.business_agent }}</small>
+                      <small><span class="agent-label"><img src="{{ artifact.business_agent|agent_icon }}" alt="" loading="lazy">{{ artifact.business_agent }}</span></small>
                     </a>
                   {% endfor %}
                 </div>
@@ -42,7 +42,7 @@
           {% for artifact in group.artifacts %}
             <a class="artifact-row" href="/artifacts/{{ run.id }}/{{ artifact.path }}">
               <span>{{ artifact.label }}</span>
-              <small>{{ artifact.business_agent }}</small>
+              <small><span class="agent-label"><img src="{{ artifact.business_agent|agent_icon }}" alt="" loading="lazy">{{ artifact.business_agent }}</span></small>
             </a>
           {% endfor %}
         </div>

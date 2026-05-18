@@ -25,10 +25,12 @@ DEFAULT_AGENT_LLM_MODEL = "gpt-4.1"
 DEFAULT_AGENT_REASONING_EFFORT = None
 DEFAULT_COORDINATOR_AGENT_REASONING_EFFORT = None
 DEFAULT_SPECIALIST_AGENT_REASONING_EFFORT = None
+AGENT_LLM_PROVIDER_ENV = "AGENT_LLM_PROVIDER"
 AGENT_REASONING_EFFORT_ENV = "AGENT_REASONING_EFFORT"
 COORDINATOR_AGENT_REASONING_EFFORT_ENV = "COORDINATOR_AGENT_REASONING_EFFORT"
 SPECIALIST_AGENT_REASONING_EFFORT_ENV = "SPECIALIST_AGENT_REASONING_EFFORT"
 VALID_AGENT_REASONING_EFFORTS = {"none", "low", "medium", "high", "xhigh"}
+VALID_AGENT_LLM_PROVIDERS = {"openai", "google_gemini"}
 
 
 class InvokableAgent(Protocol):
@@ -38,7 +40,7 @@ class InvokableAgent(Protocol):
         """Run the agent."""
 
 
-ChatModelFactory = Callable[[str, str, str | None], Any]
+ChatModelFactory = Callable[..., Any]
 CreateAgentFactory = Callable[[Any, Sequence[Callable[..., str]], str], InvokableAgent]
 GraphNode = Callable[[Any], Any]
 
@@ -117,18 +119,27 @@ class LangChainCreateAgentRuntime:
     def invoke(self, request: LangChainAgentRequest) -> Any:
         """Build and invoke a LangChain `create_agent` instance."""
 
-        api_key = agent_env_value("OPENAI_API_KEY", request.delivery_state)
+        provider = _agent_llm_provider(request.delivery_state)
+        api_key = _agent_provider_api_key(provider, request.delivery_state)
         if not api_key:
+            provider_label = "Gemini" if provider == "google_gemini" else "OpenAI"
+            required_key = "GOOGLE_API_KEY" if provider == "google_gemini" else "OPENAI_API_KEY"
             raise MissingAgentRuntimeConfig(
-                f"OPENAI_API_KEY is required for {request.agent_id} decisions."
+                f"{required_key} is required for {request.agent_id} {provider_label} decisions."
             )
 
-        os.environ.setdefault("OPENAI_API_KEY", api_key)
+        _set_provider_process_env(provider, api_key)
         model_name = _first_env_value(request.model_env_keys, request.delivery_state)
         model_name = model_name or request.default_model
         reasoning_effort = _reasoning_effort_for_request(request)
-        reasoning_effort = _reasoning_effort_for_model(model_name, reasoning_effort)
-        model = self.chat_model_factory(
+        reasoning_effort = (
+            _reasoning_effort_for_model(model_name, reasoning_effort)
+            if provider == "openai"
+            else None
+        )
+        model = _create_chat_model(
+            self.chat_model_factory,
+            provider,
             model_name,
             api_key,
             reasoning_effort,
@@ -525,13 +536,16 @@ def coordinator_quality_review_policy(
 
 
 def agent_env_value(key: str, delivery_state: DeliveryState) -> str:
-    """Read runtime config from process env, run env, generated project env, or repo env."""
+    """Read runtime config, preferring run-local settings over process defaults."""
 
+    for env_path in _run_env_candidate_paths(delivery_state):
+        value = _read_env_file(env_path).get(key)
+        if value:
+            return value.strip()
     process_value = os.getenv(key)
     if process_value:
         return process_value.strip()
-
-    for env_path in _env_candidate_paths(delivery_state):
+    for env_path in _repo_env_candidate_paths(delivery_state):
         value = _read_env_file(env_path).get(key)
         if value:
             return value.strip()
@@ -568,7 +582,60 @@ def _reasoning_effort_for_model(model: str, reasoning_effort: str | None) -> str
     return None
 
 
-def _default_chat_model_factory(model: str, api_key: str, reasoning_effort: str | None) -> Any:
+def _agent_llm_provider(delivery_state: DeliveryState) -> str:
+    configured = agent_env_value(AGENT_LLM_PROVIDER_ENV, delivery_state).strip().lower()
+    provider = configured or "openai"
+    if provider not in VALID_AGENT_LLM_PROVIDERS:
+        allowed = ", ".join(sorted(VALID_AGENT_LLM_PROVIDERS))
+        raise ValueError(f"{AGENT_LLM_PROVIDER_ENV} must be one of: {allowed}")
+    return provider
+
+
+def _agent_provider_api_key(provider: str, delivery_state: DeliveryState) -> str:
+    if provider == "google_gemini":
+        return agent_env_value("GOOGLE_API_KEY", delivery_state) or agent_env_value(
+            "GEMINI_API_KEY", delivery_state
+        )
+    return agent_env_value("OPENAI_API_KEY", delivery_state)
+
+
+def _set_provider_process_env(provider: str, api_key: str) -> None:
+    os.environ[AGENT_LLM_PROVIDER_ENV] = provider
+    if provider == "google_gemini":
+        os.environ.setdefault("GOOGLE_API_KEY", api_key)
+        os.environ.setdefault("GEMINI_API_KEY", api_key)
+    else:
+        os.environ.setdefault("OPENAI_API_KEY", api_key)
+
+
+def _create_chat_model(
+    factory: ChatModelFactory,
+    provider: str,
+    model: str,
+    api_key: str,
+    reasoning_effort: str | None,
+) -> Any:
+    try:
+        return factory(provider, model, api_key, reasoning_effort)
+    except TypeError:
+        return factory(model, api_key, reasoning_effort)
+
+
+def _default_chat_model_factory(
+    provider: str,
+    model: str,
+    api_key: str,
+    reasoning_effort: str | None,
+) -> Any:
+    if provider == "google_gemini":
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+        except ImportError as exc:  # pragma: no cover - environment dependent
+            raise LangChainAgentRuntimeError(
+                f"LangChain Google Gemini dependencies are missing: {exc}"
+            ) from exc
+        return ChatGoogleGenerativeAI(model=model, google_api_key=api_key)
+
     try:
         from langchain_openai import ChatOpenAI
     except ImportError as exc:  # pragma: no cover - environment dependent
@@ -593,7 +660,7 @@ def _default_create_agent_factory(
     return create_agent(model=model, tools=list(tools), system_prompt=system_prompt)
 
 
-def _env_candidate_paths(delivery_state: DeliveryState) -> list[Path]:
+def _run_env_candidate_paths(delivery_state: DeliveryState) -> list[Path]:
     paths: list[Path] = []
     target_dir = delivery_state.get("target_project_dir")
     if target_dir:
@@ -602,13 +669,24 @@ def _env_candidate_paths(delivery_state: DeliveryState) -> list[Path]:
     if run_dir:
         run_path = Path(str(run_dir))
         paths.append(run_path / "generated-project" / ".env")
+    return _unique_existing_or_candidate_paths(paths)
+
+
+def _repo_env_candidate_paths(delivery_state: DeliveryState) -> list[Path]:
+    paths: list[Path] = []
+    run_dir = delivery_state.get("run_dir")
+    if run_dir:
+        run_path = Path(str(run_dir))
         repo_env = _find_repo_env(run_path)
         if repo_env:
             paths.append(repo_env)
     repo_env = _find_repo_env(Path.cwd())
     if repo_env:
         paths.append(repo_env)
+    return _unique_existing_or_candidate_paths(paths)
 
+
+def _unique_existing_or_candidate_paths(paths: list[Path]) -> list[Path]:
     unique_paths: list[Path] = []
     seen: set[Path] = set()
     for path in paths:

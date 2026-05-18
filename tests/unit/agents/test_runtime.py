@@ -150,6 +150,7 @@ def test_langchain_create_agent_runtime_invokes_agent_with_scoped_prompt(
 
 def test_langchain_create_agent_runtime_requires_openai_key(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("AGENT_LLM_PROVIDER", raising=False)
     monkeypatch.chdir(tmp_path)
     state = initial_delivery_state(run_id="run", run_dir=tmp_path / "run")
     runtime = LangChainCreateAgentRuntime(
@@ -168,6 +169,73 @@ def test_langchain_create_agent_runtime_requires_openai_key(tmp_path, monkeypatc
                 max_steps=1,
             )
         )
+
+
+def test_langchain_create_agent_runtime_uses_google_gemini_provider(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setenv("AGENT_LLM_PROVIDER", "google_gemini")
+    monkeypatch.setenv("GOOGLE_API_KEY", "google-test-key")
+    monkeypatch.setenv("AGENT_LLM_MODEL", "gemini-3.1-flash-lite")
+    monkeypatch.setenv("AGENT_REASONING_EFFORT", "high")
+    state = initial_delivery_state(run_id="run", run_dir=tmp_path)
+    captured: dict[str, object] = {}
+
+    def create_agent_factory(model, tools, system_prompt):
+        captured["model"] = model
+        return FakeAgent([])
+
+    runtime = LangChainCreateAgentRuntime(
+        chat_model_factory=lambda model, api_key, reasoning_effort: {
+            "model": model,
+            "api_key": api_key,
+            "reasoning_effort": reasoning_effort,
+        },
+        create_agent_factory=create_agent_factory,
+    )
+
+    runtime.invoke(
+        LangChainAgentRequest(
+            agent_id="test-agent",
+            system_prompt="system",
+            user_prompt="user",
+            tools=[],
+            delivery_state=state,
+            max_steps=1,
+        )
+    )
+
+    assert captured["model"] == {
+        "model": "gemini-3.1-flash-lite",
+        "api_key": "google-test-key",
+        "reasoning_effort": None,
+    }
+
+
+def test_langchain_create_agent_runtime_requires_google_key_for_gemini(tmp_path, monkeypatch):
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGENT_LLM_PROVIDER", "google_gemini")
+    state = initial_delivery_state(run_id="run", run_dir=tmp_path)
+    runtime = LangChainCreateAgentRuntime(
+        chat_model_factory=lambda model, api_key, reasoning_effort: None,
+        create_agent_factory=lambda model, tools, system_prompt: FakeAgent([]),
+    )
+
+    with pytest.raises(MissingAgentRuntimeConfig) as exc_info:
+        runtime.invoke(
+            LangChainAgentRequest(
+                agent_id="test-agent",
+                system_prompt="system",
+                user_prompt="user",
+                tools=[],
+                delivery_state=state,
+                max_steps=1,
+            )
+        )
+
+    assert "GOOGLE_API_KEY is required" in str(exc_info.value)
 
 
 def test_langchain_specialist_agent_executor_runs_codex_exec_tool(tmp_path, monkeypatch):
@@ -411,6 +479,23 @@ def test_agent_env_value_reads_generated_project_env(tmp_path, monkeypatch):
     state = initial_delivery_state(run_id="run", run_dir=run_dir)
 
     assert agent_env_value("OPENAI_API_KEY", state) == "sk-generated"
+
+
+def test_agent_env_value_prefers_run_env_over_process_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("AGENT_LLM_MODEL", "gpt-4.1")
+    monkeypatch.chdir(tmp_path)
+    run_dir = tmp_path / "run"
+    generated_project = run_dir / "generated-project"
+    generated_project.mkdir(parents=True)
+    (generated_project / ".env").write_text(
+        "AGENT_LLM_PROVIDER=google_gemini\nAGENT_LLM_MODEL=gemini-3.1-flash-lite\n",
+        encoding="utf-8",
+    )
+    state = initial_delivery_state(run_id="run", run_dir=run_dir)
+
+    assert agent_env_value("AGENT_LLM_PROVIDER", state) == "google_gemini"
+    assert agent_env_value("AGENT_LLM_MODEL", state) == "gemini-3.1-flash-lite"
 
 
 def test_agent_env_value_reads_utf8_sig_env_file(tmp_path, monkeypatch):

@@ -3,7 +3,38 @@
 {% block page_title %}Showcase{% endblock %}
 {% block content %}
   <section class="panel">
-    <h2>Showcase is not ready yet</h2>
-    <p class="empty">A read-only showcase project will appear here.</p>
+    <div class="panel-heading">
+      <h2>Public Projects</h2>
+      <a class="button primary" href="/projects/new">New Project</a>
+    </div>
+    {% if public_demos %}
+      <div class="project-grid">
+        {% for project in public_demos %}
+          <article class="project-card clickable-card" data-card-href="/projects/{{ project.id }}" role="link" tabindex="0">
+            <a class="project-card-link" href="/projects/{{ project.id }}" aria-label="Open {{ project.name }}"></a>
+            <div class="project-card-main">
+              <h3>{{ project.name }}</h3>
+              <p>Showcase &middot; {{ project.mode|project_type_label }} &middot; {{ project.complexity|scope_size_label }}</p>
+              <small class="request-preview">{{ project.display_request[:180] if project.display_request else "Project details are available inside the workspace." }}{{ "..." if project.display_request|length > 180 else "" }}</small>
+              {% if project.generated_app_url %}
+                <small class="project-update">Generated app is available</small>
+              {% else %}
+                <small class="project-update">Latest update: {{ project.updated_at[:16].replace("T", " ") }}</small>
+              {% endif %}
+            </div>
+            <div class="project-card-side">
+              <span class="badge status-badge"><i></i>{{ (project.latest_run_status or project.status)|status_label }}</span>
+              {% if project.owner_user_id == user.id %}
+                <form class="project-card-action" method="post" action="/projects/{{ project.id }}/demote" data-confirm="Move this showcase back to your private projects?">
+                  <button type="submit">Make Private</button>
+                </form>
+              {% endif %}
+            </div>
+          </article>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="empty">A read-only showcase project will appear here.</p>
+    {% endif %}
   </section>
 {% endblock %}
