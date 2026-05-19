@@ -1,0 +1,282 @@
+{% extends "base.html" %}
+{% block title %}Agentic Delivery Lab{% endblock %}
+{% block body_class %}landing-body{% endblock %}
+{% block auth_content %}
+  <img class="landing-cover" src="{{ url_for('static', path='brand/agentic-delivery-lab-cover.png') }}?v={{ asset_version }}" alt="Agentic Delivery Lab AI agent team cover">
+  <div class="landing-overlay"></div>
+
+  <header class="landing-nav">
+    <a class="landing-brand" href="/">
+      <span class="brand-mark small">{% include "partials_logo.html" %}</span>
+      <strong>Agentic Delivery Lab</strong>
+    </a>
+    <nav aria-label="Landing sections">
+      <a href="#product">Product</a>
+      <a href="#story">Story</a>
+      <a href="#workflow">Workflow</a>
+      <a href="#partners">Partners</a>
+      <a class="landing-showcase-link" href="{{ showcase_href }}">Showcase</a>
+    </nav>
+  </header>
+
+  <section class="landing-hero">
+    <div class="landing-intro">
+      <p class="eyebrow">AI-native software delivery</p>
+      <h1>Turn product ideas into shipped demos.</h1>
+      <p>
+        A coordinated AI delivery team plans, builds, reviews, publishes, and explains the result in one workspace.
+      </p>
+      <a class="landing-showcase-link landing-hero-showcase" href="{{ showcase_href }}">Showcase</a>
+    </div>
+
+  </section>
+
+  <section class="landing-section product-proof-section" id="product">
+    <div class="product-proof-copy">
+      <h2>See the work move from first brief to delivery.</h2>
+      <p>
+        Agentic Delivery Lab does not leave progress hidden inside separate chats. The board shows planning, ownership, quality review, publishing, and reporting as the AI team moves.
+      </p>
+      <div class="story-beats">
+        <span>Brief captured</span>
+        <span>Agents assigned</span>
+        <span>Work reviewed</span>
+        <span>Demo ready</span>
+      </div>
+    </div>
+    <div class="landing-carousel product-carousel" data-carousel data-carousel-interval="5000" aria-label="Product progress carousel">
+      <div class="carousel-track">
+        <figure class="carousel-slide is-active">
+          <img src="/static/brand/landing-progress-1.png" alt="Delivery board with planning work in progress">
+          <figcaption>Planning starts</figcaption>
+        </figure>
+        <figure class="carousel-slide">
+          <img src="/static/brand/landing-progress-2.png" alt="Delivery board showing solution design running">
+          <figcaption>Progress is visible</figcaption>
+        </figure>
+        <figure class="carousel-slide">
+          <img src="/static/brand/landing-progress-3.png" alt="Delivery board showing task progress over time">
+          <figcaption>Outcome lands</figcaption>
+        </figure>
+      </div>
+      <div class="carousel-dots" aria-label="Product carousel controls">
+        <button class="is-active" type="button" data-carousel-dot="0" aria-label="Show first product screen"></button>
+        <button type="button" data-carousel-dot="1" aria-label="Show second product screen"></button>
+        <button type="button" data-carousel-dot="2" aria-label="Show third product screen"></button>
+      </div>
+    </div>
+  </section>
+
+  <section class="landing-section visual-story-section" id="story">
+    <div class="visual-story-copy">
+      <h2>Speak the idea. Keep the intent. Ship the result.</h2>
+      <p>
+        A founder can dictate a rough request, clean it with Gemini, and launch a visible delivery workflow. The platform keeps the human goal in front while agents handle the specialist work.
+      </p>
+      <div class="persona-inline-card">
+        <img src="/static/agents/coordinator.png" alt="">
+        <div>
+          <strong>Founder</strong>
+          <p>"I need a demo team tonight, not another blank chat."</p>
+          <span>Turns a rough product idea into visible delivery.</span>
+        </div>
+      </div>
+    </div>
+    <div class="visual-story-grid">
+      <article>
+        <img src="/static/agents/business-analyst.png" alt="">
+        <div class="visual-story-text">
+          <h3>Idea becomes a brief</h3>
+          <p>Voice or text turns into a clear product request.</p>
+        </div>
+      </article>
+      <article>
+        <img src="/static/agents/solution-architect.png" alt="">
+        <div class="visual-story-text">
+          <h3>Brief becomes a plan</h3>
+          <p>Analysis, architecture, and delivery planning stay connected.</p>
+        </div>
+      </article>
+      <article>
+        <img src="/static/agents/builder.png" alt="">
+        <div class="visual-story-text">
+          <h3>Plan becomes software</h3>
+          <p>Codex-backed builders execute while progress remains readable.</p>
+        </div>
+      </article>
+      <article>
+        <img src="/static/agents/release-reporter.png" alt="">
+        <div class="visual-story-text">
+          <h3>Software becomes a story</h3>
+          <p>Reports explain what exists, how to try it, and what comes next.</p>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <section class="landing-section landing-flow" id="workflow">
+    <div class="workflow-network" aria-label="AI delivery agent workflow">
+      <article class="workflow-node workflow-coordinator">
+        <img src="/static/agents/coordinator.png" alt="">
+        <div>
+          <strong>Coordinator</strong>
+          <span>Turns one idea into routed agent work.</span>
+        </div>
+      </article>
+
+      <div class="workflow-branch workflow-planning" aria-label="Planning lane">
+        <article class="workflow-node">
+          <img src="/static/agents/business-analyst.png" alt="">
+          <div>
+            <strong>Analyze</strong>
+            <span>Business Analyst clarifies scope.</span>
+          </div>
+        </article>
+        <article class="workflow-node">
+          <img src="/static/agents/solution-architect.png" alt="">
+          <div>
+            <strong>Architect</strong>
+            <span>Solution Architect shapes the path.</span>
+          </div>
+        </article>
+        <article class="workflow-node">
+          <img src="/static/agents/delivery-planner.png" alt="">
+          <div>
+            <strong>Plan</strong>
+            <span>Delivery Planner sequences sprints.</span>
+          </div>
+        </article>
+        <article class="workflow-node">
+          <img src="/static/agents/delivery-lead.png" alt="">
+          <div>
+            <strong>Lead</strong>
+            <span>Delivery Lead routes build, review, and recovery.</span>
+          </div>
+        </article>
+      </div>
+
+      <div class="workflow-control" aria-label="Status inspection loop">
+        <span class="workflow-control-line"></span>
+        <img src="/static/agents/quality-reviewer.png" alt="">
+        <strong>Status Check</strong>
+        <span>Inspects sprint health, blockers, and handoffs.</span>
+      </div>
+
+      <div class="workflow-branch workflow-delivery" aria-label="Delivery lane">
+        <article class="workflow-node">
+          <img src="/static/agents/builder.png" alt="">
+          <div>
+            <strong>Build</strong>
+            <span>Builder creates product slices.</span>
+          </div>
+        </article>
+        <article class="workflow-node">
+          <img src="/static/agents/quality-reviewer.png" alt="">
+          <div>
+            <strong>Review</strong>
+            <span>Quality Reviewer checks behavior and polish.</span>
+          </div>
+        </article>
+        <article class="workflow-node">
+          <img src="/static/agents/publisher.png" alt="">
+          <div>
+            <strong>Publish</strong>
+            <span>Publisher makes the demo reachable.</span>
+          </div>
+        </article>
+        <article class="workflow-node">
+          <img src="/static/agents/release-reporter.png" alt="">
+          <div>
+            <strong>Release</strong>
+            <span>Release Reporter explains the outcome.</span>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="landing-section landing-flow legacy-workflow" aria-hidden="true">
+    <div class="workflow-map">
+      <article class="workflow-node">
+        <img src="/static/agents/coordinator.png" alt="">
+        <strong>Coordinator</strong>
+        <span>Receives the idea</span>
+      </article>
+      <span class="workflow-arrow">→</span>
+      <article class="workflow-node">
+        <img src="/static/agents/business-analyst.png" alt="">
+        <strong>Analyze</strong>
+        <span>Clarify scope</span>
+      </article>
+      <span class="workflow-arrow">→</span>
+      <article class="workflow-node">
+        <img src="/static/agents/solution-architect.png" alt="">
+        <strong>Architect</strong>
+        <span>Shape solution</span>
+      </article>
+      <span class="workflow-arrow">→</span>
+      <article class="workflow-node">
+        <img src="/static/agents/delivery-planner.png" alt="">
+        <strong>Plan</strong>
+        <span>Sequence work</span>
+      </article>
+      <span class="workflow-arrow">→</span>
+      <article class="workflow-node">
+        <img src="/static/agents/builder.png" alt="">
+        <strong>Build</strong>
+        <span>Create app</span>
+      </article>
+      <span class="workflow-arrow">→</span>
+      <article class="workflow-node">
+        <img src="/static/agents/quality-reviewer.png" alt="">
+        <strong>Review</strong>
+        <span>Check quality</span>
+      </article>
+      <span class="workflow-arrow">→</span>
+      <article class="workflow-node">
+        <img src="/static/agents/publisher.png" alt="">
+        <strong>Publish</strong>
+        <span>Deploy demo</span>
+      </article>
+      <span class="workflow-arrow">→</span>
+      <article class="workflow-node">
+        <img src="/static/agents/release-reporter.png" alt="">
+        <strong>Report</strong>
+        <span>Explain outcome</span>
+      </article>
+    </div>
+  </section>
+
+  <section class="landing-section sponsor-section" id="partners">
+    <div class="sponsor-heading">
+      <h2>Powered by the stack behind the demo.</h2>
+    </div>
+    <div class="sponsor-logo-grid">
+      <article>
+        <img src="/static/sponsors/gemini.svg" alt="">
+        <strong>Gemini API</strong>
+        <span>Planning and request formatting</span>
+      </article>
+      <article>
+        <img src="/static/sponsors/speechmatics.svg" alt="">
+        <strong>Speechmatics</strong>
+        <span>Realtime multilingual voice</span>
+      </article>
+      <article>
+        <img src="/static/sponsors/langchain.svg" alt="">
+        <strong>LangChain</strong>
+        <span>Agent orchestration</span>
+      </article>
+      <article>
+        <img src="/static/sponsors/openai-codex.svg" alt="">
+        <strong>OpenAI Codex</strong>
+        <span>Build execution</span>
+      </article>
+      <article>
+        <img src="/static/sponsors/azure.svg" alt="">
+        <strong>Azure</strong>
+        <span>Hosted demo runtime</span>
+      </article>
+    </div>
+  </section>
+{% endblock %}

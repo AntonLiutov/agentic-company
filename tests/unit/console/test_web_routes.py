@@ -7,6 +7,20 @@ from agentic_company.console.web.app import create_app
 from agentic_company.console.web.db import ConsoleRepository
 
 
+def test_landing_page_renders_public_story(tmp_path):
+    app = create_app(ConsoleRepository(tmp_path / "console.db"))
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "Agentic Delivery Lab" in response.text
+    assert "Turn product ideas into shipped demos." in response.text
+    assert "Gemini API" in response.text
+    assert "Speechmatics" in response.text
+    assert "brand/agentic-delivery-lab-cover.png" in response.text
+
+
 def test_register_dashboard_and_logout(tmp_path):
     app = create_app(ConsoleRepository(tmp_path / "console.db"))
     client = TestClient(app)
