@@ -557,6 +557,50 @@ function setupClickableCards() {
   });
 }
 
+function setupLandingCarousels() {
+  document.querySelectorAll("[data-carousel]").forEach((carousel) => {
+    const slides = Array.from(carousel.querySelectorAll(".carousel-slide"));
+    const dots = Array.from(carousel.querySelectorAll("[data-carousel-dot]"));
+    if (slides.length <= 1) return;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const interval = Number(carousel.getAttribute("data-carousel-interval") || "3000");
+    let index = Math.max(0, slides.findIndex((slide) => slide.classList.contains("is-active")));
+    let timer = null;
+    const show = (nextIndex) => {
+      index = (nextIndex + slides.length) % slides.length;
+      slides.forEach((slide, slideIndex) => {
+        slide.classList.toggle("is-active", slideIndex === index);
+      });
+      dots.forEach((dot, dotIndex) => {
+        dot.classList.toggle("is-active", dotIndex === index);
+        dot.setAttribute("aria-current", dotIndex === index ? "true" : "false");
+      });
+    };
+    const start = () => {
+      if (reduceMotion || timer) return;
+      timer = window.setInterval(() => show(index + 1), interval);
+    };
+    const stop = () => {
+      if (!timer) return;
+      window.clearInterval(timer);
+      timer = null;
+    };
+    dots.forEach((dot) => {
+      dot.addEventListener("click", () => {
+        stop();
+        show(Number(dot.getAttribute("data-carousel-dot") || "0"));
+        start();
+      });
+    });
+    carousel.addEventListener("mouseenter", stop);
+    carousel.addEventListener("mouseleave", start);
+    carousel.addEventListener("focusin", stop);
+    carousel.addEventListener("focusout", start);
+    show(index);
+    start();
+  });
+}
+
 function languageCodeFromLabel(value) {
   const match = value.match(/\(([^)]+)\)\s*$/);
   return match ? match[1].toLowerCase() : "";
@@ -794,6 +838,7 @@ setupLanguagePickers();
 setupProviderModelSelectors();
 setupNewProjectSummaries();
 setupClickableCards();
+setupLandingCarousels();
 setupVoiceButtons();
 setupFormatButtons();
 setupEditButtons();

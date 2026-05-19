@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="LangChain">
+  <defs>
+    <linearGradient id="langchainGradient" x1="10" y1="8" x2="54" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#34d399"/>
+      <stop offset=".5" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#60a5fa"/>
+    </linearGradient>
+  </defs>
+  <rect x="5" y="5" width="54" height="54" rx="16" fill="#08111f" stroke="url(#langchainGradient)" stroke-width="2"/>
+  <path d="M24.5 24.5 17 32l7.5 7.5M39.5 24.5 47 32l-7.5 7.5" fill="none" stroke="url(#langchainGradient)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M26.5 32h11" fill="none" stroke="#e0f2fe" stroke-width="4.5" stroke-linecap="round"/>
+  <circle cx="20" cy="20" r="3.2" fill="#34d399"/>
+  <circle cx="44" cy="44" r="3.2" fill="#60a5fa"/>
+</svg>

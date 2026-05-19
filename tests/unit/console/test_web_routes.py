@@ -15,7 +15,7 @@ def test_landing_page_renders_public_story(tmp_path):
 
     assert response.status_code == 200
     assert "Agentic Delivery Lab" in response.text
-    assert "Open Workspace" in response.text
+    assert "Turn product ideas into shipped demos." in response.text
     assert "Gemini API" in response.text
     assert "Speechmatics" in response.text
     assert "brand/agentic-delivery-lab-cover.png" in response.text

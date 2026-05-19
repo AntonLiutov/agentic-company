@@ -48,7 +48,7 @@
 
   <nav class="tabs">
     {% for item in ["overview", "board", "logs", "agents", "artifacts", "handoff"] %}
-      <a class="{{ 'active' if tab == item else '' }}" href="/projects/{{ project.id }}?tab={{ item }}">{{ "Reports" if item == "artifacts" else "Release" if item == "handoff" else item.title() }}</a>
+      <a class="{{ 'active' if tab == item else '' }}" href="/projects/{{ project.id }}?tab={{ item }}">{{ "Activity" if item == "logs" else "Reports" if item == "artifacts" else "Release" if item == "handoff" else item.title() }}</a>
     {% endfor %}
   </nav>
 
@@ -106,30 +106,6 @@
           </div>
         </details>
       {% endfor %}
-    </section>
-    <section class="panel">
-      <div class="panel-heading">
-        <h2>Live Activity</h2>
-        <a class="button small" href="/projects/{{ project.id }}?tab=logs">Open all</a>
-      </div>
-      {% if activity_groups %}
-        <div class="activity-owner-list compact-activity" data-live-logs-run="{{ run.id }}">
-          {% for group in activity_groups %}
-            <details class="activity-owner-group" data-detail-key="overview-activity-{{ group.owner }}" open>
-              <summary><span class="agent-label"><img src="{{ group.owner|agent_icon }}" alt="" loading="lazy">{{ group.owner }}</span> <span class="activity-owner-count">{{ group.count }}</span></summary>
-              <div class="log-list">
-                {% for log in group.logs[-8:] %}
-                  <article class="log-entry">{{ log|safe }}</article>
-                {% endfor %}
-              </div>
-            </details>
-          {% endfor %}
-        </div>
-      {% else %}
-        <div class="activity-owner-list compact-activity" data-live-logs-run="{{ run.id }}">
-          <p class="empty">Activity will appear as work progresses.</p>
-        </div>
-      {% endif %}
     </section>
   {% elif tab == "board" %}
     <section class="panel board-panel" data-live-fragment="board">
