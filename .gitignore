@@ -39,6 +39,7 @@ Thumbs.db
 
 # Local logs and scratch output
 *.log
+docs/
 tmp/
 temp/
 runs/
