@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +15,7 @@ from agentic_company.integrations.codex import (
     build_codex_exec_environment,
     stream_codex_exec_to_log,
 )
+from agentic_company.platform.artifact_registry import register_artifact
 from agentic_company.platform.artifacts import read_json_object_artifact, write_json_artifact
 from agentic_company.platform.executions import (
     build_agent_execution_id,
@@ -21,6 +23,7 @@ from agentic_company.platform.executions import (
     execution_artifact_dir,
     extract_codex_thread_id,
 )
+from agentic_company.platform.run_trace import record_model_call_event
 
 CommandExecutor = Callable[
     [Sequence[str], str, int, Path, Path],
@@ -114,6 +117,7 @@ class StatusInspectorRunner:
             result_path=result_path,
         )
         prompt_path.write_text(prompt, encoding="utf-8")
+        prompt_artifact = prompt_path.relative_to(request.run_dir).as_posix()
         command = build_codex_exec_command(
             codex_binary=self.codex_binary,
             model=request.model,
@@ -124,6 +128,7 @@ class StatusInspectorRunner:
             force_sandbox=True,
             resume_session_id=request.codex_resume_thread_id,
         )
+        started = time.perf_counter()
         completed = self._execute(
             command,
             prompt,
@@ -132,6 +137,7 @@ class StatusInspectorRunner:
             request.run_dir,
             codex_execution_id=codex_execution_id,
         )
+        duration_ms = max(0, int((time.perf_counter() - started) * 1000))
         payload = _load_payload(result_path)
         if not payload:
             payload = {
@@ -148,18 +154,45 @@ class StatusInspectorRunner:
             payload.get("status") or ("inspected" if completed.returncode == 0 else "failed")
         )
         codex_thread_id = extract_codex_thread_id(raw_events_path) or request.codex_resume_thread_id
+        result_artifact = result_path.relative_to(request.run_dir).as_posix()
+        context_artifact = context_path.relative_to(request.run_dir).as_posix()
+        summary_artifact = summary_path.relative_to(request.run_dir).as_posix()
+        log_artifact = log_path.relative_to(request.run_dir).as_posix()
+        raw_events_artifact = raw_events_path.relative_to(request.run_dir).as_posix()
+        _register_status_artifacts(
+            request,
+            [
+                (result_artifact, "debug_trace"),
+                (context_artifact, "tool_request"),
+                (summary_artifact, "execution_summary"),
+                (prompt_artifact, "tool_request"),
+                (log_artifact, "codex_log"),
+                (raw_events_artifact, "debug_trace"),
+            ],
+        )
+        record_model_call_event(
+            request.run_dir,
+            run_id=request.run_id,
+            agent_id=request.requesting_agent,
+            provider="openai",
+            model=request.model,
+            purpose="status_inspection",
+            prompt_ref=prompt_artifact,
+            status=status,
+            duration_ms=duration_ms,
+        )
         return StatusInspectionResult(
             status=status,
             payload=payload,
             artifact_refs=[
                 *request.artifact_refs,
-                context_path.relative_to(request.run_dir).as_posix(),
+                context_artifact,
             ],
-            result_artifact=result_path.relative_to(request.run_dir).as_posix(),
-            summary_artifact=summary_path.relative_to(request.run_dir).as_posix(),
-            prompt_artifact=prompt_path.relative_to(request.run_dir).as_posix(),
-            log_artifact=log_path.relative_to(request.run_dir).as_posix(),
-            raw_events_artifact=raw_events_path.relative_to(request.run_dir).as_posix(),
+            result_artifact=result_artifact,
+            summary_artifact=summary_artifact,
+            prompt_artifact=prompt_artifact,
+            log_artifact=log_artifact,
+            raw_events_artifact=raw_events_artifact,
             execution_id=execution_id,
             codex_thread_id=codex_thread_id,
         )
@@ -331,3 +364,24 @@ def _inspector_agent_id(requesting_agent: str) -> str:
 
 def _inspector_artifact_owner(requesting_agent: str) -> str:
     return requesting_agent.removesuffix("-agent") or "status-inspector"
+
+
+def _register_status_artifacts(
+    request: StatusInspectionRequest,
+    artifacts: list[tuple[str, str]],
+) -> None:
+    for relative_path, artifact_type in artifacts:
+        try:
+            register_artifact(
+                request.run_dir,
+                relative_path=relative_path,
+                run_id=request.run_id,
+                owner_agent=request.requesting_agent,
+                artifact_type=artifact_type,
+                visibility="developer",
+                source_tool="status_inspection",
+                source_model=request.model,
+                metadata={"scope": request.scope},
+            )
+        except Exception:
+            continue

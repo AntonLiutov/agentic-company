@@ -23,6 +23,7 @@ from agentic_company.agents.team_lead.contracts import (
     env_value,
 )
 from agentic_company.platform.agent_contracts import extend_artifacts
+from agentic_company.platform.artifact_registry import register_artifact
 from agentic_company.platform.artifacts import (
     EXECUTION_REQUEST_ARTIFACT,
     artifact_ref,
@@ -907,6 +908,13 @@ def apply_team_lead_result(state: DeliveryState, sprint_id: str) -> DeliveryStat
     )
     result_path = f"team-lead/{result.sprint_id}-result.json"
     write_json_artifact(state, result_path, result.to_dict())
+    _register_team_lead_artifact(
+        state,
+        result_path,
+        artifact_type="execution_summary",
+        visibility="developer",
+        source_tool="team_lead_result",
+    )
     extend_artifacts(
         state,
         [
@@ -1464,6 +1472,13 @@ def write_request(
         **payload,
     }
     path.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _register_team_lead_artifact(
+        state,
+        path.relative_to(run_dir).as_posix(),
+        artifact_type="tool_request",
+        visibility="internal",
+        source_tool="team_lead_request",
+    )
     return path
 
 
@@ -1485,6 +1500,13 @@ def write_temporary_execution_feature(state: DeliveryState, feature: dict[str, A
 def write_decision_artifact(state: DeliveryState, step: int, decision: TeamLeadDecision) -> str:
     relative_path = f"team-lead/decisions/{step:03d}-{decision.tool}.json"
     write_json_artifact(state, relative_path, decision.to_dict())
+    _register_team_lead_artifact(
+        state,
+        relative_path,
+        artifact_type="debug_trace",
+        visibility="internal",
+        source_tool=decision.tool,
+    )
     return relative_path
 
 
@@ -1493,7 +1515,15 @@ def write_history_artifact(
     sprint_id: str,
     history: list[dict[str, Any]],
 ) -> None:
-    write_json_artifact(state, f"team-lead/{sprint_id}-history.json", {"steps": history})
+    relative_path = f"team-lead/{sprint_id}-history.json"
+    write_json_artifact(state, relative_path, {"steps": history})
+    _register_team_lead_artifact(
+        state,
+        relative_path,
+        artifact_type="debug_trace",
+        visibility="developer",
+        source_tool="team_lead_history",
+    )
 
 
 def _read_history_artifact(state: DeliveryState, sprint_id: str) -> list[dict[str, Any]]:
@@ -1529,3 +1559,27 @@ def write_team_lead_event(state: DeliveryState, event: str, data: dict[str, Any]
 
 def checkpoint_delivery_state(state: DeliveryState) -> None:
     write_delivery_state(state)
+
+
+def _register_team_lead_artifact(
+    state: DeliveryState,
+    relative_path: str,
+    *,
+    artifact_type: str,
+    visibility: str,
+    source_tool: str,
+) -> None:
+    try:
+        register_artifact(
+            Path(state["run_dir"]),
+            relative_path=relative_path,
+            run_id=state.get("run_id"),
+            project_id=state.get("project_id"),
+            work_item_id=str(state.get("active_feature_id") or "") or None,
+            owner_agent=TEAM_LEAD_AGENT_ID,
+            artifact_type=artifact_type,
+            visibility=visibility,
+            source_tool=source_tool,
+        )
+    except Exception:
+        return

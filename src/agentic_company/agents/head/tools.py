@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,7 @@ from uuid import uuid4
 from agentic_company.agents.head.contracts import HeadDecision, HeadToolName
 from agentic_company.agents.registry import agent_by_id, route_for_node
 from agentic_company.platform.agent_runtime import agent_env_value
+from agentic_company.platform.artifact_registry import register_artifact
 from agentic_company.platform.artifacts import artifact_ref
 from agentic_company.platform.codex_review import (
     CodexReviewRequest,
@@ -21,6 +23,7 @@ from agentic_company.platform.codex_review import (
 from agentic_company.platform.events import write_event
 from agentic_company.platform.executions import build_agent_execution_id, short_hash
 from agentic_company.platform.messages import AgentMessage, AgentMessageStore
+from agentic_company.platform.run_trace import record_tool_call_event
 from agentic_company.platform.sprints import (
     HEAD_WORK_ITEM_BY_NODE,
     seed_head_work_board,
@@ -38,6 +41,13 @@ from agentic_company.platform.status_inspector import (
     StatusInspectionRequest,
     StatusInspectorLike,
     StatusInspectorRunner,
+)
+from agentic_company.platform.tool_contracts import (
+    ToolCallResult,
+    ToolDashboardUpdate,
+    artifact_refs_from_paths,
+    dashboard_status_from_runtime_status,
+    failure_mode_from_status,
 )
 
 HEAD_AGENT_ID = "head-agent"
@@ -178,6 +188,7 @@ class HeadToolbox:
         reason: str = "",
         message: str = "",
     ) -> str:
+        started = time.perf_counter()
         if limit_response := self._limit_response(message):
             return limit_response
         promoted = promote_candidate_feature_queue(self.delivery_state)
@@ -193,7 +204,15 @@ class HeadToolbox:
             {"reason": reason, "message": message},
         )
         self._record("complete_delivery", target or "company-delivery", reason, message)
-        return self._tool_response("Head Agent completed BA -> Architect -> PM -> Team Lead.")
+        return self._tool_response(
+            "Head Agent completed BA -> Architect -> PM -> Team Lead.",
+            duration_ms=_duration_ms(started),
+            input_summary={
+                "target": target or "company-delivery",
+                "reason": reason,
+                "message": message,
+            },
+        )
 
     def inspect_delivery_status(
         self,
@@ -201,6 +220,7 @@ class HeadToolbox:
         reason: str = "",
         message: str = "",
     ) -> str:
+        started = time.perf_counter()
         if limit_response := self._limit_response(message):
             return limit_response
         promoted = promote_candidate_feature_queue(self.delivery_state)
@@ -274,6 +294,14 @@ class HeadToolbox:
                 "execution_id": result.execution_id,
                 "codex_thread_id": result.codex_thread_id,
             },
+            duration_ms=_duration_ms(started),
+            input_summary={
+                "target": target or "company-delivery",
+                "reason": reason,
+                "message": message,
+                "artifact_refs": refs,
+                "execution_id": result.execution_id,
+            },
         )
 
     def codex_review(
@@ -287,6 +315,7 @@ class HeadToolbox:
         reason: str = "",
         message: str = "",
     ) -> str:
+        started = time.perf_counter()
         if limit_response := self._limit_response(message or question):
             return limit_response
         review_item_id = _review_work_item_id(self.delivery_state, target)
@@ -374,6 +403,18 @@ class HeadToolbox:
                     else "not_sent_head_only_review"
                 ),
             },
+            duration_ms=_duration_ms(started),
+            input_summary={
+                "target_agent": target_agent,
+                "target": target or "upstream-planning",
+                "purpose": purpose,
+                "question": question,
+                "artifact_refs": refs,
+                "intent": intent,
+                "reason": reason,
+                "message": message,
+                "execution_id": result.execution_id,
+            },
         )
 
     def block_planning(
@@ -382,6 +423,7 @@ class HeadToolbox:
         target: str | None = None,
         message: str = "",
     ) -> str:
+        started = time.perf_counter()
         self.delivery_state = mark_node_completed(
             self.delivery_state,
             node_name="head",
@@ -395,7 +437,15 @@ class HeadToolbox:
             HeadDecision("block_planning", reason, target, message).to_dict(),
         )
         self._record("block_planning", target or "upstream-planning", reason, message)
-        return self._tool_response("Planning blocked: " + reason)
+        return self._tool_response(
+            "Planning blocked: " + reason,
+            duration_ms=_duration_ms(started),
+            input_summary={
+                "target": target or "upstream-planning",
+                "reason": reason,
+                "message": message,
+            },
+        )
 
     def result(self) -> HeadExecutorResult:
         write_history_artifact(self.delivery_state, self.history or [])
@@ -412,6 +462,7 @@ class HeadToolbox:
         message: str,
         worker: HeadWorker,
     ) -> str:
+        started = time.perf_counter()
         if limit_response := self._limit_response(message):
             return limit_response
         updated = {**self.delivery_state}
@@ -502,6 +553,16 @@ class HeadToolbox:
         return self._tool_response(
             f"{tool} completed with status {self.delivery_state.get('status')}.",
             downstream_response=downstream_response,
+            duration_ms=_duration_ms(started),
+            input_summary={
+                "tool": tool,
+                "node_name": node_name,
+                "target": target,
+                "reason": reason,
+                "message": message,
+                "execution_id": execution_id,
+                "target_agent": outbound.to_agent,
+            },
         )
 
     def _record(
@@ -557,16 +618,76 @@ class HeadToolbox:
         message: str,
         *,
         downstream_response: dict[str, Any] | None = None,
+        artifact_refs: list[str] | None = None,
+        duration_ms: int | None = None,
+        input_summary: dict[str, Any] | None = None,
     ) -> str:
+        status = str(self.delivery_state.get("status") or "")
+        output_artifacts = _response_artifact_refs(
+            artifact_refs=artifact_refs,
+            downstream_response=downstream_response,
+        )
+        tool_name = _latest_history_tool(self.history or [])
+        failure_mode = failure_mode_from_status(status, self.delivery_state.get("blockers", []))
+        dashboard_status = dashboard_status_from_runtime_status(status)
+        structured = ToolCallResult(
+            tool_name=tool_name,
+            status=status,
+            business_summary=message,
+            tool_call_id=_tool_call_id(self.delivery_state, tool_name, len(self.history or [])),
+            developer_diagnostics={
+                "stage": self.delivery_state.get("stage"),
+                "completed_nodes": self.delivery_state.get("completed_nodes", []),
+                "blockers": self.delivery_state.get("blockers", []),
+                "team_lead_sprint_id": self.delivery_state.get("team_lead_sprint_id"),
+                "active_feature_id": self.delivery_state.get("active_feature_id"),
+            },
+            output_artifacts=artifact_refs_from_paths(output_artifacts),
+            failure_mode=failure_mode,
+            recommended_next_action=_recommended_next_action(status, failure_mode),
+            dashboard_update=ToolDashboardUpdate(
+                status=dashboard_status,
+                summary=message,
+                comment=message,
+                artifact_links=artifact_refs_from_paths(output_artifacts),
+                labels=(failure_mode,) if failure_mode else (),
+            ),
+            implicit_resolution_warnings=(),
+        )
         snapshot: dict[str, Any] = {
+            **structured.to_dict(),
             "message": message,
             "status": self.delivery_state.get("status"),
             "stage": self.delivery_state.get("stage"),
             "completed_nodes": self.delivery_state.get("completed_nodes", []),
             "blockers": self.delivery_state.get("blockers", []),
         }
+        if artifact_refs is not None:
+            snapshot["artifact_refs"] = artifact_refs
         if downstream_response is not None:
             snapshot["downstream_response"] = downstream_response
+        record_tool_call_event(
+            Path(self.delivery_state["run_dir"]),
+            run_id=str(self.delivery_state.get("run_id") or ""),
+            agent_id=HEAD_AGENT_ID,
+            tool_name=tool_name,
+            tool_call_id=structured.tool_call_id,
+            work_item_id=_head_work_item_id(self.delivery_state, input_summary),
+            input_summary=input_summary
+            or {
+                "latest_history_tool": tool_name,
+                "stage": self.delivery_state.get("stage"),
+            },
+            output_summary=structured.to_dict(),
+            artifact_ids=[
+                ref.artifact_id
+                for ref in structured.output_artifacts
+                if getattr(ref, "artifact_id", "")
+            ],
+            status=status,
+            failure_mode=failure_mode,
+            duration_ms=duration_ms,
+        )
         return json.dumps(snapshot, sort_keys=True)
 
 
@@ -959,17 +1080,39 @@ def write_request(
         **payload,
     }
     path.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _register_head_artifact(
+        state,
+        path.relative_to(run_dir).as_posix(),
+        artifact_type="tool_request",
+        visibility="internal",
+        source_tool="head_request",
+    )
     return path
 
 
 def write_decision_artifact(state: DeliveryState, step: int, decision: HeadDecision) -> str:
     relative_path = f"head/decisions/{step:03d}-{decision.tool}.json"
     write_json_artifact(state, relative_path, decision.to_dict())
+    _register_head_artifact(
+        state,
+        relative_path,
+        artifact_type="debug_trace",
+        visibility="internal",
+        source_tool=decision.tool,
+    )
     return relative_path
 
 
 def write_history_artifact(state: DeliveryState, history: list[dict[str, Any]]) -> None:
-    write_json_artifact(state, "head/planning-history.json", {"steps": history})
+    relative_path = "head/planning-history.json"
+    write_json_artifact(state, relative_path, {"steps": history})
+    _register_head_artifact(
+        state,
+        relative_path,
+        artifact_type="debug_trace",
+        visibility="developer",
+        source_tool="head_history",
+    )
 
 
 def write_head_result(state: DeliveryState, history: list[dict[str, Any]]) -> None:
@@ -980,11 +1123,19 @@ def write_head_result(state: DeliveryState, history: list[dict[str, Any]]) -> No
         "blockers": state.get("blockers", []),
         "history_artifact": "head/planning-history.json",
     }
-    write_json_artifact(state, "head/result.json", result)
+    relative_path = "head/result.json"
+    write_json_artifact(state, relative_path, result)
+    _register_head_artifact(
+        state,
+        relative_path,
+        artifact_type="execution_summary",
+        visibility="developer",
+        source_tool="head_result",
+    )
     state["artifacts"] = [
         *state.get("artifacts", []),
         artifact_ref(
-            "head/result.json",
+            relative_path,
             kind="internal",
             owner_agent=HEAD_AGENT_ID,
             visibility="developer",
@@ -1012,3 +1163,76 @@ def write_head_event(state: DeliveryState, event: str, data: dict[str, Any]) -> 
 
 def checkpoint_delivery_state(state: DeliveryState) -> None:
     write_delivery_state(state)
+
+
+def _register_head_artifact(
+    state: DeliveryState,
+    relative_path: str,
+    *,
+    artifact_type: str,
+    visibility: str,
+    source_tool: str,
+) -> None:
+    try:
+        register_artifact(
+            Path(state["run_dir"]),
+            relative_path=relative_path,
+            run_id=state.get("run_id"),
+            project_id=state.get("project_id"),
+            owner_agent=HEAD_AGENT_ID,
+            artifact_type=artifact_type,
+            visibility=visibility,
+            source_tool=source_tool,
+        )
+    except Exception:
+        return
+
+
+def _response_artifact_refs(
+    *,
+    artifact_refs: list[str] | None = None,
+    downstream_response: dict[str, Any] | None = None,
+) -> list[str]:
+    refs = list(artifact_refs or [])
+    if downstream_response:
+        for ref in downstream_response.get("artifact_refs", []):
+            if ref:
+                refs.append(str(ref))
+    return _unique_paths(refs)
+
+
+def _latest_history_tool(history: list[dict[str, Any]]) -> str:
+    if not history:
+        return "unknown"
+    return str(history[-1].get("tool") or "unknown")
+
+
+def _tool_call_id(state: DeliveryState, tool_name: str, step: int) -> str:
+    return f"{state.get('run_id', '')}:head-agent:{tool_name}:{step}"
+
+
+def _recommended_next_action(status: str, failure_mode: str | None) -> str:
+    if failure_mode in {"blocked", "failed"}:
+        return (
+            "Inspect blockers and decide whether operator intervention or a repair run is needed."
+        )
+    if failure_mode == "needs_repair":
+        return "Route a bounded repair to the owning downstream agent."
+    if "completed" in status or "ready" in status:
+        return "Continue to the next PM-planned stage or complete delivery when inspector confirms."
+    return "Inspect delivery status and route the next useful planned action."
+
+
+def _head_work_item_id(
+    state: DeliveryState,
+    input_summary: dict[str, Any] | None,
+) -> str | None:
+    if input_summary:
+        for key in ("work_item_id", "target", "node_name"):
+            if input_summary.get(key):
+                return str(input_summary[key])
+    return str(state.get("active_feature_id") or "") or None
+
+
+def _duration_ms(started: float) -> int:
+    return max(0, int((time.perf_counter() - started) * 1000))

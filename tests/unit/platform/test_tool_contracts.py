@@ -2,6 +2,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+from agentic_company.agents.head.contracts import (
+    HEAD_TOOL_CONTRACT_REGISTRY,
+    HEAD_TOOL_CONTRACTS,
+    HEAD_TOOLS,
+)
+from agentic_company.agents.head.executor import langchain_tools as head_langchain_tools
+from agentic_company.agents.head.tools import HeadToolbox, HeadWorkers
 from agentic_company.agents.team_lead.contracts import (
     CRITICAL_TOOL_CONTRACT_REGISTRY,
     CRITICAL_TOOL_CONTRACTS,
@@ -126,6 +133,85 @@ def test_team_lead_tool_result_is_structured_and_keeps_legacy_keys(tmp_path):
     assert response["dashboard_update"]["summary"] == response["message"]
     assert response["implicit_resolution_warnings"] == []
     assert not _has_secret_key(response)
+
+
+def test_head_exposed_tools_have_contract_rendered_docstrings(tmp_path):
+    toolbox = HeadToolbox(
+        delivery_state=initial_delivery_state(run_id="head-docstrings", run_dir=tmp_path),
+        workers=HeadWorkers(
+            business_analyst=lambda state: state,
+            architect=lambda state: state,
+            project_manager=lambda state: state,
+            team_lead=lambda state: state,
+        ),
+        max_steps=8,
+    )
+
+    tools = {tool.__name__: tool for tool in head_langchain_tools(toolbox)}
+
+    assert set(HEAD_TOOLS) == set(tools)
+    for tool_name, tool in tools.items():
+        contract = HEAD_TOOL_CONTRACT_REGISTRY.get(tool_name)
+        docstring = tool.__doc__ or ""
+        assert contract.purpose in docstring
+        assert "Required parameters:" in docstring
+        assert "Possible statuses:" in docstring
+        assert "External dashboard support:" in docstring
+        assert "Idempotency:" in docstring
+        assert "Example call:" in docstring
+
+
+def test_head_tool_contracts_are_complete_and_dashboard_ready():
+    expected = {
+        "run_business_analyst",
+        "run_architect",
+        "run_project_manager",
+        "run_team_lead",
+        "inspect_delivery_status",
+        "codex_review",
+        "complete_delivery",
+        "block_planning",
+    }
+
+    assert expected == set(HEAD_TOOL_CONTRACT_REGISTRY.names())
+    for contract in HEAD_TOOL_CONTRACTS:
+        assert contract.input_schema
+        assert contract.output_schema
+        assert contract.status_outputs
+        assert contract.failure_modes
+        assert contract.dashboard_status
+        assert contract.examples
+        for example in contract.examples:
+            for parameter in contract.required_parameters:
+                assert parameter in example
+
+
+def test_head_tool_result_is_structured_traced_and_keeps_legacy_keys(tmp_path):
+    state = initial_delivery_state(run_id="structured-head", run_dir=tmp_path)
+    toolbox = HeadToolbox(
+        delivery_state=state,
+        workers=HeadWorkers(
+            business_analyst=lambda state: state,
+            architect=lambda state: state,
+            project_manager=lambda state: state,
+            team_lead=lambda state: state,
+        ),
+        max_steps=8,
+    )
+
+    response = json.loads(
+        toolbox.run_business_analyst(reason="Analyze.", message="Analyze the brief.")
+    )
+
+    assert response["status"] == "initialized"
+    assert response["message"] == "run_business_analyst completed with status initialized."
+    assert response["tool_name"] == "run_business_analyst"
+    assert response["business_summary"] == response["message"]
+    assert isinstance(response["developer_diagnostics"], dict)
+    assert response["dashboard_update"]["summary"] == response["message"]
+    assert response["implicit_resolution_warnings"] == []
+    assert not _has_secret_key(response)
+    assert load_tool_call_events(tmp_path)[0].tool_name == "run_business_analyst"
 
 
 def test_team_lead_tool_result_reports_implicit_resolution_warning(tmp_path):

@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from agentic_company.agents.head.contracts import HEAD_TOOLS
+from agentic_company.agents.head.contracts import HEAD_TOOL_CONTRACT_REGISTRY, HEAD_TOOLS
 from agentic_company.agents.head.tools import HeadExecutorResult, HeadToolbox, HeadWorkers
 from agentic_company.agents.registry import agent_by_id
 from agentic_company.platform.agent_runtime import (
@@ -21,6 +21,7 @@ from agentic_company.platform.agent_runtime import (
     coordinator_recovery_policy,
 )
 from agentic_company.platform.state import DeliveryState
+from agentic_company.platform.tool_contracts import render_tool_docstring
 
 
 class LangChainHeadExecutor:
@@ -249,11 +250,9 @@ def build_head_executor_prompt(*, delivery_state: DeliveryState) -> str:
                 "return artifact refs."
             ),
             (
-                "Block only when a downstream planning/delivery agent cannot complete, "
-                "returned a real non-repairable blocker, or exhausted bounded recovery. "
-                "During normal AgentExecutor decisions, Head has no block tool; report the "
-                "issue through coordinator messages or route the next useful PM-planned "
-                "action instead of stopping delivery from review advice."
+                "Call block_planning only when a downstream planning/delivery agent cannot "
+                "complete, returned a real non-repairable blocker, or exhausted bounded "
+                "recovery. Do not stop delivery from advisory review advice alone."
             ),
         ],
     }
@@ -427,7 +426,11 @@ def langchain_tools(toolbox: HeadToolbox) -> list[Callable[..., str]]:
         """Mark the company delivery run complete after inspector confirms readiness."""
         return toolbox.complete_delivery(target or None, reason, message)
 
-    return [
+    def block_planning(reason: str, target: str = "", message: str = "") -> str:
+        """Block planning when bounded recovery cannot continue."""
+        return toolbox.block_planning(reason=reason, target=target or None, message=message)
+
+    tools = [
         run_business_analyst,
         run_architect,
         run_project_manager,
@@ -435,7 +438,13 @@ def langchain_tools(toolbox: HeadToolbox) -> list[Callable[..., str]]:
         codex_review,
         inspect_delivery_status,
         complete_delivery,
+        block_planning,
     ]
+    for tool in tools:
+        contract = HEAD_TOOL_CONTRACT_REGISTRY.maybe_get(tool.__name__)
+        if contract:
+            tool.__doc__ = render_tool_docstring(contract)
+    return tools
 
 
 def _compact_delivery_state(state: DeliveryState) -> dict[str, Any]:

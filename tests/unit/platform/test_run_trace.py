@@ -1,6 +1,9 @@
 import json
+import subprocess
 from pathlib import Path
 
+from agentic_company.platform.artifact_registry import list_artifacts
+from agentic_company.platform.codex_review import CodexReviewRequest, CodexReviewRunner
 from agentic_company.platform.events import write_event
 from agentic_company.platform.run_trace import (
     MODEL_CALL_EVENTS_FILE,
@@ -15,6 +18,7 @@ from agentic_company.platform.run_trace import (
     sanitize_trace_data,
     trace_summary,
 )
+from agentic_company.platform.status_inspector import StatusInspectionRequest, StatusInspectorRunner
 
 
 def test_write_event_keeps_legacy_log_and_mirrors_structured_trace(tmp_path: Path):
@@ -90,3 +94,109 @@ def test_trace_sanitizer_redacts_secret_like_fields():
         "OPENAI_API_KEY": "[REDACTED]",
         "nested": {"token": "[REDACTED]", "normal": "visible"},
     }
+
+
+def test_codex_review_runner_records_model_trace_and_registers_artifacts(tmp_path: Path):
+    runner = CodexReviewRunner(command_executor=_review_command)
+
+    result = runner.run(
+        CodexReviewRequest(
+            run_id="run-review",
+            run_dir=tmp_path,
+            requesting_agent="head-agent",
+            purpose="Review artifacts.",
+            question="Is this ready?",
+            model="gpt-5.3-codex",
+        )
+    )
+
+    events = load_model_call_events(tmp_path)
+    artifacts = list_artifacts(tmp_path, owner_agent="head-agent")
+
+    assert result.status == "reviewed"
+    assert events[0].provider == "openai"
+    assert events[0].model == "gpt-5.3-codex"
+    assert events[0].purpose == "codex_review"
+    assert events[0].prompt_ref == result.prompt_artifact
+    assert events[0].estimated_cost_usd is None
+    assert {artifact.relative_path for artifact in artifacts} >= {
+        result.summary_artifact,
+        result.prompt_artifact,
+        result.log_artifact,
+        result.raw_events_artifact,
+    }
+    assert all(artifact.visibility == "developer" for artifact in artifacts)
+
+
+def test_status_inspector_runner_records_model_trace_and_registers_artifacts(tmp_path: Path):
+    runner = StatusInspectorRunner(command_executor=_status_command)
+
+    result = runner.run(
+        StatusInspectionRequest(
+            run_id="run-status",
+            run_dir=tmp_path,
+            requesting_agent="team-lead-agent",
+            scope="sprint",
+            purpose="Inspect sprint.",
+            status_context={"sprint_id": "sprint-01"},
+            model="gpt-5.3-codex",
+        )
+    )
+
+    events = load_model_call_events(tmp_path)
+    artifacts = list_artifacts(tmp_path, owner_agent="team-lead-agent")
+
+    assert result.status == "inspected"
+    assert events[0].provider == "openai"
+    assert events[0].model == "gpt-5.3-codex"
+    assert events[0].purpose == "status_inspection"
+    assert events[0].prompt_ref == result.prompt_artifact
+    assert events[0].estimated_cost_usd is None
+    assert {artifact.relative_path for artifact in artifacts} >= {
+        result.result_artifact,
+        result.summary_artifact,
+        result.prompt_artifact,
+        result.log_artifact,
+        result.raw_events_artifact,
+    }
+    assert all(artifact.visibility == "developer" for artifact in artifacts)
+
+
+def _review_command(
+    command: list[str] | tuple[str, ...],
+    prompt: str,
+    timeout_seconds: int,
+    log_path: Path,
+    raw_events_path: Path,
+) -> subprocess.CompletedProcess[str]:
+    summary_path = log_path.parent / "summary.md"
+    summary_path.write_text("Review OK.", encoding="utf-8")
+    log_path.write_text("log", encoding="utf-8")
+    raw_events_path.write_text("", encoding="utf-8")
+    return subprocess.CompletedProcess(command, 0, stdout="Review OK.", stderr="")
+
+
+def _status_command(
+    command: list[str] | tuple[str, ...],
+    prompt: str,
+    timeout_seconds: int,
+    log_path: Path,
+    raw_events_path: Path,
+) -> subprocess.CompletedProcess[str]:
+    status_path = log_path.parent / "status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "status": "inspected",
+                "scope": "sprint",
+                "can_complete_sprint": True,
+                "status_summary": "Ready.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    summary_path = log_path.parent / "summary.md"
+    summary_path.write_text("Ready.", encoding="utf-8")
+    log_path.write_text("log", encoding="utf-8")
+    raw_events_path.write_text("", encoding="utf-8")
+    return subprocess.CompletedProcess(command, 0, stdout="Ready.", stderr="")

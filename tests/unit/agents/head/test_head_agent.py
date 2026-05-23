@@ -121,7 +121,7 @@ def test_head_agent_uses_coordinator_capabilities_and_scoped_tools():
     assert agent.can_use_tool("run_project_manager")
     assert agent.can_use_tool("run_team_lead")
     assert agent.can_use_tool("inspect_delivery_status")
-    assert not agent.can_use_tool("block_planning")
+    assert agent.can_use_tool("block_planning")
     assert not agent.can_use_tool("codex_exec")
     assert agent.can_message("business-analyst-agent", intent="request_business_analysis")
     assert agent.can_message("architect-agent", intent="request_architecture")
@@ -148,7 +148,7 @@ def test_head_prompt_exposes_current_specialist_communication_context(tmp_path):
     assert "run_architect" in prompt
     assert "run_project_manager" in prompt
     assert "run_team_lead" in prompt
-    assert "block_planning" not in prompt
+    assert "block_planning" in prompt
     assert "Scale every specialist assignment to the source request complexity" in prompt
     assert "do not inflate the request into enterprise" in prompt
     assert "do not prescribe long custom deliverable" in prompt
@@ -548,7 +548,7 @@ def test_head_codex_review_does_not_send_message_to_unknown_target(tmp_path):
     assert "can_block_delivery" in response
 
 
-def test_head_agent_executor_does_not_expose_block_planning_tool(tmp_path):
+def test_head_agent_executor_exposes_block_planning_tool(tmp_path):
     state = initial_delivery_state(run_id="no-block-tool", run_dir=tmp_path)
     toolbox = HeadToolbox(
         delivery_state=state,
@@ -569,7 +569,6 @@ def test_head_agent_executor_does_not_expose_block_planning_tool(tmp_path):
         ).langchain_tools(toolbox)
     }
 
-    assert "block_planning" not in tool_names
     assert {
         "run_business_analyst",
         "run_architect",
@@ -578,6 +577,7 @@ def test_head_agent_executor_does_not_expose_block_planning_tool(tmp_path):
         "codex_review",
         "inspect_delivery_status",
         "complete_delivery",
+        "block_planning",
     } <= tool_names
 
 
