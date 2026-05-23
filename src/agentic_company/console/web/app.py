@@ -42,6 +42,8 @@ from agentic_company.console.web.product import (
     agent_icon_path,
     artifact_owner_groups,
     artifact_payload,
+    artifact_payload_by_id,
+    artifact_payload_for_record,
     artifact_phase_groups,
     artifacts_for_run,
     board_cards_for_run,
@@ -71,6 +73,7 @@ from agentic_company.console.web.voice import (
     speechmatics_configured,
     speechmatics_rt_url,
 )
+from agentic_company.platform.artifact_registry import get_artifact_by_id
 from agentic_company.platform.logging import configure_logging
 
 COOKIE_NAME = "agentic_console_session"
@@ -560,6 +563,42 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             ),
         )
 
+    @app.get("/artifacts/{run_id}/by-id/{artifact_id}", response_class=HTMLResponse)
+    def artifact_view_by_id(
+        request: Request,
+        run_id: int,
+        artifact_id: str,
+        user: CurrentUser,
+        raw: bool = False,
+    ) -> HTMLResponse:
+        run = get_repo(request).get_run_for_user(run_id, user.id)
+        if not run:
+            raise HTTPException(status_code=404)
+        record = get_artifact_by_id(Path(run.run_dir), artifact_id) or get_repo(
+            request
+        ).get_artifact_record(run_id, artifact_id)
+        try:
+            payload = (
+                artifact_payload_for_record(Path(run.run_dir), record)
+                if record
+                else artifact_payload_by_id(Path(run.run_dir), artifact_id)
+            )
+        except (OSError, ValueError):
+            raise HTTPException(status_code=404) from None
+        artifact_title = record.label if record else "Artifact"
+        artifact_path = record.relative_path if record else artifact_id
+        if raw and payload["kind"] == "html":
+            return HTMLResponse(html_report_document(str(payload["content"])))
+        return render(
+            request,
+            "artifact_view.html",
+            user=user,
+            run=run,
+            artifact_path=artifact_path,
+            artifact_title=artifact_title,
+            payload=payload,
+        )
+
     @app.get("/artifacts/{run_id}/{artifact_path:path}", response_class=HTMLResponse)
     def artifact_view(
         request: Request,
@@ -826,6 +865,7 @@ def render_workspace(
         run_completed = execution_completed(run_dir)
         overview = delivery_overview_for_run(run_dir)
         business_artifacts = artifacts_for_run(run_dir)[0]
+        get_repo(request).sync_artifact_registry_from_run_dir(run.id, run_dir)
         context.update(
             {
                 "overview": overview,

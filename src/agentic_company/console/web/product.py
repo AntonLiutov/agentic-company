@@ -26,6 +26,12 @@ from agentic_company.console.support import (
     read_text_artifact,
     repo_root,
 )
+from agentic_company.platform.artifact_registry import (
+    USER_FACING_VISIBILITIES,
+    get_artifact_by_id,
+    list_artifacts,
+    register_artifact,
+)
 
 AGENT_MODEL_OPTIONS = [
     "gpt-4.1",
@@ -183,6 +189,9 @@ class ArtifactView:
     phase: str
     task_id: str
     task_title: str
+    artifact_id: str = ""
+    visibility: str = "business"
+    artifact_type: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,6 +334,14 @@ def board_cards_for_run(run_dir: Path) -> dict[str, list[BoardCard]]:
 
 
 def artifacts_for_run(run_dir: Path) -> tuple[list[ArtifactView], list[ArtifactView]]:
+    _backfill_visible_legacy_artifacts(run_dir)
+    registry_artifacts = _registry_artifacts_for_run(run_dir)
+    if registry_artifacts[0] or registry_artifacts[1]:
+        return registry_artifacts
+    return _legacy_artifacts_for_run(run_dir)
+
+
+def _legacy_artifacts_for_run(run_dir: Path) -> tuple[list[ArtifactView], list[ArtifactView]]:
     business: list[ArtifactView] = []
     technical: list[ArtifactView] = []
     task_titles = _task_title_map(run_dir)
@@ -352,6 +369,90 @@ def artifacts_for_run(run_dir: Path) -> tuple[list[ArtifactView], list[ArtifactV
             else:
                 business.append(view)
     return sorted(business, key=_artifact_sort_key), sorted(technical, key=_artifact_sort_key)
+
+
+def _registry_artifacts_for_run(run_dir: Path) -> tuple[list[ArtifactView], list[ArtifactView]]:
+    business: list[ArtifactView] = []
+    technical: list[ArtifactView] = []
+    task_titles = _task_title_map(run_dir)
+    task_sprints = _task_sprint_map(run_dir)
+    for record in list_artifacts(run_dir):
+        if record.visibility == "internal":
+            continue
+        if not _safe_artifact_path(run_dir, record.relative_path).exists():
+            continue
+        task_id = record.work_item_id or _task_id_for_artifact(record.relative_path)
+        view = ArtifactView(
+            path=record.relative_path,
+            label=user_friendly_artifact_label(record.label, record.relative_path),
+            agent=record.owner_agent,
+            business_agent=business_agent_label(record.owner_agent),
+            kind=artifact_kind(record.relative_path),
+            technical=record.visibility not in USER_FACING_VISIBILITIES,
+            phase=task_sprints.get(
+                task_id,
+                _artifact_phase(record.relative_path, record.owner_agent),
+            ),
+            task_id=task_id,
+            task_title=task_titles.get(task_id, ""),
+            artifact_id=record.artifact_id,
+            visibility=record.visibility,
+            artifact_type=record.artifact_type,
+        )
+        if view.technical:
+            technical.append(view)
+        else:
+            business.append(view)
+    return sorted(business, key=_artifact_sort_key), sorted(technical, key=_artifact_sort_key)
+
+
+def _backfill_visible_legacy_artifacts(run_dir: Path) -> None:
+    for view in _legacy_artifacts_for_run(run_dir)[0]:
+        register_artifact(
+            run_dir,
+            relative_path=view.path,
+            owner_agent=view.agent,
+            artifact_type=_semantic_artifact_type(view.path),
+            visibility=_registry_visibility_for_path(view.path),
+            label=view.label,
+            source_tool="legacy_artifact_groups_for_run",
+            work_item_id=view.task_id or None,
+            metadata={
+                "legacy_kind": view.kind,
+                "implicit_resolution_warnings": [
+                    f"artifact_type inferred from path {view.path}",
+                    "visibility inferred from legacy user-facing filename rules",
+                ],
+            },
+        )
+
+
+def _semantic_artifact_type(path: str) -> str:
+    normalized = path.replace("\\", "/")
+    if normalized.endswith("business-analysis.md"):
+        return "requirements_brief"
+    if normalized.endswith("architecture.md") or normalized.endswith("architecture.mmd"):
+        return "architecture_report"
+    if any(token in normalized for token in ("project-management", "release-plan", "roadmap")):
+        return "delivery_plan"
+    if normalized.startswith("07-execution-summary"):
+        return "execution_summary"
+    if normalized.startswith("08-qa-report"):
+        return "qa_report"
+    if normalized.startswith("13-deployment-summary"):
+        return "deployment_summary"
+    if normalized.endswith("release-report.html"):
+        return "release_report"
+    return "artifact"
+
+
+def _registry_visibility_for_path(path: str) -> str:
+    normalized = path.replace("\\", "/")
+    if normalized.endswith("release-report.html"):
+        return "release"
+    if normalized.startswith("08-qa-report"):
+        return "qa_evidence"
+    return "business"
 
 
 def artifact_owner_groups(artifacts: list[ArtifactView]) -> list[dict[str, object]]:
@@ -1131,6 +1232,23 @@ def agent_catalog() -> list[dict[str, str]]:
 def artifact_payload(run_dir: Path, artifact_path: str) -> dict[str, Any]:
     if not is_user_facing_artifact(artifact_path):
         raise ValueError("Artifact is not user-facing")
+    return _artifact_payload_for_path(run_dir, artifact_path)
+
+
+def artifact_payload_by_id(run_dir: Path, artifact_id: str) -> dict[str, Any]:
+    record = get_artifact_by_id(run_dir, artifact_id)
+    if record is None:
+        raise ValueError("Artifact is not user-facing")
+    return artifact_payload_for_record(run_dir, record)
+
+
+def artifact_payload_for_record(run_dir: Path, record: Any) -> dict[str, Any]:
+    if record is None or record.visibility not in USER_FACING_VISIBILITIES:
+        raise ValueError("Artifact is not user-facing")
+    return _artifact_payload_for_path(run_dir, record.relative_path)
+
+
+def _artifact_payload_for_path(run_dir: Path, artifact_path: str) -> dict[str, Any]:
     path = _safe_artifact_path(run_dir, artifact_path)
     kind = artifact_kind(artifact_path)
     if kind == "json":

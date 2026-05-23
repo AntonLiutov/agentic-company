@@ -11,6 +11,10 @@ from typing import Any, Protocol
 
 from langgraph.graph import END, START, StateGraph
 
+from agentic_company.platform.artifact_registry import (
+    register_artifact,
+    tool_artifact_refs_from_records,
+)
 from agentic_company.platform.messages import AgentMessage, AgentMessageStore
 from agentic_company.platform.models import AgentRunResult
 from agentic_company.platform.state import DeliveryState, record_codex_thread
@@ -200,9 +204,7 @@ class LangChainSpecialistAgentExecutor:
                             "codex_tool_call": tool_call_count,
                             "max_codex_tool_calls": request.max_codex_tool_calls,
                         },
-                        "output_artifacts": (
-                            tool_result.output_artifacts if tool_result else []
-                        ),
+                        "output_artifacts": (tool_result.output_artifacts if tool_result else []),
                         "dashboard_update": {
                             "status": "blocked",
                             "summary": "Codex tool call limit reached.",
@@ -401,6 +403,28 @@ def _codex_exec_tool_response(
     remaining = request.max_codex_tool_calls - tool_call_count
     failure_mode = failure_mode_from_status(result.status, result.blocking_findings)
     dashboard_status = dashboard_status_from_runtime_status(result.status)
+    artifact_records = [
+        register_artifact(
+            request.run_dir,
+            relative_path=path,
+            run_id=str(request.delivery_state.get("run_id") or request.run_dir.name),
+            owner_agent=request.agent_id,
+            source_tool="codex_exec",
+            source_model=request.default_model,
+            metadata={
+                "implicit_resolution_warnings": [
+                    f"artifact_type inferred from path {path}",
+                    "visibility inferred from codex_exec output path",
+                ]
+            },
+        )
+        for path in result.output_artifacts
+    ]
+    output_artifacts = (
+        tool_artifact_refs_from_records(artifact_records)
+        if artifact_records
+        else artifact_refs_from_paths(result.output_artifacts)
+    )
     tool_result = ToolCallResult(
         tool_name="codex_exec",
         status=result.status,
@@ -419,14 +443,14 @@ def _codex_exec_tool_response(
             "reason": reason,
             "message": message,
         },
-        output_artifacts=artifact_refs_from_paths(result.output_artifacts),
+        output_artifacts=output_artifacts,
         failure_mode=failure_mode,
         recommended_next_action=result.recommended_next_action,
         dashboard_update=ToolDashboardUpdate(
             status=dashboard_status,
             summary=result.summary,
             comment=result.summary,
-            artifact_links=artifact_refs_from_paths(result.output_artifacts),
+            artifact_links=output_artifacts,
             labels=(failure_mode,) if failure_mode else (),
         ),
     )

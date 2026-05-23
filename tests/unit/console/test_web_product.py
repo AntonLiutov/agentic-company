@@ -9,6 +9,7 @@ from agentic_company.console.web.product import (
     _log_matches_card,
     _reports_for_card,
     agent_catalog,
+    artifact_payload_by_id,
     artifacts_for_run,
     board_groups_for_run,
     format_request_text,
@@ -22,6 +23,7 @@ from agentic_company.console.web.product import (
     user_facing_blockers,
     work_plan_groups_for_run,
 )
+from agentic_company.platform.artifact_registry import register_artifact
 
 
 def test_format_request_text_structures_dictated_request_without_greeting():
@@ -304,6 +306,27 @@ def test_planning_task_detail_links_requirements_report(tmp_path):
     assert detail is not None
     assert detail.card.title == "Requirements brief"
     assert [artifact.label for artifact in detail.reports] == ["Requirements brief"]
+
+
+def test_artifacts_for_run_prefers_registry_records(tmp_path):
+    report = tmp_path / "handoff" / "project" / "final" / "release-report.html"
+    report.parent.mkdir(parents=True)
+    report.write_text("<h1>Release</h1>", encoding="utf-8")
+    record = register_artifact(
+        tmp_path,
+        relative_path="handoff/project/final/release-report.html",
+        run_id="run-1",
+        owner_agent="documentation-handoff-agent",
+        label="Registered release",
+        visibility="release",
+        artifact_type="release_report",
+    )
+
+    artifacts = artifacts_for_run(tmp_path)[0]
+
+    assert artifacts[0].artifact_id == record.artifact_id
+    assert artifacts[0].visibility == "release"
+    assert artifact_payload_by_id(tmp_path, record.artifact_id)["kind"] == "html"
 
 
 def test_planning_detail_accepts_live_runtime_aliases(tmp_path):

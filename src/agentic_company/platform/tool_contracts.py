@@ -303,8 +303,4 @@ def _unique_strings(values: list[str] | tuple[str, ...]) -> list[str]:
 
 
 def _drop_empty(data: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in data.items()
-        if value not in ("", None, [], {}, ())
-    }
+    return {key: value for key, value in data.items() if value not in ("", None, [], {}, ())}

@@ -45,7 +45,7 @@
       {% if detail.reports %}
         <div class="artifact-list compact">
           {% for artifact in detail.reports %}
-            <a class="artifact-row" href="/artifacts/{{ run.id }}/{{ artifact.path }}">
+            <a class="artifact-row" href="/artifacts/{{ run.id }}{% if artifact.artifact_id %}/by-id/{{ artifact.artifact_id }}{% else %}/{{ artifact.path }}{% endif %}">
               <span>{{ artifact.label }}</span>
               <small><span class="agent-label"><img src="{{ artifact.business_agent|agent_icon }}" alt="" loading="lazy">{{ artifact.business_agent }}</span> &middot; {{ artifact.kind }}</small>
             </a>

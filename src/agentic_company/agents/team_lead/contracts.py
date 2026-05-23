@@ -335,9 +335,7 @@ RUNNER_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         dashboard_status="in_progress",
         risk_level="high",
         legacy=True,
-        examples=(
-            {"run_id": "run-1", "target_project_dir": "generated-project"},
-        ),
+        examples=({"run_id": "run-1", "target_project_dir": "generated-project"},),
     ),
     _contract(
         tool_name="handoff_report_runner",
@@ -354,9 +352,7 @@ RUNNER_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         idempotency="May overwrite report artifacts for the same scope.",
         dashboard_status="review",
         legacy=True,
-        examples=(
-            {"handoff_scope": "final_project_report", "sprint_id": ""},
-        ),
+        examples=({"handoff_scope": "final_project_report", "sprint_id": ""},),
     ),
 )
 

@@ -11,6 +11,7 @@ from agentic_company.platform.agent_runtime import (
     LangChainSpecialistAgentExecutor,
     SpecialistAgentExecutor,
 )
+from agentic_company.platform.artifact_registry import register_artifacts_from_refs
 from agentic_company.platform.artifacts import ArtifactKind, ArtifactRef, artifact_ref
 from agentic_company.platform.messages import AgentMessageStore, append_agent_response
 from agentic_company.platform.models import AgentRunResult
@@ -200,6 +201,14 @@ def extend_artifacts(state: DeliveryState, artifacts: list[ArtifactRef]) -> None
     """Append artifact references to delivery state."""
 
     state["artifacts"] = [*state.get("artifacts", []), *artifacts]
+    run_dir = state.get("run_dir")
+    if run_dir:
+        register_artifacts_from_refs(
+            Path(str(run_dir)),
+            artifacts,
+            run_id=str(state.get("run_id", "")),
+            source_tool="delivery_graph",
+        )
 
 
 def artifact_refs(

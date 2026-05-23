@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from agentic_company.console.web.app import create_app
 from agentic_company.console.web.db import ConsoleRepository
+from agentic_company.platform.artifact_registry import register_artifact
 
 
 def test_landing_page_renders_public_story(tmp_path):
@@ -930,6 +931,54 @@ def test_artifact_view_uses_business_title_instead_of_internal_path(tmp_path):
     assert response.status_code == 200
     assert "Sprint 1 report" in response.text
     assert "handoff/sprints/sprint-01/release-report.html" not in response.text
+
+
+def test_artifact_view_resolves_registry_id(tmp_path):
+    repo = ConsoleRepository(tmp_path / "console.db")
+    repo.init_schema()
+    user = repo.create_user(
+        email="artifact-id@example.test",
+        username="artifactid",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Registry Report",
+        request_text="private",
+        mode="simple_prototype",
+        complexity="simple",
+    )
+    run_dir = tmp_path / "run"
+    report_path = run_dir / "handoff" / "project" / "final" / "release-report.html"
+    report_path.parent.mkdir(parents=True)
+    report_path.write_text("<html><body>Registered report</body></html>", encoding="utf-8")
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="run-registry-report",
+        run_dir=Path(run_dir),
+        status="ready",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+    record = register_artifact(
+        run_dir,
+        relative_path="handoff/project/final/release-report.html",
+        run_id=run.run_uid,
+        owner_agent="documentation-handoff-agent",
+        label="Registered final report",
+        visibility="release",
+        artifact_type="release_report",
+    )
+    repo.upsert_artifact_record(run.id, record)
+    app = create_app(repo)
+    client = TestClient(app)
+    client.cookies.set("agentic_console_session", repo.create_session(user.id))
+
+    response = client.get(f"/artifacts/{run.id}/by-id/{record.artifact_id}")
+
+    assert response.status_code == 200
+    assert "Registered final report" in response.text
+    assert "Registered report" in response.text
 
 
 def test_html_artifact_view_opens_report_links_outside_preview(tmp_path):

@@ -1,4 +1,5 @@
 from agentic_company.console.web.db import ConsoleRepository
+from agentic_company.platform.artifact_registry import register_artifact
 
 
 def test_sessions_and_private_project_isolation(tmp_path):
@@ -70,6 +71,55 @@ def test_provider_key_storage_masks_and_deletes(tmp_path, monkeypatch):
     assert "sk-demo-secret-1234" not in credential.encrypted_value
     repo.delete_provider_secret(user.id, "openai")
     assert repo.get_provider_secret(user.id, "openai") is None
+
+
+def test_artifact_metadata_upsert_and_filter(tmp_path):
+    repo = ConsoleRepository(tmp_path / "console.db")
+    repo.init_schema()
+    user = repo.create_user(
+        email="artifact@example.test",
+        username="artifact",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Artifact Project",
+        request_text="Build",
+        mode="simple_prototype",
+        complexity="simple",
+    )
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    report = run_dir / "08-qa-report-F1.md"
+    report.write_text("# QA\n", encoding="utf-8")
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="run-artifacts",
+        run_dir=run_dir,
+        status="ready",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+    record = register_artifact(
+        run_dir,
+        relative_path="08-qa-report-F1.md",
+        run_id=run.run_uid,
+        owner_agent="qa-agent",
+        visibility="qa_evidence",
+        artifact_type="qa_report",
+        external_refs=[{"system": "jira", "type": "work_item", "id": "ADL-1", "url": "https://x"}],
+    )
+
+    repo.upsert_artifact_record(run.id, record)
+
+    loaded = repo.get_artifact_record(run.id, record.artifact_id)
+    assert loaded is not None
+    assert loaded.artifact_id == record.artifact_id
+    assert loaded.relative_path == record.relative_path
+    assert loaded.external_refs == record.external_refs
+    qa_artifacts = repo.list_artifact_records(run.id, visibility="qa_evidence")
+    assert [item.artifact_id for item in qa_artifacts] == [record.artifact_id]
+    assert repo.list_artifact_records(run.id, visibility="business") == []
 
 
 def test_delete_private_project_removes_project_and_runs(tmp_path):

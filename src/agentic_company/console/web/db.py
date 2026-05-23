@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from collections.abc import Iterator
@@ -20,6 +21,7 @@ from agentic_company.console.web.auth import (
     new_session_token,
     verify_password,
 )
+from agentic_company.platform.artifact_registry import ArtifactRecord, artifact_record_from_mapping
 
 SESSION_DAYS = 14
 
@@ -158,15 +160,47 @@ class ConsoleRepository:
                 CREATE TABLE IF NOT EXISTS artifact_metadata (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                    artifact_id TEXT NOT NULL DEFAULT '',
                     path TEXT NOT NULL,
+                    project_id INTEGER,
+                    work_item_id TEXT,
                     label TEXT NOT NULL,
                     agent TEXT NOT NULL,
+                    owner_agent TEXT NOT NULL DEFAULT '',
+                    artifact_type TEXT NOT NULL DEFAULT '',
                     visibility TEXT NOT NULL DEFAULT 'business',
+                    storage_uri TEXT NOT NULL DEFAULT '',
+                    source_tool TEXT NOT NULL DEFAULT '',
+                    source_model TEXT NOT NULL DEFAULT '',
+                    external_refs TEXT NOT NULL DEFAULT '[]',
+                    metadata TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     UNIQUE(run_id, path)
                 );
                 """
             )
+            self._ensure_artifact_metadata_columns(conn)
+
+    def _ensure_artifact_metadata_columns(self, conn: sqlite3.Connection) -> None:
+        existing = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(artifact_metadata)").fetchall()
+        }
+        columns = {
+            "artifact_id": "TEXT NOT NULL DEFAULT ''",
+            "project_id": "INTEGER",
+            "work_item_id": "TEXT",
+            "owner_agent": "TEXT NOT NULL DEFAULT ''",
+            "artifact_type": "TEXT NOT NULL DEFAULT ''",
+            "storage_uri": "TEXT NOT NULL DEFAULT ''",
+            "source_tool": "TEXT NOT NULL DEFAULT ''",
+            "source_model": "TEXT NOT NULL DEFAULT ''",
+            "external_refs": "TEXT NOT NULL DEFAULT '[]'",
+            "metadata": "TEXT NOT NULL DEFAULT '{}'",
+        }
+        for name, definition in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE artifact_metadata ADD COLUMN {name} {definition}")
 
     def create_user(self, *, email: str, username: str, password: str) -> User:
         now = utc_now()
@@ -522,6 +556,87 @@ class ConsoleRepository:
                 (status, generated_app_url, utc_now(), run_id),
             )
 
+    def upsert_artifact_record(self, run_id: int, record: ArtifactRecord) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO artifact_metadata (
+                    run_id, artifact_id, path, project_id, work_item_id, label, agent,
+                    owner_agent, artifact_type, visibility, storage_uri, source_tool,
+                    source_model, external_refs, metadata, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, path) DO UPDATE SET
+                    artifact_id = excluded.artifact_id,
+                    project_id = excluded.project_id,
+                    work_item_id = excluded.work_item_id,
+                    label = excluded.label,
+                    agent = excluded.agent,
+                    owner_agent = excluded.owner_agent,
+                    artifact_type = excluded.artifact_type,
+                    visibility = excluded.visibility,
+                    storage_uri = excluded.storage_uri,
+                    source_tool = excluded.source_tool,
+                    source_model = excluded.source_model,
+                    external_refs = excluded.external_refs,
+                    metadata = excluded.metadata,
+                    created_at = excluded.created_at
+                """,
+                (
+                    run_id,
+                    record.artifact_id,
+                    record.relative_path,
+                    record.project_id,
+                    record.work_item_id,
+                    record.label,
+                    record.owner_agent,
+                    record.owner_agent,
+                    record.artifact_type,
+                    record.visibility,
+                    record.storage_uri,
+                    record.source_tool,
+                    record.source_model,
+                    json.dumps(record.external_refs, sort_keys=True),
+                    json.dumps(record.metadata, sort_keys=True),
+                    record.created_at,
+                ),
+            )
+
+    def list_artifact_records(
+        self,
+        run_id: int,
+        *,
+        visibility: str | set[str] | None = None,
+    ) -> list[ArtifactRecord]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM artifact_metadata WHERE run_id = ? ORDER BY created_at, path",
+                (run_id,),
+            ).fetchall()
+        records = [_artifact_record(row) for row in rows]
+        records = [record for record in records if record is not None]
+        if visibility:
+            visibilities = {visibility} if isinstance(visibility, str) else visibility
+            records = [record for record in records if record.visibility in visibilities]
+        return records
+
+    def get_artifact_record(self, run_id: int, artifact_id: str) -> ArtifactRecord | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM artifact_metadata
+                WHERE run_id = ? AND artifact_id = ?
+                """,
+                (run_id, artifact_id),
+            ).fetchone()
+        return _artifact_record(row) if row else None
+
+    def sync_artifact_registry_from_run_dir(self, run_id: int, run_dir: Path) -> None:
+        from agentic_company.platform.artifact_registry import load_artifact_registry
+
+        for record in load_artifact_registry(run_dir):
+            self.upsert_artifact_record(run_id, record)
+
     def save_provider_secret(self, user_id: int, provider: str, secret: str) -> ProviderCredential:
         encrypted = encrypt_secret(secret)
         storage_mode = "encrypted" if encrypted else "local_demo"
@@ -683,6 +798,25 @@ def _provider(row: sqlite3.Row) -> ProviderCredential:
         storage_mode=str(row["storage_mode"]),
         updated_at=str(row["updated_at"]),
     )
+
+
+def _artifact_record(row: sqlite3.Row) -> ArtifactRecord | None:
+    payload = dict(row)
+    payload["relative_path"] = payload.get("path", "")
+    payload["owner_agent"] = payload.get("owner_agent") or payload.get("agent") or ""
+    payload["external_refs"] = _json_column(payload.get("external_refs"), default=[])
+    payload["metadata"] = _json_column(payload.get("metadata"), default={})
+    return artifact_record_from_mapping(payload)
+
+
+def _json_column(value: Any, *, default: Any) -> Any:
+    if value in (None, ""):
+        return default
+    try:
+        parsed = json.loads(str(value))
+    except json.JSONDecodeError:
+        return default
+    return parsed
 
 
 def row_to_dict(row: Any) -> dict[str, Any]:
