@@ -6,7 +6,10 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from agentic_company.agents.team_lead.contracts import TEAM_LEAD_TOOLS
+from agentic_company.agents.team_lead.contracts import (
+    TEAM_LEAD_TOOL_CONTRACT_REGISTRY,
+    TEAM_LEAD_TOOLS,
+)
 from agentic_company.agents.team_lead.tools import (
     TeamLeadExecutorResult,
     TeamLeadToolbox,
@@ -24,6 +27,7 @@ from agentic_company.platform.agent_runtime import (
     coordinator_recovery_policy,
 )
 from agentic_company.platform.state import DeliveryState
+from agentic_company.platform.tool_contracts import render_tool_docstring
 
 
 class LangChainTeamLeadExecutor:
@@ -480,7 +484,7 @@ def langchain_tools(toolbox: TeamLeadToolbox) -> list[Callable[..., str]]:
         """Block the sprint when progress is impossible or unsafe."""
         return toolbox.block_sprint(reason, target or None, message)
 
-    return [
+    tools = [
         run_fullstack,
         run_qa,
         run_deployment,
@@ -491,6 +495,11 @@ def langchain_tools(toolbox: TeamLeadToolbox) -> list[Callable[..., str]]:
         complete_sprint,
         block_sprint,
     ]
+    for tool in tools:
+        contract = TEAM_LEAD_TOOL_CONTRACT_REGISTRY.maybe_get(tool.__name__)
+        if contract:
+            tool.__doc__ = render_tool_docstring(contract)
+    return tools
 
 
 def _compact_delivery_state(state: DeliveryState) -> dict[str, Any]:

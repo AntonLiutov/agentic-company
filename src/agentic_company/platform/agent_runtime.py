@@ -14,6 +14,15 @@ from langgraph.graph import END, START, StateGraph
 from agentic_company.platform.messages import AgentMessage, AgentMessageStore
 from agentic_company.platform.models import AgentRunResult
 from agentic_company.platform.state import DeliveryState, record_codex_thread
+from agentic_company.platform.tool_contracts import (
+    CODEX_EXEC_TOOL_CONTRACT,
+    ToolCallResult,
+    ToolDashboardUpdate,
+    artifact_refs_from_paths,
+    dashboard_status_from_runtime_status,
+    failure_mode_from_status,
+    render_tool_docstring,
+)
 
 AGENT_EXECUTOR_GRAPH_NODE_ORDER: tuple[str, str, str] = (
     "prepare_context",
@@ -170,7 +179,13 @@ class LangChainSpecialistAgentExecutor:
             if tool_call_count >= request.max_codex_tool_calls:
                 return json.dumps(
                     {
+                        "tool_name": "codex_exec",
                         "status": tool_result.status if tool_result else "tool_call_limit_reached",
+                        "business_summary": (
+                            tool_result.summary
+                            if tool_result
+                            else "codex_exec was not run before the tool-call limit."
+                        ),
                         "summary": (
                             tool_result.summary
                             if tool_result
@@ -181,6 +196,24 @@ class LangChainSpecialistAgentExecutor:
                             "upstream or block with the latest findings."
                         ),
                         "max_codex_tool_calls": request.max_codex_tool_calls,
+                        "developer_diagnostics": {
+                            "codex_tool_call": tool_call_count,
+                            "max_codex_tool_calls": request.max_codex_tool_calls,
+                        },
+                        "output_artifacts": (
+                            tool_result.output_artifacts if tool_result else []
+                        ),
+                        "dashboard_update": {
+                            "status": "blocked",
+                            "summary": "Codex tool call limit reached.",
+                            "comment": (
+                                "codex_exec tool-call limit reached. Return the latest "
+                                "result upstream or block with the latest findings."
+                            ),
+                            "artifact_links": [],
+                            "labels": ["tool-limit"],
+                        },
+                        "implicit_resolution_warnings": [],
                     },
                     sort_keys=True,
                 )
@@ -198,22 +231,15 @@ class LangChainSpecialistAgentExecutor:
                 tool_result.agent_id or request.agent_id,
                 tool_result.codex_thread_id,
             )
-            return json.dumps(
-                {
-                    "status": tool_result.status,
-                    "summary": tool_result.summary,
-                    "output_artifacts": tool_result.output_artifacts,
-                    "blocking_findings": tool_result.blocking_findings,
-                    "fix_request_artifacts": tool_result.fix_request_artifacts,
-                    "recommended_next_action": tool_result.recommended_next_action,
-                    "reason": reason,
-                    "message": message,
-                    "codex_tool_call": tool_call_count,
-                    "remaining_codex_tool_calls": (request.max_codex_tool_calls - tool_call_count),
-                    "repair_guidance": _repair_guidance(tool_result, request),
-                },
-                sort_keys=True,
+            return _codex_exec_tool_response(
+                request=request,
+                result=tool_result,
+                reason=reason,
+                message=message,
+                tool_call_count=tool_call_count,
             )
+
+        codex_exec.__doc__ = render_tool_docstring(CODEX_EXEC_TOOL_CONTRACT)
 
         agent_output = self.runtime.invoke(
             LangChainAgentRequest(
@@ -360,6 +386,64 @@ def _repair_guidance(result: AgentRunResult, request: SpecialistAgentRequest) ->
     return (
         "Inspect the status and summary before deciding whether another codex_exec call is useful."
     )
+
+
+def _codex_exec_tool_response(
+    *,
+    request: SpecialistAgentRequest,
+    result: AgentRunResult,
+    reason: str,
+    message: str,
+    tool_call_count: int,
+) -> str:
+    """Return a structured codex_exec response while preserving legacy fields."""
+
+    remaining = request.max_codex_tool_calls - tool_call_count
+    failure_mode = failure_mode_from_status(result.status, result.blocking_findings)
+    dashboard_status = dashboard_status_from_runtime_status(result.status)
+    tool_result = ToolCallResult(
+        tool_name="codex_exec",
+        status=result.status,
+        business_summary=result.summary,
+        tool_call_id=f"{request.run_dir.name}:{request.agent_id}:codex_exec:{tool_call_count}",
+        developer_diagnostics={
+            "agent_id": request.agent_id,
+            "agent_name": request.agent_name,
+            "stage": request.stage,
+            "execution_id": result.execution_id,
+            "codex_thread_id": result.codex_thread_id,
+            "codex_tool_call": tool_call_count,
+            "remaining_codex_tool_calls": remaining,
+            "blocking_findings": result.blocking_findings,
+            "fix_request_artifacts": result.fix_request_artifacts,
+            "reason": reason,
+            "message": message,
+        },
+        output_artifacts=artifact_refs_from_paths(result.output_artifacts),
+        failure_mode=failure_mode,
+        recommended_next_action=result.recommended_next_action,
+        dashboard_update=ToolDashboardUpdate(
+            status=dashboard_status,
+            summary=result.summary,
+            comment=result.summary,
+            artifact_links=artifact_refs_from_paths(result.output_artifacts),
+            labels=(failure_mode,) if failure_mode else (),
+        ),
+    )
+    payload = {
+        **tool_result.to_dict(),
+        "summary": result.summary,
+        "legacy_output_artifacts": result.output_artifacts,
+        "blocking_findings": result.blocking_findings,
+        "fix_request_artifacts": result.fix_request_artifacts,
+        "recommended_next_action": result.recommended_next_action,
+        "reason": reason,
+        "message": message,
+        "codex_tool_call": tool_call_count,
+        "remaining_codex_tool_calls": remaining,
+        "repair_guidance": _repair_guidance(result, request),
+    }
+    return json.dumps(payload, sort_keys=True)
 
 
 def _agent_executor_summary(agent_output: Any) -> str:

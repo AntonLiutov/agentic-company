@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, cast
 from uuid import uuid4
@@ -57,6 +57,13 @@ from agentic_company.platform.status_inspector import (
     StatusInspectorLike,
     StatusInspectorRunner,
 )
+from agentic_company.platform.tool_contracts import (
+    ToolCallResult,
+    ToolDashboardUpdate,
+    artifact_refs_from_paths,
+    dashboard_status_from_runtime_status,
+    failure_mode_from_status,
+)
 
 TEAM_LEAD_AGENT_ID = "team-lead-agent"
 TEAM_LEAD_CODEX_REVIEW_AGENT_ID = "team-lead-codex-review"
@@ -98,6 +105,7 @@ class TeamLeadToolbox:
     codex_reviewer: CodexReviewerLike | None = None
     status_inspector: StatusInspectorLike | None = None
     history: list[dict[str, Any]] | None = None
+    implicit_resolution_warnings: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.history is None:
@@ -556,8 +564,9 @@ class TeamLeadToolbox:
             for feature in features_for_sprint(self.delivery_state, self.sprint_id)
             if feature.get("id")
         }
+        explicit_target = _extract_feature_id(str(target or ""), feature_ids)
         candidates = [
-            _extract_feature_id(str(target or ""), feature_ids),
+            explicit_target,
             str(self.delivery_state.get("active_feature_id") or ""),
         ]
         next_feature = next_feature_for_state(self.delivery_state, self.sprint_id)
@@ -566,6 +575,11 @@ class TeamLeadToolbox:
         for feature_id in candidates:
             feature = feature_by_id(self.delivery_state, feature_id)
             if feature_id and feature and self._feature_in_current_sprint(feature):
+                if feature_id != explicit_target:
+                    self.implicit_resolution_warnings.append(
+                        "Resolved feature target from active state or next sprint item because "
+                        f"legacy target `{target or ''}` did not provide an exact feature id."
+                    )
                 return feature_id
         return None
 
@@ -750,7 +764,41 @@ class TeamLeadToolbox:
         downstream_response: dict[str, Any] | None = None,
         artifact_refs: list[str] | None = None,
     ) -> str:
+        status = str(self.delivery_state.get("status") or "")
+        output_artifacts = _response_artifact_refs(
+            artifact_refs=artifact_refs,
+            downstream_response=downstream_response,
+        )
+        tool_name = _latest_history_tool(self.history or [])
+        failure_mode = failure_mode_from_status(status, self.delivery_state.get("blockers", []))
+        dashboard_status = dashboard_status_from_runtime_status(status)
+        structured = ToolCallResult(
+            tool_name=tool_name,
+            status=status,
+            business_summary=message,
+            tool_call_id=_tool_call_id(self.delivery_state, tool_name, len(self.history or [])),
+            developer_diagnostics={
+                "stage": self.delivery_state.get("stage"),
+                "active_feature_id": self.delivery_state.get("active_feature_id"),
+                "qa_status": self.delivery_state.get("qa_status"),
+                "deployment_status": self.delivery_state.get("deployment_status"),
+                "post_deploy_qa_status": self.delivery_state.get("post_deploy_qa_status"),
+                "blockers": self.delivery_state.get("blockers", []),
+            },
+            output_artifacts=artifact_refs_from_paths(output_artifacts),
+            failure_mode=failure_mode,
+            recommended_next_action=_recommended_next_action(status, failure_mode),
+            dashboard_update=ToolDashboardUpdate(
+                status=dashboard_status,
+                summary=message,
+                comment=message,
+                artifact_links=artifact_refs_from_paths(output_artifacts),
+                labels=(failure_mode,) if failure_mode else (),
+            ),
+            implicit_resolution_warnings=tuple(self.implicit_resolution_warnings),
+        )
         snapshot = {
+            **structured.to_dict(),
             "message": message,
             "status": self.delivery_state.get("status"),
             "active_feature_id": self.delivery_state.get("active_feature_id"),
@@ -1262,6 +1310,44 @@ def _split_artifact_refs(value: str) -> list[str]:
         if item and item not in refs:
             refs.append(item)
     return refs
+
+
+def _response_artifact_refs(
+    *,
+    artifact_refs: list[str] | None,
+    downstream_response: dict[str, Any] | None,
+) -> list[str]:
+    refs: list[str] = []
+    if artifact_refs:
+        refs.extend(artifact_refs)
+    if downstream_response:
+        refs.extend(
+            str(ref)
+            for ref in downstream_response.get("artifact_refs", [])
+            if isinstance(ref, str) and ref
+        )
+    return _unique_paths(refs)
+
+
+def _latest_history_tool(history: list[dict[str, Any]]) -> str:
+    if not history:
+        return "unknown"
+    return str(history[-1].get("tool") or "unknown")
+
+
+def _tool_call_id(state: DeliveryState, tool_name: str, step: int) -> str:
+    run_id = str(state.get("run_id") or "run")
+    return f"{run_id}:team-lead-agent:{tool_name}:{step}"
+
+
+def _recommended_next_action(status: str, failure_mode: str | None) -> str:
+    if failure_mode == "needs_repair":
+        return "Route the findings to the owning specialist, then rerun the relevant check."
+    if failure_mode:
+        return "Inspect developer diagnostics and blocker evidence before retrying or escalating."
+    if dashboard_status_from_runtime_status(status) == "done":
+        return "Inspect sprint status and proceed to the next required gate."
+    return "Inspect sprint status before choosing the next tool."
 
 
 def _review_work_item_id(state: DeliveryState, target: str | None) -> str:
