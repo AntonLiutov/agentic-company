@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,6 +40,7 @@ from agentic_company.platform.messages import (
     AgentMessageStore,
     append_agent_response,
 )
+from agentic_company.platform.run_trace import record_tool_call_event
 from agentic_company.platform.sprints import (
     TeamLeadResult,
     features_for_sprint,
@@ -198,6 +200,7 @@ class TeamLeadToolbox:
     ) -> str:
         if limit_response := self._limit_response(message):
             return limit_response
+        started = time.perf_counter()
         updated = {**self.delivery_state}
         post_deploy_feature = {
             "id": "post-deploy",
@@ -289,6 +292,13 @@ class TeamLeadToolbox:
         return self._tool_response(
             f"Post-deploy QA status: {checked.get('post_deploy_qa_status')}.",
             downstream_response=downstream_response,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+            input_summary={
+                "target": target or "post-deploy",
+                "reason": reason,
+                "message": message,
+                "sprint_id": self.sprint_id,
+            },
         )
 
     def run_handoff(
@@ -601,6 +611,7 @@ class TeamLeadToolbox:
     ) -> str:
         if limit_response := self._limit_response(message):
             return limit_response
+        started = time.perf_counter()
         updated = {**self.delivery_state}
         if target != self.sprint_id:
             if tool == "run_fullstack":
@@ -691,9 +702,18 @@ class TeamLeadToolbox:
             },
         )
         self._record(tool, target, reason, message)
+        duration_ms = int((time.perf_counter() - started) * 1000)
         return self._tool_response(
             f"{tool} completed with status {self.delivery_state.get('status')}.",
             downstream_response=downstream_response,
+            duration_ms=duration_ms,
+            input_summary={
+                "target": target,
+                "reason": reason,
+                "message": message,
+                "sprint_id": self.sprint_id,
+                "execution_id": execution_id,
+            },
         )
 
     def _record(
@@ -763,6 +783,8 @@ class TeamLeadToolbox:
         *,
         downstream_response: dict[str, Any] | None = None,
         artifact_refs: list[str] | None = None,
+        duration_ms: int | None = None,
+        input_summary: dict[str, Any] | None = None,
     ) -> str:
         status = str(self.delivery_state.get("status") or "")
         output_artifacts = _response_artifact_refs(
@@ -814,6 +836,28 @@ class TeamLeadToolbox:
             snapshot["artifact_refs"] = artifact_refs
         if downstream_response is not None:
             snapshot["downstream_response"] = downstream_response
+        record_tool_call_event(
+            Path(self.delivery_state["run_dir"]),
+            run_id=str(self.delivery_state.get("run_id") or ""),
+            agent_id=TEAM_LEAD_AGENT_ID,
+            tool_name=tool_name,
+            tool_call_id=structured.tool_call_id,
+            work_item_id=str(self.delivery_state.get("active_feature_id") or "") or None,
+            input_summary=input_summary
+            or {
+                "sprint_id": self.sprint_id,
+                "latest_history_tool": tool_name,
+            },
+            output_summary=structured.to_dict(),
+            artifact_ids=[
+                ref.artifact_id
+                for ref in structured.output_artifacts
+                if getattr(ref, "artifact_id", "")
+            ],
+            status=status,
+            failure_mode=failure_mode,
+            duration_ms=duration_ms,
+        )
         return json.dumps(snapshot, sort_keys=True)
 
 

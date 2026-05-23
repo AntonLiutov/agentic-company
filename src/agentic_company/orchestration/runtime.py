@@ -72,6 +72,7 @@ class DeliveryGraphRuntime:
             state["stage"],
             state["status"],
         )
+        graph_started = time.perf_counter()
         write_event(
             event_log,
             state["run_id"],
@@ -91,6 +92,7 @@ class DeliveryGraphRuntime:
                 node_order=node_order,
             )
         except Exception as exc:
+            duration_ms = int((time.perf_counter() - graph_started) * 1000)
             write_event(
                 event_log,
                 state["run_id"],
@@ -101,6 +103,7 @@ class DeliveryGraphRuntime:
                     "stage": state["stage"],
                     "status": "failed",
                     "error": str(exc),
+                    "duration_ms": duration_ms,
                 },
             )
             raise
@@ -116,6 +119,7 @@ class DeliveryGraphRuntime:
                 "stage": final_state["stage"],
                 "status": final_state["status"],
                 "state_artifact": self.state_filename,
+                "duration_ms": int((time.perf_counter() - graph_started) * 1000),
             },
         )
         LOGGER.info(
@@ -241,9 +245,11 @@ class DeliveryGraphRuntime:
                     "status": state["status"],
                 },
             )
+            node_started = time.perf_counter()
             try:
                 updated = node(state)
             except Exception as exc:
+                duration_ms = int((time.perf_counter() - node_started) * 1000)
                 write_event(
                     event_log,
                     run_id,
@@ -254,9 +260,11 @@ class DeliveryGraphRuntime:
                         "stage": state["stage"],
                         "status": "failed",
                         "error": str(exc),
+                        "duration_ms": duration_ms,
                     },
                 )
                 raise
+            duration_ms = int((time.perf_counter() - node_started) * 1000)
             write_event(
                 event_log,
                 run_id,
@@ -266,6 +274,7 @@ class DeliveryGraphRuntime:
                     "node": node_name,
                     "stage": updated["stage"],
                     "status": updated["status"],
+                    "duration_ms": duration_ms,
                 },
             )
             self.save_state(Path(updated["run_dir"]), updated)

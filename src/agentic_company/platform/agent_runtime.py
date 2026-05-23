@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -17,6 +18,7 @@ from agentic_company.platform.artifact_registry import (
 )
 from agentic_company.platform.messages import AgentMessage, AgentMessageStore
 from agentic_company.platform.models import AgentRunResult
+from agentic_company.platform.run_trace import record_model_call_event, record_tool_call_event
 from agentic_company.platform.state import DeliveryState, record_codex_thread
 from agentic_company.platform.tool_contracts import (
     CODEX_EXEC_TOOL_CONTRACT,
@@ -227,7 +229,9 @@ class LangChainSpecialistAgentExecutor:
                 previous_result=tool_result,
                 attempt=tool_call_count,
             )
+            started = time.perf_counter()
             tool_result = request.runner.run(request.run_dir)
+            duration_ms = int((time.perf_counter() - started) * 1000)
             record_codex_thread(
                 request.delivery_state,
                 tool_result.agent_id or request.agent_id,
@@ -239,6 +243,7 @@ class LangChainSpecialistAgentExecutor:
                 reason=reason,
                 message=message,
                 tool_call_count=tool_call_count,
+                duration_ms=duration_ms,
             )
 
         codex_exec.__doc__ = render_tool_docstring(CODEX_EXEC_TOOL_CONTRACT)
@@ -397,6 +402,7 @@ def _codex_exec_tool_response(
     reason: str,
     message: str,
     tool_call_count: int,
+    duration_ms: int | None = None,
 ) -> str:
     """Return a structured codex_exec response while preserving legacy fields."""
 
@@ -467,7 +473,51 @@ def _codex_exec_tool_response(
         "remaining_codex_tool_calls": remaining,
         "repair_guidance": _repair_guidance(result, request),
     }
+    artifact_ids = [ref.artifact_id for ref in output_artifacts if getattr(ref, "artifact_id", "")]
+    record_tool_call_event(
+        request.run_dir,
+        run_id=str(request.delivery_state.get("run_id") or request.run_dir.name),
+        agent_id=request.agent_id,
+        tool_name="codex_exec",
+        tool_call_id=tool_result.tool_call_id,
+        work_item_id=str(request.delivery_state.get("active_feature_id") or "") or None,
+        input_summary={
+            "reason": reason,
+            "message": message,
+            "stage": request.stage,
+            "agent_name": request.agent_name,
+        },
+        output_summary=tool_result.to_dict(),
+        artifact_ids=artifact_ids,
+        status=result.status,
+        failure_mode=failure_mode,
+        duration_ms=duration_ms,
+    )
+    record_model_call_event(
+        request.run_dir,
+        run_id=str(request.delivery_state.get("run_id") or request.run_dir.name),
+        agent_id=result.agent_id or request.agent_id,
+        provider="openai",
+        model=agent_env_value("AGENT_CODEX_MODEL", request.delivery_state)
+        or agent_env_value(
+            f"{request.agent_id.upper().replace('-', '_')}_CODEX_MODEL",
+            request.delivery_state,
+        )
+        or "gpt-5.3-codex",
+        purpose="codex_exec",
+        prompt_ref=_prompt_artifact_ref(result.output_artifacts),
+        status=result.status,
+        duration_ms=duration_ms,
+    )
     return json.dumps(payload, sort_keys=True)
+
+
+def _prompt_artifact_ref(output_artifacts: list[str]) -> str:
+    for artifact in output_artifacts:
+        normalized = artifact.lower()
+        if "prompt" in normalized and normalized.endswith((".md", ".txt", ".json")):
+            return artifact
+    return ""
 
 
 def _agent_executor_summary(agent_output: Any) -> str:

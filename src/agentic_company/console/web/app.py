@@ -75,6 +75,7 @@ from agentic_company.console.web.voice import (
 )
 from agentic_company.platform.artifact_registry import get_artifact_by_id
 from agentic_company.platform.logging import configure_logging
+from agentic_company.platform.run_trace import trace_summary
 
 COOKIE_NAME = "agentic_console_session"
 
@@ -700,6 +701,30 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             }
         )
 
+    @app.get("/api/runs/{run_id}/trace")
+    def run_trace(
+        request: Request,
+        run_id: int,
+        user: CurrentUser,
+    ) -> JSONResponse:
+        repo = get_repo(request)
+        run = repo.get_run_for_user(run_id, user.id)
+        if not run:
+            raise HTTPException(status_code=404)
+        run_dir = Path(run.run_dir)
+        repo.sync_run_trace_from_run_dir(run.id, run_dir)
+        run_events = repo.list_run_events(run.id)
+        tool_call_events = repo.list_tool_call_events(run.id)
+        model_call_events = repo.list_model_call_events(run.id)
+        return JSONResponse(
+            {
+                "run_events": [event.to_dict() for event in run_events],
+                "tool_call_events": [event.to_dict() for event in tool_call_events],
+                "model_call_events": [event.to_dict() for event in model_call_events],
+                "summary": trace_summary(run_events, tool_call_events, model_call_events),
+            }
+        )
+
     @app.post("/api/format-request")
     async def format_request(request: Request, user: CurrentUser) -> JSONResponse:
         form = await request.form()
@@ -866,6 +891,7 @@ def render_workspace(
         overview = delivery_overview_for_run(run_dir)
         business_artifacts = artifacts_for_run(run_dir)[0]
         get_repo(request).sync_artifact_registry_from_run_dir(run.id, run_dir)
+        get_repo(request).sync_run_trace_from_run_dir(run.id, run_dir)
         context.update(
             {
                 "overview": overview,

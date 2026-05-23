@@ -16,6 +16,7 @@ from agentic_company.platform.agent_runtime import (
     SpecialistAgentRequest,
 )
 from agentic_company.platform.models import AgentRunResult
+from agentic_company.platform.run_trace import load_model_call_events, load_tool_call_events
 from agentic_company.platform.state import initial_delivery_state
 
 
@@ -185,6 +186,12 @@ def test_codex_exec_docstring_and_result_shape_are_contract_ready(tmp_path):
     assert runtime.tool_payload["output_artifacts"][0]["path"] == "fullstack/result.json"
     assert runtime.tool_payload["recommended_next_action"] == "Ship it."
     assert not _has_secret_key(runtime.tool_payload)
+    tool_events = load_tool_call_events(tmp_path)
+    model_events = load_model_call_events(tmp_path)
+    assert tool_events[0].tool_name == "codex_exec"
+    assert tool_events[0].status == "codex_completed"
+    assert model_events[0].purpose == "codex_exec"
+    assert model_events[0].estimated_cost_usd is None
 
 
 class FakeCodexRunner:

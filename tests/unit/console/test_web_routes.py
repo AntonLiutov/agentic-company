@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 from agentic_company.console.web.app import create_app
 from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.platform.artifact_registry import register_artifact
+from agentic_company.platform.events import write_event
+from agentic_company.platform.run_trace import record_tool_call_event
 
 
 def test_landing_page_renders_public_story(tmp_path):
@@ -979,6 +981,70 @@ def test_artifact_view_resolves_registry_id(tmp_path):
     assert response.status_code == 200
     assert "Registered final report" in response.text
     assert "Registered report" in response.text
+
+
+def test_run_trace_api_returns_owned_structured_trace_without_secrets(tmp_path):
+    repo = ConsoleRepository(tmp_path / "console.db")
+    repo.init_schema()
+    user = repo.create_user(
+        email="trace-route@example.test",
+        username="traceroute",
+        password="password-1",
+    )
+    other = repo.create_user(
+        email="trace-other@example.test",
+        username="traceother",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Trace API",
+        request_text="private",
+        mode="simple_prototype",
+        complexity="simple",
+    )
+    run_dir = tmp_path / "trace-api"
+    run_dir.mkdir()
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="trace-api",
+        run_dir=run_dir,
+        status="ready",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+    write_event(
+        run_dir / "events.jsonl",
+        run.run_uid,
+        "delivery-graph",
+        "delivery_graph_started",
+        {"status": "running", "OPENAI_API_KEY": "sk-secret"},
+    )
+    record_tool_call_event(
+        run_dir,
+        run_id=run.run_uid,
+        agent_id="team-lead-agent",
+        tool_name="run_fullstack",
+        tool_call_id="call-1",
+        status="codex_completed",
+        output_summary={"output_artifacts": [{"artifact_id": "art_route"}]},
+    )
+    app = create_app(repo)
+    client = TestClient(app)
+    client.cookies.set("agentic_console_session", repo.create_session(user.id))
+
+    response = client.get(f"/api/runs/{run.id}/trace")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_events"][0]["event_type"] == "delivery_graph_started"
+    assert payload["run_events"][0]["data"]["OPENAI_API_KEY"] == "[REDACTED]"
+    assert payload["tool_call_events"][0]["artifact_ids"] == ["art_route"]
+    assert payload["summary"]["tools"] == {"run_fullstack": 1}
+    assert "sk-secret" not in response.text
+
+    client.cookies.set("agentic_console_session", repo.create_session(other.id))
+    assert client.get(f"/api/runs/{run.id}/trace").status_code == 404
 
 
 def test_html_artifact_view_opens_report_links_outside_preview(tmp_path):

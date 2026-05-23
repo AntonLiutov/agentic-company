@@ -22,6 +22,17 @@ from agentic_company.console.web.auth import (
     verify_password,
 )
 from agentic_company.platform.artifact_registry import ArtifactRecord, artifact_record_from_mapping
+from agentic_company.platform.run_trace import (
+    ModelCallEvent,
+    RunEvent,
+    ToolCallEvent,
+    load_model_call_events,
+    load_run_events,
+    load_tool_call_events,
+    model_call_event_from_mapping,
+    run_event_from_mapping,
+    tool_call_event_from_mapping,
+)
 
 SESSION_DAYS = 14
 
@@ -176,6 +187,62 @@ class ConsoleRepository:
                     metadata TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     UNIQUE(run_id, path)
+                );
+
+                CREATE TABLE IF NOT EXISTS run_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                    runtime_run_id TEXT NOT NULL DEFAULT '',
+                    event_id TEXT NOT NULL,
+                    project_id INTEGER,
+                    work_item_id TEXT,
+                    agent_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT '',
+                    message TEXT NOT NULL DEFAULT '',
+                    artifact_ids TEXT NOT NULL DEFAULT '[]',
+                    external_refs TEXT NOT NULL DEFAULT '[]',
+                    data TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    UNIQUE(run_id, event_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS tool_call_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                    runtime_run_id TEXT NOT NULL DEFAULT '',
+                    event_id TEXT NOT NULL,
+                    work_item_id TEXT,
+                    agent_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    tool_call_id TEXT NOT NULL,
+                    input_summary TEXT NOT NULL DEFAULT '{}',
+                    output_summary TEXT NOT NULL DEFAULT '{}',
+                    artifact_ids TEXT NOT NULL DEFAULT '[]',
+                    status TEXT NOT NULL DEFAULT '',
+                    failure_mode TEXT,
+                    duration_ms INTEGER,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(run_id, event_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS model_call_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                    runtime_run_id TEXT NOT NULL DEFAULT '',
+                    event_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    purpose TEXT NOT NULL,
+                    prompt_ref TEXT NOT NULL DEFAULT '',
+                    input_tokens INTEGER,
+                    output_tokens INTEGER,
+                    estimated_cost_usd REAL,
+                    status TEXT NOT NULL DEFAULT '',
+                    duration_ms INTEGER,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(run_id, event_id)
                 );
                 """
             )
@@ -637,6 +704,201 @@ class ConsoleRepository:
         for record in load_artifact_registry(run_dir):
             self.upsert_artifact_record(run_id, record)
 
+    def upsert_run_event(self, run_id: int, event: RunEvent) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO run_events (
+                    run_id, runtime_run_id, event_id, project_id, work_item_id, agent_id,
+                    event_type, status, message, artifact_ids, external_refs, data, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, event_id) DO UPDATE SET
+                    runtime_run_id = excluded.runtime_run_id,
+                    project_id = excluded.project_id,
+                    work_item_id = excluded.work_item_id,
+                    agent_id = excluded.agent_id,
+                    event_type = excluded.event_type,
+                    status = excluded.status,
+                    message = excluded.message,
+                    artifact_ids = excluded.artifact_ids,
+                    external_refs = excluded.external_refs,
+                    data = excluded.data,
+                    created_at = excluded.created_at
+                """,
+                (
+                    run_id,
+                    str(event.run_id),
+                    event.event_id,
+                    event.project_id,
+                    event.work_item_id,
+                    event.agent_id,
+                    event.event_type,
+                    event.status,
+                    event.message,
+                    json.dumps(event.artifact_ids, sort_keys=True),
+                    json.dumps(event.external_refs, sort_keys=True),
+                    json.dumps(event.data, sort_keys=True),
+                    event.created_at,
+                ),
+            )
+
+    def list_run_events(
+        self,
+        run_id: int,
+        *,
+        event_type: str | None = None,
+        agent_id: str | None = None,
+    ) -> list[RunEvent]:
+        clauses = ["run_id = ?"]
+        params: list[Any] = [run_id]
+        if event_type:
+            clauses.append("event_type = ?")
+            params.append(event_type)
+        if agent_id:
+            clauses.append("agent_id = ?")
+            params.append(agent_id)
+        sql = "SELECT * FROM run_events WHERE " + " AND ".join(clauses) + " ORDER BY created_at, id"
+        with self.connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [_run_event(row) for row in rows]
+
+    def upsert_tool_call_event(self, run_id: int, event: ToolCallEvent) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO tool_call_events (
+                    run_id, runtime_run_id, event_id, work_item_id, agent_id, tool_name,
+                    tool_call_id, input_summary, output_summary, artifact_ids, status,
+                    failure_mode, duration_ms, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, event_id) DO UPDATE SET
+                    runtime_run_id = excluded.runtime_run_id,
+                    work_item_id = excluded.work_item_id,
+                    agent_id = excluded.agent_id,
+                    tool_name = excluded.tool_name,
+                    tool_call_id = excluded.tool_call_id,
+                    input_summary = excluded.input_summary,
+                    output_summary = excluded.output_summary,
+                    artifact_ids = excluded.artifact_ids,
+                    status = excluded.status,
+                    failure_mode = excluded.failure_mode,
+                    duration_ms = excluded.duration_ms,
+                    created_at = excluded.created_at
+                """,
+                (
+                    run_id,
+                    str(event.run_id),
+                    event.event_id,
+                    event.work_item_id,
+                    event.agent_id,
+                    event.tool_name,
+                    event.tool_call_id,
+                    json.dumps(event.input_summary, sort_keys=True),
+                    json.dumps(event.output_summary, sort_keys=True),
+                    json.dumps(event.artifact_ids, sort_keys=True),
+                    event.status,
+                    event.failure_mode,
+                    event.duration_ms,
+                    event.created_at,
+                ),
+            )
+
+    def list_tool_call_events(
+        self,
+        run_id: int,
+        *,
+        tool_name: str | None = None,
+        agent_id: str | None = None,
+    ) -> list[ToolCallEvent]:
+        clauses = ["run_id = ?"]
+        params: list[Any] = [run_id]
+        if tool_name:
+            clauses.append("tool_name = ?")
+            params.append(tool_name)
+        if agent_id:
+            clauses.append("agent_id = ?")
+            params.append(agent_id)
+        sql = (
+            "SELECT * FROM tool_call_events WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY created_at, id"
+        )
+        with self.connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [_tool_call_event(row) for row in rows]
+
+    def upsert_model_call_event(self, run_id: int, event: ModelCallEvent) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO model_call_events (
+                    run_id, runtime_run_id, event_id, agent_id, provider, model, purpose,
+                    prompt_ref, input_tokens, output_tokens, estimated_cost_usd, status,
+                    duration_ms, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, event_id) DO UPDATE SET
+                    runtime_run_id = excluded.runtime_run_id,
+                    agent_id = excluded.agent_id,
+                    provider = excluded.provider,
+                    model = excluded.model,
+                    purpose = excluded.purpose,
+                    prompt_ref = excluded.prompt_ref,
+                    input_tokens = excluded.input_tokens,
+                    output_tokens = excluded.output_tokens,
+                    estimated_cost_usd = excluded.estimated_cost_usd,
+                    status = excluded.status,
+                    duration_ms = excluded.duration_ms,
+                    created_at = excluded.created_at
+                """,
+                (
+                    run_id,
+                    str(event.run_id),
+                    event.event_id,
+                    event.agent_id,
+                    event.provider,
+                    event.model,
+                    event.purpose,
+                    event.prompt_ref,
+                    event.input_tokens,
+                    event.output_tokens,
+                    event.estimated_cost_usd,
+                    event.status,
+                    event.duration_ms,
+                    event.created_at,
+                ),
+            )
+
+    def list_model_call_events(
+        self,
+        run_id: int,
+        *,
+        agent_id: str | None = None,
+    ) -> list[ModelCallEvent]:
+        clauses = ["run_id = ?"]
+        params: list[Any] = [run_id]
+        if agent_id:
+            clauses.append("agent_id = ?")
+            params.append(agent_id)
+        sql = (
+            "SELECT * FROM model_call_events WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY created_at, id"
+        )
+        with self.connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [_model_call_event(row) for row in rows]
+
+    def sync_run_trace_from_run_dir(self, run_id: int, run_dir: Path) -> None:
+        for event in load_run_events(run_dir):
+            self.upsert_run_event(run_id, event)
+        for event in load_tool_call_events(run_dir):
+            self.upsert_tool_call_event(run_id, event)
+        for event in load_model_call_events(run_dir):
+            self.upsert_model_call_event(run_id, event)
+
     def save_provider_secret(self, user_id: int, provider: str, secret: str) -> ProviderCredential:
         encrypted = encrypt_secret(secret)
         storage_mode = "encrypted" if encrypted else "local_demo"
@@ -807,6 +1069,30 @@ def _artifact_record(row: sqlite3.Row) -> ArtifactRecord | None:
     payload["external_refs"] = _json_column(payload.get("external_refs"), default=[])
     payload["metadata"] = _json_column(payload.get("metadata"), default={})
     return artifact_record_from_mapping(payload)
+
+
+def _run_event(row: sqlite3.Row) -> RunEvent:
+    payload = dict(row)
+    payload["run_id"] = payload.get("runtime_run_id") or payload.get("run_id")
+    payload["artifact_ids"] = _json_column(payload.get("artifact_ids"), default=[])
+    payload["external_refs"] = _json_column(payload.get("external_refs"), default=[])
+    payload["data"] = _json_column(payload.get("data"), default={})
+    return run_event_from_mapping(payload)
+
+
+def _tool_call_event(row: sqlite3.Row) -> ToolCallEvent:
+    payload = dict(row)
+    payload["run_id"] = payload.get("runtime_run_id") or payload.get("run_id")
+    payload["input_summary"] = _json_column(payload.get("input_summary"), default={})
+    payload["output_summary"] = _json_column(payload.get("output_summary"), default={})
+    payload["artifact_ids"] = _json_column(payload.get("artifact_ids"), default=[])
+    return tool_call_event_from_mapping(payload)
+
+
+def _model_call_event(row: sqlite3.Row) -> ModelCallEvent:
+    payload = dict(row)
+    payload["run_id"] = payload.get("runtime_run_id") or payload.get("run_id")
+    return model_call_event_from_mapping(payload)
 
 
 def _json_column(value: Any, *, default: Any) -> Any:

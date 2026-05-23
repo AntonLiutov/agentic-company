@@ -1,5 +1,6 @@
 from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.platform.artifact_registry import register_artifact
+from agentic_company.platform.run_trace import record_model_call_event, record_tool_call_event
 
 
 def test_sessions_and_private_project_isolation(tmp_path):
@@ -120,6 +121,65 @@ def test_artifact_metadata_upsert_and_filter(tmp_path):
     qa_artifacts = repo.list_artifact_records(run.id, visibility="qa_evidence")
     assert [item.artifact_id for item in qa_artifacts] == [record.artifact_id]
     assert repo.list_artifact_records(run.id, visibility="business") == []
+
+
+def test_trace_events_sync_from_run_dir_and_upsert(tmp_path):
+    repo = ConsoleRepository(tmp_path / "console.db")
+    repo.init_schema()
+    user = repo.create_user(
+        email="trace@example.test",
+        username="trace",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Trace Project",
+        request_text="Build",
+        mode="simple_prototype",
+        complexity="simple",
+    )
+    run_dir = tmp_path / "trace-run"
+    run_dir.mkdir()
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="trace-run",
+        run_dir=run_dir,
+        status="ready",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+    record_tool_call_event(
+        run_dir,
+        run_id=run.run_uid,
+        agent_id="team-lead-agent",
+        tool_name="run_qa",
+        tool_call_id="call-1",
+        status="qa_passed",
+        output_summary={"output_artifacts": [{"artifact_id": "art_trace"}]},
+        duration_ms=5,
+    )
+    record_model_call_event(
+        run_dir,
+        run_id=run.run_uid,
+        agent_id="qa-agent",
+        provider="openai",
+        model="gpt-5.3-codex",
+        purpose="codex_exec",
+        prompt_ref="qa/prompt.md",
+        status="qa_passed",
+    )
+
+    repo.sync_run_trace_from_run_dir(run.id, run_dir)
+    repo.sync_run_trace_from_run_dir(run.id, run_dir)
+
+    tool_events = repo.list_tool_call_events(run.id, tool_name="run_qa")
+    model_events = repo.list_model_call_events(run.id, agent_id="qa-agent")
+
+    assert len(tool_events) == 1
+    assert tool_events[0].artifact_ids == ["art_trace"]
+    assert tool_events[0].duration_ms == 5
+    assert len(model_events) == 1
+    assert model_events[0].estimated_cost_usd is None
 
 
 def test_delete_private_project_removes_project_and_runs(tmp_path):
