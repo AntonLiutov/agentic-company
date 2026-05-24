@@ -1,0 +1,43 @@
+schema_version: 1
+skill_id: requirements-analysis
+version: "1.0"
+status: active
+trust_level: system
+selection:
+  applies_to_agents: [business-analyst-agent]
+  default_for_agents: [business-analyst-agent]
+  stages: [business_analysis, planning]
+  trigger_keywords: [requirements, product idea, acceptance criteria, user goals, open questions]
+  negative_triggers: [architecture design, implementation, deployment, release report]
+contracts:
+  required_tools: [codex_exec]
+  allowed_tools: [codex_exec]
+  consumes_artifacts: []
+  produces_artifacts:
+    - artifact_type: requirements_brief
+      visibility: business
+      required: true
+      dashboard_label: Requirements brief
+      external_reference_type: work_item
+dashboard:
+  status: in_progress
+  work_item_stage: planning
+  external_systems_supported: [internal, github, jira, azure_devops, linear]
+  comment_template: requirements-update
+  labels: [agentic-delivery, requirements]
+governance:
+  risk_level: medium
+  requires_human_approval: false
+  max_repair_attempts: 1
+  checkpoint_before: false
+  checkpoint_after: true
+validation:
+  eval_prompts:
+    - Build a small app with two buttons: one shows a random joke and one shows a random number.
+  success_signals:
+    - requirements_brief artifact exists
+    - concrete requested behaviors are preserved
+    - acceptance criteria are testable
+examples:
+  - input: Rough product idea
+    output: Requirements brief with acceptance criteria and open questions

@@ -1,0 +1,48 @@
+schema_version: 1
+skill_id: screenshot-review
+version: "1.0"
+status: active
+trust_level: system
+selection:
+  applies_to_agents: [qa-agent]
+  default_for_agents: [qa-agent]
+  stages: [qa, quality_review, post_deploy_qa]
+  trigger_keywords: [screenshot, visual review, layout, overflow, responsive, cropped content]
+  negative_triggers: [implementation, deployment setup, release report]
+contracts:
+  required_tools: [codex_exec]
+  allowed_tools: [codex_exec]
+  consumes_artifacts: [screenshot_evidence, qa_report, execution_summary]
+  produces_artifacts:
+    - artifact_type: screenshot_evidence
+      visibility: qa_evidence
+      required: true
+      dashboard_label: Screenshot review
+      external_reference_type: work_item
+    - artifact_type: qa_report
+      visibility: qa_evidence
+      required: false
+      dashboard_label: Visual QA report
+      external_reference_type: work_item
+dashboard:
+  status: review
+  work_item_stage: quality_review
+  external_systems_supported: [internal, github, jira, azure_devops, linear]
+  comment_template: screenshot-review
+  labels: [agentic-delivery, qa, visual-review]
+governance:
+  risk_level: low
+  requires_human_approval: false
+  max_repair_attempts: 2
+  checkpoint_before: false
+  checkpoint_after: true
+validation:
+  eval_prompts:
+    - Review screenshots for mobile overflow and clipped board columns.
+  success_signals:
+    - screenshot_evidence artifact exists
+    - visual findings cite location and viewport
+    - blocker vs polish is clear
+examples:
+  - input: Screenshot evidence and expected flow
+    output: Visual findings with repair guidance

@@ -1,0 +1,48 @@
+schema_version: 1
+skill_id: repair-loop
+version: "1.0"
+status: active
+trust_level: system
+selection:
+  applies_to_agents: [head-agent, team-lead-agent, fullstack-agent, qa-agent, deployment-agent, documentation-handoff-agent]
+  default_for_agents: [head-agent, team-lead-agent]
+  stages: [head, team_lead, repair, qa_failed, deployment_failed, blocked]
+  trigger_keywords: [repair, failed, blocked, QA failed, deployment failed, retry, recovery]
+  negative_triggers: [first-pass implementation, normal planning, final report without blockers]
+contracts:
+  required_tools: [inspect_delivery_status]
+  allowed_tools: [inspect_delivery_status, inspect_sprint_status, codex_review, codex_exec, block_planning]
+  consumes_artifacts: [qa_report, deployment_summary, execution_summary, debug_trace]
+  produces_artifacts:
+    - artifact_type: tool_result
+      visibility: developer
+      required: true
+      dashboard_label: Repair routing result
+      external_reference_type: work_item
+    - artifact_type: execution_summary
+      visibility: developer
+      required: false
+      dashboard_label: Repair summary
+      external_reference_type: work_item
+dashboard:
+  status: blocked
+  work_item_stage: repair
+  external_systems_supported: [internal, github, jira, azure_devops, linear]
+  comment_template: repair-update
+  labels: [agentic-delivery, repair]
+governance:
+  risk_level: high
+  requires_human_approval: false
+  max_repair_attempts: 2
+  checkpoint_before: true
+  checkpoint_after: true
+validation:
+  eval_prompts:
+    - Route a QA failure for a broken button back to Builder with evidence.
+  success_signals:
+    - repair decision names responsible agent
+    - artifact evidence is cited
+    - retry/block/human approval choice is explicit
+examples:
+  - input: QA failure and current delivery state
+    output: Repair routing decision with next action

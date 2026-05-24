@@ -18,7 +18,17 @@ from agentic_company.platform.artifact_registry import (
 )
 from agentic_company.platform.messages import AgentMessage, AgentMessageStore
 from agentic_company.platform.models import AgentRunResult
-from agentic_company.platform.run_trace import record_model_call_event, record_tool_call_event
+from agentic_company.platform.run_trace import (
+    record_model_call_event,
+    record_run_event,
+    record_tool_call_event,
+)
+from agentic_company.platform.skills import (
+    SkillSelection,
+    render_skill_instructions,
+    select_skills_for_agent,
+    selected_skill_trace_data,
+)
 from agentic_company.platform.state import DeliveryState, record_codex_thread
 from agentic_company.platform.tool_contracts import (
     CODEX_EXEC_TOOL_CONTRACT,
@@ -97,6 +107,7 @@ class LangChainAgentRequest:
     model_env_keys: tuple[str, ...] = ("AGENT_LLM_MODEL",)
     default_reasoning_effort: str | None = DEFAULT_AGENT_REASONING_EFFORT
     reasoning_effort_env_keys: tuple[str, ...] = (AGENT_REASONING_EFFORT_ENV,)
+    selected_skills: tuple[SkillSelection, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +128,7 @@ class SpecialistAgentRequest:
     model_env_keys: tuple[str, ...] = ("AGENT_LLM_MODEL",)
     default_reasoning_effort: str | None = DEFAULT_SPECIALIST_AGENT_REASONING_EFFORT
     reasoning_effort_env_keys: tuple[str, ...] = (SPECIALIST_AGENT_REASONING_EFFORT_ENV,)
+    selected_skills: tuple[SkillSelection, ...] = ()
 
 
 class LangChainCreateAgentRuntime:
@@ -134,6 +146,24 @@ class LangChainCreateAgentRuntime:
     def invoke(self, request: LangChainAgentRequest) -> Any:
         """Build and invoke a LangChain `create_agent` instance."""
 
+        selected_skills = _selected_skills_for_request(request)
+        skill_prompt = _selected_skill_prompt(
+            agent_id=request.agent_id,
+            stage=request.stage,
+            delivery_state=request.delivery_state,
+            selections=selected_skills,
+        )
+        system_prompt = (
+            request.system_prompt.rstrip() + "\n\n" + skill_prompt
+            if skill_prompt
+            else request.system_prompt
+        )
+        _record_selected_skills(
+            request.delivery_state,
+            agent_id=request.agent_id,
+            stage=request.stage,
+            selected_skills=selected_skills,
+        )
         provider = _agent_llm_provider(request.delivery_state)
         api_key = _agent_provider_api_key(provider, request.delivery_state)
         if not api_key:
@@ -159,7 +189,7 @@ class LangChainCreateAgentRuntime:
             api_key,
             reasoning_effort,
         )
-        agent = self.create_agent_factory(model, list(request.tools), request.system_prompt)
+        agent = self.create_agent_factory(model, list(request.tools), system_prompt)
         return agent.invoke(
             {"messages": [{"role": "user", "content": request.user_prompt}]},
             config={"recursion_limit": request.max_steps * 2 + 8},
@@ -175,6 +205,7 @@ class LangChainSpecialistAgentExecutor:
     def run(self, request: SpecialistAgentRequest) -> AgentRunResult:
         """Expose `codex_exec` to create_agent and return the Codex tool result."""
 
+        request = _specialist_request_with_selected_skills(request)
         tool_result: AgentRunResult | None = None
         tool_call_count = 0
 
@@ -261,6 +292,7 @@ class LangChainSpecialistAgentExecutor:
                 model_env_keys=request.model_env_keys,
                 default_reasoning_effort=request.default_reasoning_effort,
                 reasoning_effort_env_keys=request.reasoning_effort_env_keys,
+                selected_skills=request.selected_skills,
             )
         )
         if tool_result is None:
@@ -302,6 +334,80 @@ def _specialist_system_prompt(request: SpecialistAgentRequest) -> str:
         + "artifact refs the Codex worker must inspect.\n"
         + "- Do not retry when the issue is not repairable by this agent, when the tool "
         + "limit is reached, or when a human/environment decision is required.\n"
+    )
+
+
+def _specialist_request_with_selected_skills(
+    request: SpecialistAgentRequest,
+) -> SpecialistAgentRequest:
+    if request.selected_skills:
+        return request
+    selection = select_skills_for_agent(
+        agent_id=request.agent_id,
+        stage=request.stage,
+        delivery_state=request.delivery_state,
+    )
+    return replace(request, selected_skills=selection.selections)
+
+
+def _selected_skills_for_request(request: LangChainAgentRequest) -> tuple[SkillSelection, ...]:
+    if request.selected_skills:
+        return request.selected_skills
+    return select_skills_for_agent(
+        agent_id=request.agent_id,
+        stage=request.stage,
+        delivery_state=request.delivery_state,
+    ).selections
+
+
+def _selected_skill_prompt(
+    *,
+    agent_id: str,
+    stage: str,
+    delivery_state: DeliveryState,
+    selections: tuple[SkillSelection, ...],
+) -> str:
+    if not selections:
+        return ""
+    catalog_selection = select_skills_for_agent(
+        agent_id=agent_id,
+        stage=stage,
+        delivery_state=delivery_state,
+    )
+    selected_ids = {selection.skill_id for selection in selections}
+    descriptors = tuple(
+        descriptor
+        for descriptor in catalog_selection.descriptors
+        if descriptor.skill_id in selected_ids
+    )
+    return render_skill_instructions(descriptors)
+
+
+def _record_selected_skills(
+    delivery_state: DeliveryState,
+    *,
+    agent_id: str,
+    stage: str,
+    selected_skills: tuple[SkillSelection, ...],
+) -> None:
+    if not selected_skills:
+        return
+    run_dir_value = delivery_state.get("run_dir")
+    run_id = str(delivery_state.get("run_id") or "")
+    if not run_dir_value or not run_id:
+        return
+    record_run_event(
+        Path(str(run_dir_value)),
+        run_id=run_id,
+        agent_id=agent_id,
+        event_type="skills_selected",
+        status="selected",
+        message=f"Selected {len(selected_skills)} runtime skill(s).",
+        work_item_id=str(delivery_state.get("active_feature_id") or "") or None,
+        data={
+            "stage": stage,
+            "selected_skills": selected_skill_trace_data(selected_skills),
+        },
     )
 
 
@@ -486,6 +592,7 @@ def _codex_exec_tool_response(
             "message": message,
             "stage": request.stage,
             "agent_name": request.agent_name,
+            "selected_skills": selected_skill_trace_data(request.selected_skills),
         },
         output_summary=tool_result.to_dict(),
         artifact_ids=artifact_ids,

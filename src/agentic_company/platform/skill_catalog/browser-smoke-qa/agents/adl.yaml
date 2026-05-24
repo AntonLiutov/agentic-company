@@ -1,0 +1,48 @@
+schema_version: 1
+skill_id: browser-smoke-qa
+version: "1.0"
+status: active
+trust_level: system
+selection:
+  applies_to_agents: [qa-agent]
+  default_for_agents: [qa-agent]
+  stages: [qa, quality_review, post_deploy_qa]
+  trigger_keywords: [browser QA, smoke test, click buttons, main flow, visible behavior]
+  negative_triggers: [implementation, deployment setup, release report]
+contracts:
+  required_tools: [codex_exec]
+  allowed_tools: [codex_exec]
+  consumes_artifacts: [requirements_brief, delivery_plan, execution_summary, deployment_summary]
+  produces_artifacts:
+    - artifact_type: qa_report
+      visibility: qa_evidence
+      required: true
+      dashboard_label: QA report
+      external_reference_type: work_item
+    - artifact_type: screenshot_evidence
+      visibility: qa_evidence
+      required: false
+      dashboard_label: Screenshot evidence
+      external_reference_type: work_item
+dashboard:
+  status: review
+  work_item_stage: quality_review
+  external_systems_supported: [internal, github, jira, azure_devops, linear]
+  comment_template: qa-update
+  labels: [agentic-delivery, qa]
+governance:
+  risk_level: medium
+  requires_human_approval: false
+  max_repair_attempts: 2
+  checkpoint_before: false
+  checkpoint_after: true
+validation:
+  eval_prompts:
+    - Validate a generated app with two buttons and persistent task state.
+  success_signals:
+    - qa_report artifact exists
+    - tested flows are named
+    - defects include reproduction steps
+examples:
+  - input: Implemented feature or deployed URL
+    output: QA report with tested flow, evidence, and defects

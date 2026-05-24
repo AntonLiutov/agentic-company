@@ -1,0 +1,48 @@
+schema_version: 1
+skill_id: no-placeholder-check
+version: "1.0"
+status: active
+trust_level: system
+selection:
+  applies_to_agents: [qa-agent]
+  default_for_agents: [qa-agent]
+  stages: [qa, quality_review, post_deploy_qa]
+  trigger_keywords: [placeholder, fake UI, TODO, dead button, mock flow, dummy data]
+  negative_triggers: [implementation, deployment, release report]
+contracts:
+  required_tools: [codex_exec]
+  allowed_tools: [codex_exec]
+  consumes_artifacts: [requirements_brief, execution_summary, screenshot_evidence]
+  produces_artifacts:
+    - artifact_type: qa_report
+      visibility: qa_evidence
+      required: true
+      dashboard_label: Placeholder review
+      external_reference_type: work_item
+    - artifact_type: tool_result
+      visibility: developer
+      required: false
+      dashboard_label: Placeholder scan result
+      external_reference_type: work_item
+dashboard:
+  status: review
+  work_item_stage: quality_review
+  external_systems_supported: [internal, github, jira, azure_devops, linear]
+  comment_template: placeholder-review
+  labels: [agentic-delivery, qa, no-placeholder]
+governance:
+  risk_level: medium
+  requires_human_approval: false
+  max_repair_attempts: 2
+  checkpoint_before: false
+  checkpoint_after: true
+validation:
+  eval_prompts:
+    - Check whether a generated dashboard has fake charts or dead buttons.
+  success_signals:
+    - placeholder findings are evidence-backed
+    - acceptable limitations are separated from defects
+    - repair recommendations are specific
+examples:
+  - input: Generated app UI and requirements
+    output: Placeholder review with pass/fail findings

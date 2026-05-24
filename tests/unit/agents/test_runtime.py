@@ -12,6 +12,7 @@ from agentic_company.platform.agent_runtime import (
 )
 from agentic_company.platform.messages import AgentMessageStore
 from agentic_company.platform.models import AgentRunResult
+from agentic_company.platform.run_trace import load_run_events, load_tool_call_events
 from agentic_company.platform.state import initial_delivery_state
 
 
@@ -212,6 +213,42 @@ def test_langchain_create_agent_runtime_uses_google_gemini_provider(tmp_path, mo
     }
 
 
+def test_langchain_create_agent_runtime_injects_head_skill_prompt(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    state = initial_delivery_state(run_id="head-skills", run_dir=tmp_path)
+    captured: dict[str, object] = {}
+
+    def create_agent_factory(model, tools, system_prompt):
+        captured["system_prompt"] = system_prompt
+        return FakeAgent([])
+
+    runtime = LangChainCreateAgentRuntime(
+        chat_model_factory=lambda model, api_key, reasoning_effort: {
+            "model": model,
+            "api_key": api_key,
+            "reasoning_effort": reasoning_effort,
+        },
+        create_agent_factory=create_agent_factory,
+    )
+
+    runtime.invoke(
+        LangChainAgentRequest(
+            agent_id="head-agent",
+            system_prompt="system",
+            user_prompt="user",
+            tools=[],
+            delivery_state=state,
+            max_steps=1,
+            stage="head",
+        )
+    )
+
+    assert str(captured["system_prompt"]).startswith("system")
+    assert "Selected runtime skills" in str(captured["system_prompt"])
+    assert "repair-loop" in str(captured["system_prompt"])
+    assert load_run_events(tmp_path)[0].data["selected_skills"][0]["skill_id"] == "repair-loop"
+
+
 def test_langchain_create_agent_runtime_requires_google_key_for_gemini(tmp_path, monkeypatch):
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -281,6 +318,52 @@ def test_langchain_specialist_agent_executor_runs_codex_exec_tool(tmp_path, monk
     assert str(captured["system_prompt"]).startswith("system")
     assert "AgentExecutor repair protocol" in str(captured["system_prompt"])
     assert captured["tools"][0].__name__ == "codex_exec"
+
+
+def test_langchain_specialist_agent_executor_injects_selected_skills_and_traces(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    runner = FakeSpecialistRunner()
+    state = initial_delivery_state(run_id="skill-run", run_dir=tmp_path)
+    captured: dict[str, object] = {}
+
+    def create_agent_factory(model, tools, system_prompt):
+        captured["system_prompt"] = system_prompt
+        return ToolCallingAgent(tools)
+
+    executor = LangChainSpecialistAgentExecutor(
+        LangChainCreateAgentRuntime(
+            chat_model_factory=lambda model, api_key, reasoning_effort: {
+                "model": model,
+                "reasoning_effort": reasoning_effort,
+            },
+            create_agent_factory=create_agent_factory,
+        )
+    )
+
+    executor.run(
+        SpecialistAgentRequest(
+            agent_id="fullstack-agent",
+            agent_name="Builder",
+            stage="fullstack",
+            system_prompt="system",
+            user_prompt="user",
+            runner=runner,
+            run_dir=tmp_path,
+            delivery_state=state,
+        )
+    )
+
+    assert "Selected runtime skills" in str(captured["system_prompt"])
+    assert "frontend-build" in str(captured["system_prompt"])
+    assert "requirements-analysis" not in str(captured["system_prompt"])
+    run_events = load_run_events(tmp_path)
+    tool_events = load_tool_call_events(tmp_path)
+    assert run_events[0].event_type == "skills_selected"
+    assert run_events[0].data["selected_skills"][0]["skill_id"] == "frontend-build"
+    assert tool_events[0].input_summary["selected_skills"][0]["skill_id"] == "frontend-build"
 
 
 def test_langchain_specialist_agent_executor_allows_bounded_self_repair(
