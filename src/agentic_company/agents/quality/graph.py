@@ -369,12 +369,22 @@ def _mark_feature_failed(state: DeliveryState, feature_id: str) -> DeliveryState
     attempts = dict(updated.get("feature_repair_attempts", {}))
     attempts[feature_id] = attempts.get(feature_id, 0) + 1
     updated["feature_repair_attempts"] = attempts
+    signatures, repeated_signature = _record_failure_signature(updated, feature_id)
+    if signatures:
+        updated["feature_failure_signatures"] = signatures
     feature_statuses = dict(updated.get("feature_statuses", {}))
     feature_statuses[feature_id] = "qa_failed"
     updated["feature_statuses"] = feature_statuses
     updated["active_feature_id"] = feature_id
 
-    if attempts[feature_id] >= updated.get("max_repair_attempts", 5):
+    if repeated_signature:
+        updated["status"] = "qa_feature_failed_blocked"
+        updated["blockers"] = [
+            *updated.get("blockers", []),
+            f"QA repeated the same failure signature for feature {feature_id}: "
+            f"{repeated_signature}.",
+        ]
+    elif attempts[feature_id] >= updated.get("max_repair_attempts", 5):
         updated["status"] = "qa_feature_failed_blocked"
         updated["blockers"] = [
             *updated.get("blockers", []),
@@ -383,6 +393,42 @@ def _mark_feature_failed(state: DeliveryState, feature_id: str) -> DeliveryState
     else:
         updated["status"] = "qa_feature_failed_repair_ready"
     return updated
+
+
+def _record_failure_signature(
+    state: DeliveryState,
+    feature_id: str,
+) -> tuple[dict[str, list[str]], str]:
+    signature = _latest_failure_signature(Path(state["run_dir"]), feature_id)
+    current = state.get("feature_failure_signatures", {})
+    signatures = (
+        {
+            str(key): [str(item) for item in value]
+            for key, value in current.items()
+            if isinstance(value, list)
+        }
+        if isinstance(current, dict)
+        else {}
+    )
+    if not signature:
+        return signatures, ""
+    seen = [*signatures.get(feature_id, []), signature]
+    signatures[feature_id] = seen
+    repeated = signature if seen.count(signature) >= 2 else ""
+    return signatures, repeated
+
+
+def _latest_failure_signature(run_dir: Path, feature_id: str) -> str:
+    path = run_dir / f"10-fix-request-{feature_id}.json"
+    if not path.exists():
+        return ""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("failure_signature") or "")
 
 
 def _active_feature(state: DeliveryState) -> dict[str, Any] | None:

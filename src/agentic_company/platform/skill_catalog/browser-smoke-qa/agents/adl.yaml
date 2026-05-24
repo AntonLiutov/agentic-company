@@ -19,10 +19,20 @@ contracts:
       required: true
       dashboard_label: QA report
       external_reference_type: work_item
+    - artifact_type: quality_gate_report
+      visibility: qa_evidence
+      required: true
+      dashboard_label: Quality gate report
+      external_reference_type: work_item
     - artifact_type: screenshot_evidence
       visibility: qa_evidence
       required: false
       dashboard_label: Screenshot evidence
+      external_reference_type: work_item
+    - artifact_type: repair_request
+      visibility: qa_evidence
+      required: false
+      dashboard_label: Repair request
       external_reference_type: work_item
 dashboard:
   status: review
@@ -41,6 +51,7 @@ validation:
     - Validate a generated app with two buttons and persistent task state.
   success_signals:
     - qa_report artifact exists
+    - quality_gate_report artifact exists
     - tested flows are named
     - defects include reproduction steps
 examples:

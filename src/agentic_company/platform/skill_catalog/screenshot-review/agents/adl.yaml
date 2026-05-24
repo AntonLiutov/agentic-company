@@ -24,6 +24,11 @@ contracts:
       required: false
       dashboard_label: Visual QA report
       external_reference_type: work_item
+    - artifact_type: repair_request
+      visibility: qa_evidence
+      required: false
+      dashboard_label: Visual repair request
+      external_reference_type: work_item
 dashboard:
   status: review
   work_item_stage: quality_review

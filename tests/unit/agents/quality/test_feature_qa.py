@@ -90,6 +90,22 @@ def test_feature_qa_blocks_after_max_repairs(tmp_path):
     assert result["blockers"] == ["QA failed feature F1 after 5 attempts."]
 
 
+def test_feature_qa_blocks_after_repeated_failure_signature(tmp_path):
+    _run_dir, state = _create_feature_run(tmp_path)
+    state["feature_failure_signatures"] = {"F1": ["button_dead"]}
+
+    result = run_quality_agent_graph(
+        state,
+        runner=FakeQaRunner("qa_failed", failure_signature="button_dead"),
+        agent_executor=DirectSpecialistAgentExecutor(),
+    )
+
+    assert result["status"] == "qa_feature_failed_blocked"
+    assert result["feature_repair_attempts"] == {"F1": 1}
+    assert result["feature_failure_signatures"] == {"F1": ["button_dead", "button_dead"]}
+    assert "button_dead" in result["blockers"][0]
+
+
 def _create_feature_run(tmp_path: Path) -> tuple[Path, DeliveryState]:
     run_dir = tmp_path / "runs" / "feature-qa"
     target_dir = run_dir / "generated-project"
@@ -140,10 +156,21 @@ def _create_feature_run(tmp_path: Path) -> tuple[Path, DeliveryState]:
 
 
 class FakeQaRunner:
-    def __init__(self, status: str) -> None:
+    def __init__(self, status: str, *, failure_signature: str = "") -> None:
         self.status = status
+        self.failure_signature = failure_signature
 
     def run(self, run_dir: Path) -> AgentRunResult:
+        if self.status == "qa_failed" and self.failure_signature:
+            (run_dir / "10-fix-request-F1.json").write_text(
+                json.dumps(
+                    {
+                        "failure_signature": self.failure_signature,
+                        "blocking_findings": [{"summary": "Repeated failure."}],
+                    }
+                ),
+                encoding="utf-8",
+            )
         return AgentRunResult(
             agent_id="qa-codex-agent",
             status=self.status,

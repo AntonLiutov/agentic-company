@@ -298,6 +298,12 @@ def infer_artifact_type(path: str, *, legacy_kind: str = "") -> str:
         return "execution_summary"
     if filename.startswith("08-qa-report") or "qa-report" in filename:
         return "qa_report"
+    if filename == "quality-gate-plan.json":
+        return "quality_gate_plan"
+    if filename == "quality-gate-report.json":
+        return "quality_gate_report"
+    if filename.startswith("10-fix-request"):
+        return "repair_request"
     if filename.startswith("13-deployment-summary") or "deployment-summary" in filename:
         return "deployment_summary"
     if filename == "release-report.html":

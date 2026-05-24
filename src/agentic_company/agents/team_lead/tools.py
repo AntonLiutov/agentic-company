@@ -23,7 +23,10 @@ from agentic_company.agents.team_lead.contracts import (
     env_value,
 )
 from agentic_company.platform.agent_contracts import extend_artifacts
-from agentic_company.platform.artifact_registry import register_artifact
+from agentic_company.platform.artifact_registry import (
+    load_artifact_registry,
+    register_artifact,
+)
 from agentic_company.platform.artifacts import (
     EXECUTION_REQUEST_ARTIFACT,
     artifact_ref,
@@ -808,14 +811,14 @@ class TeamLeadToolbox:
                 "post_deploy_qa_status": self.delivery_state.get("post_deploy_qa_status"),
                 "blockers": self.delivery_state.get("blockers", []),
             },
-            output_artifacts=artifact_refs_from_paths(output_artifacts),
+            output_artifacts=_tool_artifact_refs(self.delivery_state, output_artifacts),
             failure_mode=failure_mode,
             recommended_next_action=_recommended_next_action(status, failure_mode),
             dashboard_update=ToolDashboardUpdate(
                 status=dashboard_status,
                 summary=message,
                 comment=message,
-                artifact_links=artifact_refs_from_paths(output_artifacts),
+                artifact_links=_tool_artifact_refs(self.delivery_state, output_artifacts),
                 labels=(failure_mode,) if failure_mode else (),
             ),
             implicit_resolution_warnings=tuple(self.implicit_resolution_warnings),
@@ -1379,6 +1382,16 @@ def _response_artifact_refs(
             if isinstance(ref, str) and ref
         )
     return _unique_paths(refs)
+
+
+def _tool_artifact_refs(state: DeliveryState, paths: list[str]) -> tuple[Any, ...]:
+    run_dir = Path(state["run_dir"])
+    by_path = {record.relative_path: record for record in load_artifact_registry(run_dir)}
+    refs = []
+    for path in _unique_paths(paths):
+        record = by_path.get(path)
+        refs.append(record.to_tool_ref() if record else artifact_refs_from_paths([path])[0])
+    return tuple(refs)
 
 
 def _latest_history_tool(history: list[dict[str, Any]]) -> str:

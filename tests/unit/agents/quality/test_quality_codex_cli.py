@@ -48,6 +48,50 @@ def test_quality_codex_runner_accepts_contract_artifacts(tmp_path):
     assert result.status == "qa_passed"
     assert "08-qa-report-F1.md" in result.output_artifacts
     assert "qa/results-F1.json" in result.output_artifacts
+    assert "qa/gates/F1/quality-gate-report.json" in result.output_artifacts
+    payload = json.loads((run_dir / "qa" / "results-F1.json").read_text(encoding="utf-8"))
+    assert payload["gate_coverage"]
+
+
+def test_quality_codex_runner_fails_ui_task_without_browser_evidence(tmp_path):
+    run_dir = _create_run(tmp_path, ui=True)
+
+    def executor(command: Sequence[str], prompt: str, timeout: int, log: Path, raw: Path):
+        feature_id = "F1"
+        (run_dir / "qa").mkdir(parents=True, exist_ok=True)
+        (run_dir / "qa" / f"results-{feature_id}.json").write_text(
+            json.dumps(
+                {
+                    "feature_id": feature_id,
+                    "status": "passed",
+                    "checks_performed": [
+                        {
+                            "name": "source inspection",
+                            "status": "passed",
+                            "evidence": "Inspected files only.",
+                        }
+                    ],
+                    "acceptance_criteria_coverage": [],
+                    "risks": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (run_dir / f"08-qa-report-{feature_id}.md").write_text(
+            "# QA Report\n\nQA_STATUS: passed\n",
+            encoding="utf-8",
+        )
+        summary = Path(command[-2])
+        summary.write_text("QA work complete.\n\nQA_STATUS: passed\n", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    result = QualityCodexRunner(command_executor=executor).run(run_dir)
+
+    assert result.status == "qa_failed"
+    assert "10-fix-request-F1.json" in result.output_artifacts
+    payload = json.loads((run_dir / "qa" / "results-F1.json").read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"
+    assert payload["repair_request_artifact_refs"]
 
 
 def test_quality_codex_runner_fails_when_contract_missing(tmp_path):
@@ -136,7 +180,7 @@ def test_quality_codex_runner_recovers_report_from_agent_qa_folder(tmp_path):
     assert (run_dir / "qa" / "results-F1.json").exists()
 
 
-def test_quality_codex_prompt_does_not_prescribe_qa_commands(tmp_path):
+def test_quality_codex_prompt_uses_platform_quality_gates_without_prescribing_commands(tmp_path):
     run_dir = _create_run(tmp_path)
     request = load_execution_request(run_dir)
     prompt = build_quality_codex_prompt(
@@ -147,7 +191,8 @@ def test_quality_codex_prompt_does_not_prescribe_qa_commands(tmp_path):
         previous_summary="",
     )
 
-    assert "The platform will\nnot run a predefined QA checklist for you." in prompt
+    assert "Platform quality gates" in prompt
+    assert "must not mark QA as passed when a\n  required platform gate failed" in prompt
     assert "uv sync" not in prompt
     assert "compileall" not in prompt
     assert "docker compose config" not in prompt
@@ -196,14 +241,19 @@ def test_quality_codex_prompt_includes_exact_artifact_paths_and_repair_errors(tm
     assert "Missing required QA report: 08-qa-report-F1.md." in prompt
 
 
-def _create_run(tmp_path: Path) -> Path:
+def _create_run(tmp_path: Path, *, ui: bool = False) -> Path:
     run_dir = tmp_path / "runs" / "qa-codex"
     target_dir = run_dir / "generated-project"
     target_dir.mkdir(parents=True)
+    (target_dir / "pyproject.toml").write_text("[project]\nname='demo'\nversion='0.1.0'\n")
     feature = {
         "id": "F1",
-        "title": "Create and list tasks",
-        "acceptance_criteria": ["API can create a task", "API can list tasks"],
+        "title": "Create task button" if ui else "Create and list tasks",
+        "acceptance_criteria": (
+            ["Primary button creates a task"]
+            if ui
+            else ["API can create a task", "API can list tasks"]
+        ),
         "delivery_order": 1,
     }
     request_path = run_dir / "delivery/execution-request.json"

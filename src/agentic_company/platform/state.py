@@ -39,6 +39,7 @@ class DeliveryState(TypedDict):
     completed_feature_ids: NotRequired[list[str]]
     feature_statuses: NotRequired[dict[str, str]]
     feature_repair_attempts: NotRequired[dict[str, int]]
+    feature_failure_signatures: NotRequired[dict[str, list[str]]]
     work_board: NotRequired[dict[str, Any]]
     team_lead_sprint_id: NotRequired[str]
     agent_call_message_id: NotRequired[str | None]
@@ -87,6 +88,7 @@ def initial_delivery_state(
         "completed_feature_ids": [],
         "feature_statuses": {},
         "feature_repair_attempts": {},
+        "feature_failure_signatures": {},
         "work_board": {},
         "team_lead_sprint_id": "sprint-01",
         "codex_threads_by_agent": {},

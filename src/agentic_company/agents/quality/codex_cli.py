@@ -28,6 +28,11 @@ from agentic_company.platform.executions import (
 )
 from agentic_company.platform.messages import render_incoming_messages_for_prompt
 from agentic_company.platform.models import AgentRunResult, ExecutionRequest
+from agentic_company.platform.quality_gates import (
+    QualityGateReport,
+    QualityGateRunner,
+    load_quality_gate_report,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -55,6 +60,7 @@ class QualityCodexRunner:
     timeout_seconds: int = 3600
     contract_attempts: int = 2
     command_executor: CommandExecutor | None = None
+    quality_gate_runner: QualityGateRunner | None = None
 
     def run(self, run_dir: Path) -> AgentRunResult:
         request = load_execution_request(run_dir)
@@ -79,6 +85,11 @@ class QualityCodexRunner:
             },
         )
 
+        quality_gate_report = (self.quality_gate_runner or QualityGateRunner()).run(
+            run_dir,
+            request,
+            feature,
+        )
         structured_artifacts: list[str] = []
         summary = ""
         returncode = 1
@@ -118,12 +129,26 @@ class QualityCodexRunner:
         else:
             status = str(contract["status"])
 
+        if status == "passed" and quality_gate_report.blocks_release:
+            status = "failed"
+            summary = _quality_gate_failure_summary(summary, quality_gate_report)
+        elif (
+            status == "passed"
+            and _quality_gate_needs_browser_evidence(quality_gate_report)
+            and not _codex_results_include_browser_evidence(run_dir, feature_id)
+        ):
+            status = "failed"
+            summary = _missing_browser_evidence_summary(summary, quality_gate_report)
+            _write_missing_browser_repair_artifacts(run_dir, feature_id)
+        _merge_quality_gate_into_results(run_dir, feature_id, quality_gate_report, status)
         output_artifacts = _unique_artifacts(
             [
                 report_artifact,
                 results_artifact,
+                *_quality_gate_artifacts(quality_gate_report),
                 *structured_artifacts,
                 *contract["optional_artifacts"],
+                *_fix_request_artifacts(run_dir, feature_id),
             ]
         )
         write_event(
@@ -327,6 +352,10 @@ def build_quality_codex_prompt(
     generated_results_path = Path(request.target_project_dir) / "qa" / f"results-{feature_id}.json"
     fix_request_md_path = run_dir / f"10-fix-request-{feature_id}.md"
     fix_request_json_path = run_dir / f"10-fix-request-{feature_id}.json"
+    gate_report = load_quality_gate_report(run_dir, feature_id)
+    gate_report_path = run_dir / "qa" / "gates" / feature_id / "quality-gate-report.json"
+    gate_plan_path = run_dir / "qa" / "gates" / feature_id / "quality-gate-plan.json"
+    gate_summary = _quality_gate_prompt_summary(gate_report)
     repair_note = ""
     if attempt > 1:
         contract_error_lines = "\n".join(f"- {error}" for error in (previous_contract_errors or []))
@@ -377,6 +406,16 @@ Completed features that must not regress: {completed}
 Upstream agent messages:
 {upstream_messages}
 
+Platform quality gates:
+- The platform has already run deterministic quality gates and written:
+  - `{gate_plan_path}`
+  - `{gate_report_path}`
+- You must read and explain this gate evidence in your QA report.
+- You may run additional QA checks, but you must not mark QA as passed when a
+  required platform gate failed. Failed gates require repair or an explicit
+  blocker/limited-evidence explanation.
+{gate_summary}
+
 Your job:
 - Inspect the requirements, planning artifacts, generated project, and previous
   feature evidence.
@@ -389,14 +428,17 @@ Your job:
   acceptance criteria.
 - Treat `{run_dir}` as the delivery run workspace and
   `{request.target_project_dir}` as the generated product project.
+- Use platform gate evidence as the minimum checklist, then add stronger checks
+  if needed for the active feature.
 - You may use network-backed tools when needed for QA evidence, including
   package indexes, browser/tool downloads, documentation lookup, Docker, and
   local runtime checks.
-- Decide independently what QA evidence is required for this feature.
+- Decide what additional QA evidence is required for this feature beyond the
+  platform gates.
 - Generate any QA scripts, temporary data, browser checks, runtime checks, or
   other evidence you need.
 - Execute the QA work yourself from the generated project workspace.
-- Do not rely on a hidden platform checklist. There is none.
+- Do not ignore platform gate failures or missing browser evidence.
 - Do not modify files outside `{run_dir}`. In particular, do not modify the
   platform repository source, root configuration, user home files, or unrelated
   projects.
@@ -476,6 +518,13 @@ The results JSON must be valid JSON and include at least:
 {{
   "feature_id": "{feature_id}",
   "status": "passed",
+  "gate_coverage": [
+    {{
+      "gate": "static_preflight",
+      "status": "passed",
+      "evidence": "platform quality gate evidence"
+    }}
+  ],
   "checks_performed": [
     {{
       "name": "QA Agent decided check name",
@@ -491,6 +540,8 @@ The results JSON must be valid JSON and include at least:
     }}
   ],
   "risks": [],
+  "failure_signatures": [],
+  "repair_request_artifact_refs": [],
   "remediation_owner": "fullstack-agent | deployment-agent | none",
   "remediation_reason": "brief owner-routing explanation when status is failed"
 }}
@@ -546,6 +597,195 @@ def _read_qa_contract(
         "contract_errors": errors,
         "optional_artifacts": optional_artifacts,
     }
+
+
+def _quality_gate_prompt_summary(report: QualityGateReport | None) -> str:
+    if report is None:
+        return "- Gate report was not available when prompt was rendered."
+    failed = [check for check in report.checks if check.status == "failed"]
+    limited = [check for check in report.checks if check.status == "limited"]
+    lines = [
+        f"- Gate status: `{report.status}`.",
+        f"- UI-heavy task: `{str(report.ui_heavy).lower()}`.",
+    ]
+    if failed:
+        lines.append("- Failed gates:")
+        lines.extend(f"  - {check.name}: {check.evidence}" for check in failed[:6])
+    if limited:
+        lines.append("- Limited evidence:")
+        lines.extend(f"  - {check.name}: {check.evidence}" for check in limited[:6])
+    if report.repair_request:
+        lines.append(
+            "- Repair request: "
+            f"{report.repair_request.responsible_agent} / "
+            f"{report.repair_request.failure_signature}."
+        )
+    return "\n".join(lines)
+
+
+def _quality_gate_artifacts(report: QualityGateReport) -> list[str]:
+    paths = [
+        f"qa/gates/{report.work_item_id}/quality-gate-report.json",
+        *[artifact.path for artifact in report.artifacts if artifact.path],
+    ]
+    if report.repair_request:
+        paths.extend(
+            [
+                f"10-fix-request-{report.work_item_id}.md",
+                f"10-fix-request-{report.work_item_id}.json",
+            ]
+        )
+    return _unique_artifacts(paths)
+
+
+def _quality_gate_failure_summary(summary: str, report: QualityGateReport) -> str:
+    findings = [
+        f"- {check.name}: {check.evidence}" for check in report.checks if check.status == "failed"
+    ]
+    return "\n".join(
+        [
+            summary.strip(),
+            "",
+            "Platform quality gates failed, so QA cannot pass.",
+            *findings[:8],
+            "",
+            "QA_STATUS: failed",
+            "",
+        ]
+    ).strip()
+
+
+def _quality_gate_needs_browser_evidence(report: QualityGateReport) -> bool:
+    return report.ui_heavy and any(
+        check.gate in {"browser_smoke", "visual_responsive"}
+        and check.name == "browser_url_available"
+        and check.status == "limited"
+        for check in report.checks
+    )
+
+
+def _codex_results_include_browser_evidence(run_dir: Path, feature_id: str) -> bool:
+    results_path = run_dir / "qa" / f"results-{feature_id}.json"
+    if not results_path.exists():
+        return False
+    try:
+        payload = json.loads(results_path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError:
+        return False
+    evidence_text = json.dumps(payload, sort_keys=True).lower()
+    return any(
+        token in evidence_text
+        for token in ("browser", "screenshot", "playwright", "viewport", "console")
+    )
+
+
+def _missing_browser_evidence_summary(summary: str, report: QualityGateReport) -> str:
+    return "\n".join(
+        [
+            summary.strip(),
+            "",
+            "Platform quality gates found limited browser evidence for a UI-heavy task.",
+            "QA cannot pass until Codex QA supplies browser/screenshot evidence or a "
+            "clear blocker.",
+            "",
+            f"Work item: {report.work_item_id}",
+            "",
+            "QA_STATUS: failed",
+            "",
+        ]
+    ).strip()
+
+
+def _write_missing_browser_repair_artifacts(run_dir: Path, feature_id: str) -> None:
+    json_path = run_dir / f"10-fix-request-{feature_id}.json"
+    md_path = run_dir / f"10-fix-request-{feature_id}.md"
+    if json_path.exists() and md_path.exists():
+        return
+    payload = {
+        "work_item_id": feature_id,
+        "failure_reason": "qa_failed",
+        "responsible_agent": "fullstack-agent",
+        "reproduction_steps": [
+            "Run QA for the UI-heavy work item.",
+            "Open the generated app locally or provide a deployed URL.",
+            "Capture browser/screenshot evidence for the primary flow.",
+        ],
+        "expected_behavior": "QA includes browser or screenshot evidence for UI-heavy work.",
+        "actual_behavior": "QA returned passed without browser/screenshot evidence.",
+        "evidence_artifact_ids": [],
+        "failure_signature": "browser_evidence_missing",
+        "recommended_fix_scope": (
+            "Make the generated app runnable in a browser and rerun QA with evidence."
+        ),
+        "blocking_findings": [
+            {
+                "summary": "Missing browser/screenshot evidence for UI-heavy QA.",
+                "evidence": "Quality gate report marked browser evidence as limited.",
+            }
+        ],
+    }
+    json_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    md_path.write_text(
+        "\n".join(
+            [
+                f"# Fix Request: {feature_id}",
+                "",
+                "QA cannot pass this UI-heavy work item without browser or screenshot evidence.",
+                "",
+                "## Required Repair",
+                "",
+                "- Make the app runnable in a browser.",
+                "- Rerun QA and capture browser/screenshot evidence for the primary flow.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _merge_quality_gate_into_results(
+    run_dir: Path,
+    feature_id: str,
+    report: QualityGateReport,
+    status: str,
+) -> None:
+    results_path = run_dir / "qa" / f"results-{feature_id}.json"
+    results_path.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {}
+    if results_path.exists():
+        try:
+            loaded = json.loads(results_path.read_text(encoding="utf-8-sig"))
+        except json.JSONDecodeError:
+            loaded = {}
+        if isinstance(loaded, dict):
+            payload = loaded
+    payload["feature_id"] = feature_id
+    payload["status"] = status
+    payload["gate_coverage"] = [
+        {
+            "gate": check.gate,
+            "name": check.name,
+            "status": check.status,
+            "evidence": check.evidence,
+            "failure_signature": check.failure_signature,
+        }
+        for check in report.checks
+    ]
+    payload["quality_gate_report"] = f"qa/gates/{feature_id}/quality-gate-report.json"
+    payload["failure_signatures"] = report.failure_signatures
+    repair_refs = [
+        relative
+        for relative in [f"10-fix-request-{feature_id}.md", f"10-fix-request-{feature_id}.json"]
+        if (run_dir / relative).exists()
+    ]
+    payload["repair_request_artifact_refs"] = repair_refs
+    if status == "failed" and report.repair_request:
+        payload["remediation_owner"] = report.repair_request.responsible_agent
+        payload["remediation_reason"] = report.repair_request.actual_behavior
+    payload.setdefault("checks_performed", [])
+    payload.setdefault("acceptance_criteria_coverage", [])
+    payload.setdefault("risks", [])
+    results_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _recover_misplaced_qa_contract_artifacts(
