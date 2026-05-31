@@ -33,6 +33,7 @@ from agentic_company.platform.run_trace import (
     run_event_from_mapping,
     tool_call_event_from_mapping,
 )
+from agentic_company.platform.sprints import HEAD_PLANNING_ITEMS
 
 SESSION_DAYS = 14
 
@@ -83,6 +84,41 @@ class ProviderCredential:
     encrypted_value: str
     storage_mode: str
     updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class WorkItem:
+    id: int
+    run_id: int
+    work_item_id: str
+    title: str
+    sprint_id: str
+    delivery_order: int
+    status: str
+    lane: str
+    owner_agent: str
+    assigned_agent: str
+    active: bool
+    source_refs: list[str]
+    artifact_ids: list[str]
+    blocker: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ActivityEvent:
+    id: int
+    run_id: int
+    work_item_id: str
+    owner_agent: str
+    agent_id: str
+    tool_name: str
+    message: str
+    status: str
+    artifact_ids: list[str]
+    visibility: str
+    created_at: str
 
 
 def default_db_path() -> Path:
@@ -251,6 +287,61 @@ class ConsoleRepository:
                     signature TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (run_id, sync_kind)
+                );
+
+                CREATE TABLE IF NOT EXISTS work_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                    work_item_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    sprint_id TEXT NOT NULL DEFAULT '',
+                    delivery_order INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'todo',
+                    lane TEXT NOT NULL DEFAULT 'todo',
+                    owner_agent TEXT NOT NULL DEFAULT '',
+                    assigned_agent TEXT NOT NULL DEFAULT '',
+                    active INTEGER NOT NULL DEFAULT 0,
+                    source_refs TEXT NOT NULL DEFAULT '[]',
+                    artifact_ids TEXT NOT NULL DEFAULT '[]',
+                    blocker TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(run_id, work_item_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS work_item_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                    event_id TEXT NOT NULL,
+                    work_item_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    from_status TEXT NOT NULL DEFAULT '',
+                    to_status TEXT NOT NULL DEFAULT '',
+                    from_owner TEXT NOT NULL DEFAULT '',
+                    to_owner TEXT NOT NULL DEFAULT '',
+                    agent_id TEXT NOT NULL DEFAULT '',
+                    tool_name TEXT NOT NULL DEFAULT '',
+                    tool_call_id TEXT NOT NULL DEFAULT '',
+                    message TEXT NOT NULL DEFAULT '',
+                    visibility TEXT NOT NULL DEFAULT 'user',
+                    created_at TEXT NOT NULL,
+                    UNIQUE(run_id, event_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS activity_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                    event_id TEXT NOT NULL,
+                    work_item_id TEXT NOT NULL,
+                    owner_agent TEXT NOT NULL DEFAULT '',
+                    agent_id TEXT NOT NULL DEFAULT '',
+                    tool_name TEXT NOT NULL DEFAULT '',
+                    message TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    artifact_ids TEXT NOT NULL DEFAULT '[]',
+                    visibility TEXT NOT NULL DEFAULT 'user',
+                    created_at TEXT NOT NULL,
+                    UNIQUE(run_id, event_id)
                 );
                 """
             )
@@ -548,6 +639,7 @@ class ConsoleRepository:
                 ),
             )
             run_id = int(cursor.lastrowid)
+            self._seed_planning_work_items_conn(conn, run_id)
         run = self.get_run(run_id)
         if run is None:  # pragma: no cover - defensive
             raise RuntimeError("Created run could not be loaded")
@@ -725,6 +817,412 @@ class ConsoleRepository:
             for record in load_artifact_registry(run_dir):
                 self._upsert_artifact_record_conn(conn, run_id, record)
             self._save_sync_signature(conn, run_id, "artifact_registry", signature)
+
+    def list_work_items(self, run_id: int) -> list[WorkItem]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM work_items
+                WHERE run_id = ?
+                ORDER BY
+                    CASE WHEN lower(sprint_id) = 'planning' THEN 0 ELSE 1 END,
+                    sprint_id,
+                    delivery_order,
+                    work_item_id
+                """,
+                (run_id,),
+            ).fetchall()
+        return [_work_item(row) for row in rows]
+
+    def list_activity_events(
+        self,
+        run_id: int,
+        *,
+        work_item_id: str = "",
+        visibility: str = "user",
+    ) -> list[ActivityEvent]:
+        clauses = ["run_id = ?"]
+        params: list[Any] = [run_id]
+        if work_item_id:
+            clauses.append("work_item_id = ?")
+            params.append(_canonical_work_item_id(work_item_id))
+        if visibility:
+            clauses.append("visibility = ?")
+            params.append(visibility)
+        sql = (
+            "SELECT * FROM activity_events WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY id"
+        )
+        with self.connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [_activity_event(row) for row in rows]
+
+    def sync_work_items_from_run_dir(self, run_id: int, run_dir: Path) -> None:
+        signature = _file_signature(
+            [
+                run_dir / "delivery" / "run-events.jsonl",
+                run_dir / "delivery" / "tool-call-events.jsonl",
+                run_dir
+                / "upstream-planning"
+                / "project-management"
+                / "candidate-feature-queue.json",
+                run_dir / "upstream-planning" / "project-management" / "release-plan.json",
+                run_dir / "delivery" / "artifact-registry.json",
+            ]
+        )
+        with self.connect() as conn:
+            if self._sync_signature_matches(conn, run_id, "work_items", signature):
+                return
+            self._seed_planning_work_items_conn(conn, run_id)
+            self._materialize_pm_work_items_conn(conn, run_id, run_dir)
+            self._link_work_item_artifacts_conn(conn, run_id)
+            for event in self._run_events_for_work_item_sync_conn(conn, run_id):
+                self._apply_run_event_to_work_items_conn(conn, run_id, event)
+            for event in self._tool_events_for_work_item_sync_conn(conn, run_id):
+                self._apply_tool_event_to_work_items_conn(conn, run_id, event)
+            self._save_sync_signature(conn, run_id, "work_items", signature)
+
+    def _seed_planning_work_items_conn(self, conn: sqlite3.Connection, run_id: int) -> None:
+        for item in HEAD_PLANNING_ITEMS:
+            self._upsert_work_item_conn(
+                conn,
+                run_id=run_id,
+                work_item_id=str(item["id"]),
+                title=str(item["title"]),
+                sprint_id=str(item["sprint_id"]),
+                delivery_order=int(item["delivery_order"]),
+                status="todo",
+                owner_agent=str(item["suggested_owner_agent"]),
+                source_refs=[],
+                created_at=utc_now(),
+            )
+
+    def _materialize_pm_work_items_conn(
+        self,
+        conn: sqlite3.Connection,
+        run_id: int,
+        run_dir: Path,
+    ) -> None:
+        queue_path = (
+            run_dir / "upstream-planning" / "project-management" / "candidate-feature-queue.json"
+        )
+        try:
+            payload = json.loads(queue_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(payload, list):
+            return
+        for index, item in enumerate(payload, start=1):
+            if not isinstance(item, dict):
+                continue
+            work_item_id = _canonical_work_item_id(
+                str(item.get("id") or item.get("feature_id") or "")
+            )
+            if not work_item_id:
+                continue
+            self._upsert_work_item_conn(
+                conn,
+                run_id=run_id,
+                work_item_id=work_item_id,
+                title=str(item.get("title") or item.get("name") or work_item_id),
+                sprint_id=str(item.get("sprint_id") or ""),
+                delivery_order=_int_value(item.get("delivery_order"), index),
+                status=str(item.get("status") or "todo"),
+                owner_agent=str(
+                    item.get("suggested_owner_agent")
+                    or item.get("owner_agent")
+                    or "fullstack-agent"
+                ),
+                source_refs=_string_list(item.get("source_refs", [])),
+                created_at=utc_now(),
+            )
+
+    def _upsert_work_item_conn(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        run_id: int,
+        work_item_id: str,
+        title: str,
+        sprint_id: str,
+        delivery_order: int,
+        status: str,
+        owner_agent: str,
+        source_refs: list[str],
+        created_at: str,
+    ) -> None:
+        canonical_id = _canonical_work_item_id(work_item_id)
+        if not canonical_id:
+            return
+        normalized_status = _normalize_work_item_status(status)
+        conn.execute(
+            """
+            INSERT INTO work_items (
+                run_id, work_item_id, title, sprint_id, delivery_order, status,
+                lane, owner_agent, source_refs, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id, work_item_id) DO UPDATE SET
+                title = COALESCE(NULLIF(excluded.title, ''), work_items.title),
+                sprint_id = COALESCE(NULLIF(excluded.sprint_id, ''), work_items.sprint_id),
+                delivery_order = CASE
+                    WHEN excluded.delivery_order > 0 THEN excluded.delivery_order
+                    ELSE work_items.delivery_order
+                END,
+                owner_agent = COALESCE(NULLIF(excluded.owner_agent, ''), work_items.owner_agent),
+                source_refs = excluded.source_refs,
+                updated_at = excluded.updated_at
+            """,
+            (
+                run_id,
+                canonical_id,
+                title,
+                sprint_id,
+                delivery_order,
+                normalized_status,
+                _lane_for_work_item_status(normalized_status),
+                owner_agent,
+                json.dumps(source_refs, sort_keys=True),
+                created_at,
+                created_at,
+            ),
+        )
+
+    def _link_work_item_artifacts_conn(self, conn: sqlite3.Connection, run_id: int) -> None:
+        rows = conn.execute(
+            """
+            SELECT work_item_id, artifact_id
+            FROM artifact_metadata
+            WHERE run_id = ? AND COALESCE(work_item_id, '') != ''
+            ORDER BY created_at, id
+            """,
+            (run_id,),
+        ).fetchall()
+        artifact_ids_by_item: dict[str, list[str]] = {}
+        for row in rows:
+            item_id = _canonical_work_item_id(str(row["work_item_id"] or ""))
+            artifact_id = str(row["artifact_id"] or "")
+            if item_id and artifact_id:
+                artifact_ids_by_item.setdefault(item_id, []).append(artifact_id)
+        for item_id, artifact_ids in artifact_ids_by_item.items():
+            conn.execute(
+                """
+                UPDATE work_items
+                SET artifact_ids = ?, updated_at = ?
+                WHERE run_id = ? AND work_item_id = ?
+                """,
+                (json.dumps(sorted(set(artifact_ids))), utc_now(), run_id, item_id),
+            )
+
+    def _run_events_for_work_item_sync_conn(
+        self,
+        conn: sqlite3.Connection,
+        run_id: int,
+    ) -> list[RunEvent]:
+        rows = conn.execute(
+            "SELECT * FROM run_events WHERE run_id = ? ORDER BY created_at, id",
+            (run_id,),
+        ).fetchall()
+        return [_run_event(row) for row in rows]
+
+    def _tool_events_for_work_item_sync_conn(
+        self,
+        conn: sqlite3.Connection,
+        run_id: int,
+    ) -> list[ToolCallEvent]:
+        rows = conn.execute(
+            "SELECT * FROM tool_call_events WHERE run_id = ? ORDER BY created_at, id",
+            (run_id,),
+        ).fetchall()
+        return [_tool_call_event(row) for row in rows]
+
+    def _apply_run_event_to_work_items_conn(
+        self,
+        conn: sqlite3.Connection,
+        run_id: int,
+        event: RunEvent,
+    ) -> None:
+        if event.event_type.startswith("codex_command"):
+            return
+        item_id = _work_item_id_for_run_event(event)
+        if not item_id:
+            return
+        status = _status_from_run_event(event)
+        owner_agent = _owner_agent_for_run_event(item_id, event)
+        message = _message_from_run_event(event)
+        self._record_work_item_transition_conn(
+            conn,
+            run_id=run_id,
+            event_id=f"run:{event.event_id}",
+            work_item_id=item_id,
+            event_type=event.event_type,
+            status=status,
+            owner_agent=owner_agent,
+            assigned_agent=event.agent_id,
+            agent_id=event.agent_id,
+            tool_name="runtime_progress",
+            tool_call_id="",
+            message=message,
+            artifact_ids=event.artifact_ids,
+            created_at=event.created_at,
+        )
+
+    def _apply_tool_event_to_work_items_conn(
+        self,
+        conn: sqlite3.Connection,
+        run_id: int,
+        event: ToolCallEvent,
+    ) -> None:
+        item_id = _work_item_id_for_tool_event(event)
+        if not item_id:
+            return
+        status = _status_from_tool_event(event)
+        owner_agent = _owner_agent_for_tool_event(item_id, event)
+        message = _message_from_tool_event(event)
+        self._record_work_item_transition_conn(
+            conn,
+            run_id=run_id,
+            event_id=f"tool:{event.event_id}",
+            work_item_id=item_id,
+            event_type=event.tool_name,
+            status=status,
+            owner_agent=owner_agent,
+            assigned_agent=event.agent_id,
+            agent_id=event.agent_id,
+            tool_name=event.tool_name,
+            tool_call_id=event.tool_call_id,
+            message=message,
+            artifact_ids=event.artifact_ids,
+            created_at=event.created_at,
+        )
+
+    def _record_work_item_transition_conn(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        run_id: int,
+        event_id: str,
+        work_item_id: str,
+        event_type: str,
+        status: str,
+        owner_agent: str,
+        assigned_agent: str,
+        agent_id: str,
+        tool_name: str,
+        tool_call_id: str,
+        message: str,
+        artifact_ids: list[str],
+        created_at: str,
+    ) -> None:
+        item_id = _canonical_work_item_id(work_item_id)
+        if not item_id:
+            return
+        row = conn.execute(
+            """
+            SELECT status, owner_agent, title, sprint_id, delivery_order
+            FROM work_items
+            WHERE run_id = ? AND work_item_id = ?
+            """,
+            (run_id, item_id),
+        ).fetchone()
+        from_status = str(row["status"]) if row else ""
+        from_owner = str(row["owner_agent"]) if row else ""
+        to_status = _normalize_work_item_status(status)
+        to_owner = owner_agent or from_owner
+        if row is None:
+            self._upsert_work_item_conn(
+                conn,
+                run_id=run_id,
+                work_item_id=item_id,
+                title=item_id,
+                sprint_id="planning" if item_id.startswith("PLAN-") else "",
+                delivery_order=0,
+                status=to_status,
+                owner_agent=to_owner,
+                source_refs=[],
+                created_at=created_at or utc_now(),
+            )
+        blocker = message if to_status == "blocked" else ""
+        conn.execute(
+            """
+            UPDATE work_items
+            SET status = ?,
+                lane = ?,
+                owner_agent = COALESCE(NULLIF(?, ''), owner_agent),
+                assigned_agent = COALESCE(NULLIF(?, ''), assigned_agent),
+                active = ?,
+                blocker = ?,
+                artifact_ids = CASE
+                    WHEN ? != '[]' THEN ?
+                    ELSE artifact_ids
+                END,
+                updated_at = ?
+            WHERE run_id = ? AND work_item_id = ?
+            """,
+            (
+                to_status,
+                _lane_for_work_item_status(to_status),
+                to_owner,
+                assigned_agent,
+                1 if to_status in {"in_progress", "review"} else 0,
+                blocker,
+                json.dumps(sorted(set(artifact_ids))),
+                json.dumps(sorted(set(artifact_ids))),
+                created_at or utc_now(),
+                run_id,
+                item_id,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO work_item_events (
+                run_id, event_id, work_item_id, event_type, from_status, to_status,
+                from_owner, to_owner, agent_id, tool_name, tool_call_id, message,
+                visibility, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user', ?)
+            ON CONFLICT(run_id, event_id) DO NOTHING
+            """,
+            (
+                run_id,
+                event_id,
+                item_id,
+                event_type,
+                from_status,
+                to_status,
+                from_owner,
+                to_owner,
+                agent_id,
+                tool_name,
+                tool_call_id,
+                message,
+                created_at or utc_now(),
+            ),
+        )
+        if message:
+            conn.execute(
+                """
+                INSERT INTO activity_events (
+                    run_id, event_id, work_item_id, owner_agent, agent_id, tool_name,
+                    message, status, artifact_ids, visibility, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'user', ?)
+                ON CONFLICT(run_id, event_id) DO NOTHING
+                """,
+                (
+                    run_id,
+                    event_id,
+                    item_id,
+                    to_owner,
+                    agent_id,
+                    tool_name,
+                    message,
+                    to_status,
+                    json.dumps(sorted(set(artifact_ids))),
+                    created_at or utc_now(),
+                ),
+            )
 
     def upsert_run_event(self, run_id: int, event: RunEvent) -> None:
         with self.connect() as conn:
@@ -1171,6 +1669,43 @@ def _provider(row: sqlite3.Row) -> ProviderCredential:
     )
 
 
+def _work_item(row: sqlite3.Row) -> WorkItem:
+    return WorkItem(
+        id=int(row["id"]),
+        run_id=int(row["run_id"]),
+        work_item_id=str(row["work_item_id"]),
+        title=str(row["title"]),
+        sprint_id=str(row["sprint_id"]),
+        delivery_order=int(row["delivery_order"]),
+        status=str(row["status"]),
+        lane=str(row["lane"]),
+        owner_agent=str(row["owner_agent"]),
+        assigned_agent=str(row["assigned_agent"]),
+        active=bool(row["active"]),
+        source_refs=_json_column(row["source_refs"], default=[]),
+        artifact_ids=_json_column(row["artifact_ids"], default=[]),
+        blocker=str(row["blocker"] or ""),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def _activity_event(row: sqlite3.Row) -> ActivityEvent:
+    return ActivityEvent(
+        id=int(row["id"]),
+        run_id=int(row["run_id"]),
+        work_item_id=str(row["work_item_id"]),
+        owner_agent=str(row["owner_agent"]),
+        agent_id=str(row["agent_id"]),
+        tool_name=str(row["tool_name"]),
+        message=str(row["message"]),
+        status=str(row["status"]),
+        artifact_ids=_json_column(row["artifact_ids"], default=[]),
+        visibility=str(row["visibility"]),
+        created_at=str(row["created_at"]),
+    )
+
+
 def _artifact_record(row: sqlite3.Row) -> ArtifactRecord | None:
     payload = dict(row)
     payload["relative_path"] = payload.get("path", "")
@@ -1218,3 +1753,206 @@ def row_to_dict(row: Any) -> dict[str, Any]:
     if hasattr(row, "__dataclass_fields__"):
         return {field: getattr(row, field) for field in row.__dataclass_fields__}
     return dict(row)
+
+
+def _canonical_work_item_id(value: str) -> str:
+    normalized = str(value or "").strip()
+    aliases = {
+        "BA": "PLAN-01",
+        "BUSINESS-ANALYSIS": "PLAN-01",
+        "BUSINESS_ANALYSIS": "PLAN-01",
+        "REQUIREMENTS": "PLAN-01",
+        "ARCH": "PLAN-02",
+        "ARCHITECTURE": "PLAN-02",
+        "PM": "PLAN-03",
+        "PROJECT-MANAGEMENT": "PLAN-03",
+        "PROJECT_MANAGEMENT": "PLAN-03",
+        "TL": "PLAN-04",
+        "TEAM-LEAD": "PLAN-04",
+        "TEAM_LEAD": "PLAN-04",
+    }
+    return aliases.get(normalized.upper(), normalized)
+
+
+def _normalize_work_item_status(status: str) -> str:
+    token = str(status or "").strip().lower()
+    if token in {"", "pending", "planned", "backlog"}:
+        return "todo"
+    if "needs_repair" in token or "failed" in token or "blocked" in token:
+        return "blocked"
+    if "qa" in token or "review" in token or "implemented" in token or "inspect" in token:
+        if "passed" in token or "completed" in token or "ready" in token:
+            return "done"
+        return "review"
+    if any(value in token for value in ("completed", "passed", "ready", "done", "deployed")):
+        return "done"
+    if any(value in token for value in ("started", "running", "active", "progress")):
+        return "in_progress"
+    return token if token in {"todo", "in_progress", "review", "done", "blocked"} else "in_progress"
+
+
+def _lane_for_work_item_status(status: str) -> str:
+    normalized = _normalize_work_item_status(status)
+    if normalized == "review":
+        return "qa"
+    if normalized in {"todo", "in_progress", "done", "blocked"}:
+        return normalized
+    return "todo"
+
+
+def _work_item_id_for_run_event(event: RunEvent) -> str:
+    explicit = _canonical_work_item_id(str(event.work_item_id or ""))
+    if explicit:
+        return explicit
+    data = event.data if isinstance(event.data, dict) else {}
+    for key in ("work_item_id", "target_work_item_id", "feature_id", "target"):
+        value = _canonical_work_item_id(str(data.get(key) or ""))
+        if value:
+            return value
+    token = f"{event.event_type} {data.get('node', '')} {data.get('stage', '')}".lower()
+    if "business_analyst" in token or "business_analysis" in token:
+        return "PLAN-01"
+    if "architecture" in token or "architect" in token:
+        return "PLAN-02"
+    if "project_management" in token or "project_manager" in token:
+        return "PLAN-03"
+    if "team_lead" in token:
+        return "PLAN-04"
+    return ""
+
+
+def _work_item_id_for_tool_event(event: ToolCallEvent) -> str:
+    explicit = _canonical_work_item_id(str(event.work_item_id or ""))
+    if explicit:
+        return explicit
+    if event.tool_name == "run_business_analyst":
+        return "PLAN-01"
+    if event.tool_name == "run_architect":
+        return "PLAN-02"
+    if event.tool_name == "run_project_manager":
+        return "PLAN-03"
+    if event.tool_name == "run_team_lead":
+        return "PLAN-04"
+    for source in (event.input_summary, event.output_summary):
+        if not isinstance(source, dict):
+            continue
+        for key in ("work_item_id", "target_work_item_id", "feature_id", "target"):
+            value = _canonical_work_item_id(str(source.get(key) or ""))
+            if value:
+                return value
+    return ""
+
+
+def _status_from_run_event(event: RunEvent) -> str:
+    token = f"{event.event_type} {event.status}".lower()
+    if "work_item_planned" in token:
+        return "todo"
+    if any(value in token for value in ("failed", "blocked")):
+        return "blocked"
+    if any(value in token for value in ("completed", "passed", "ready", "deployed")):
+        return "done"
+    if any(value in token for value in ("started", "running", "selected")):
+        return "in_progress"
+    return _normalize_work_item_status(event.status)
+
+
+def _status_from_tool_event(event: ToolCallEvent) -> str:
+    output = event.output_summary if isinstance(event.output_summary, dict) else {}
+    dashboard_update = output.get("dashboard_update")
+    dashboard = dashboard_update if isinstance(dashboard_update, dict) else {}
+    dashboard_status = str(dashboard.get("status") or "")
+    return _normalize_work_item_status(
+        f"{dashboard_status} {event.status} {event.failure_mode or ''}"
+    )
+
+
+def _owner_agent_for_work_item(work_item_id: str, fallback_agent: str) -> str:
+    owners = {
+        "PLAN-01": "business-analyst-agent",
+        "PLAN-02": "architect-agent",
+        "PLAN-03": "project-manager-agent",
+        "PLAN-04": "team-lead-agent",
+    }
+    return owners.get(work_item_id, fallback_agent or "fullstack-agent")
+
+
+def _owner_agent_for_run_event(work_item_id: str, event: RunEvent) -> str:
+    if work_item_id.startswith("PLAN-"):
+        return _owner_agent_for_work_item(work_item_id, event.agent_id)
+    data = event.data if isinstance(event.data, dict) else {}
+    node = str(data.get("node") or "").strip().lower()
+    if node in {"fullstack", "build", "builder"}:
+        return "fullstack-agent"
+    if node in {"qa", "quality", "quality_review"}:
+        return "qa-agent"
+    if node in {"deployment", "deploy", "publisher"}:
+        return "deployment-agent"
+    if node in {"handoff", "documentation", "release"}:
+        return "documentation-handoff-agent"
+    return event.agent_id or "fullstack-agent"
+
+
+def _owner_agent_for_tool_event(work_item_id: str, event: ToolCallEvent) -> str:
+    if work_item_id.startswith("PLAN-"):
+        return _owner_agent_for_work_item(work_item_id, event.agent_id)
+    return {
+        "run_fullstack": "fullstack-agent",
+        "run_qa": "qa-agent",
+        "run_post_deploy_qa": "qa-agent",
+        "run_deployment": "deployment-agent",
+        "run_handoff": "documentation-handoff-agent",
+        "complete_sprint": "team-lead-agent",
+        "block_sprint": "team-lead-agent",
+        "inspect_sprint_status": "team-lead-agent",
+    }.get(event.tool_name, event.agent_id or "fullstack-agent")
+
+
+def _message_from_run_event(event: RunEvent) -> str:
+    if event.message and event.message != event.event_type:
+        return event.message
+    labels = {
+        "work_item_planned": "Work item planned.",
+        "business_analysis_started": "Business Analyst started working.",
+        "business_analysis_completed": "Requirements brief is ready.",
+        "architecture_started": "Solution Architect started working.",
+        "architecture_completed": "Solution overview is ready.",
+        "project_management_started": "Delivery Planner started working.",
+        "project_management_completed": "Delivery plan is ready.",
+        "team_lead_sprint_started": "Delivery Lead started sprint coordination.",
+        "team_lead_sprint_completed": "Delivery Lead completed sprint coordination.",
+        "team_lead_blocked_sprint": "Delivery Lead blocked the sprint.",
+    }
+    return labels.get(event.event_type, event.event_type.replace("_", " ").title())
+
+
+def _message_from_tool_event(event: ToolCallEvent) -> str:
+    output = event.output_summary if isinstance(event.output_summary, dict) else {}
+    dashboard_update = output.get("dashboard_update")
+    dashboard = dashboard_update if isinstance(dashboard_update, dict) else {}
+    for value in (
+        dashboard.get("comment"),
+        dashboard.get("summary"),
+        output.get("business_summary"),
+        output.get("summary"),
+        output.get("message"),
+    ):
+        if str(value or "").strip():
+            return str(value).strip()
+    return f"{event.tool_name.replace('_', ' ').title()} {event.status}".strip()
+
+
+def _int_value(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list | tuple | set):
+        return [str(item) for item in value]
+    return [str(value)]

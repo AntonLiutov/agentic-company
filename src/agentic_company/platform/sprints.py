@@ -31,28 +31,28 @@ WORK_BOARD_ARTIFACT = "team-lead/work-board.json"
 
 HEAD_PLANNING_ITEMS = [
     {
-        "id": "BA",
+        "id": "PLAN-01",
         "title": "Business analysis",
         "sprint_id": "planning",
         "delivery_order": 1,
         "suggested_owner_agent": "business-analyst-agent",
     },
     {
-        "id": "ARCH",
+        "id": "PLAN-02",
         "title": "Solution architecture",
         "sprint_id": "planning",
         "delivery_order": 2,
         "suggested_owner_agent": "architect-agent",
     },
     {
-        "id": "PM",
+        "id": "PLAN-03",
         "title": "Project management plan",
         "sprint_id": "planning",
         "delivery_order": 3,
         "suggested_owner_agent": "project-manager-agent",
     },
     {
-        "id": "TL",
+        "id": "PLAN-04",
         "title": "Sprint delivery",
         "sprint_id": "delivery",
         "delivery_order": 4,
@@ -61,10 +61,10 @@ HEAD_PLANNING_ITEMS = [
 ]
 
 HEAD_WORK_ITEM_BY_NODE = {
-    "business_analyst": "BA",
-    "architecture": "ARCH",
-    "project_management": "PM",
-    "team_lead": "TL",
+    "business_analyst": "PLAN-01",
+    "architecture": "PLAN-02",
+    "project_management": "PLAN-03",
+    "team_lead": "PLAN-04",
 }
 
 

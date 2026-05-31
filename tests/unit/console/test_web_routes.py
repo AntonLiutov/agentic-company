@@ -240,6 +240,194 @@ def test_create_project_starts_run_with_monkeypatched_runtime(tmp_path, monkeypa
     assert repo.list_projects_for_user(1)[0].name == "Task Tracker"
 
 
+def test_new_run_creates_canonical_planning_work_items(tmp_path):
+    repo = ConsoleRepository(tmp_path / "console.db")
+    repo.init_schema()
+    user = repo.create_user(
+        email="planner@example.test",
+        username="planner",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Board",
+        request_text="Build",
+        mode="simple_prototype",
+        complexity="simple",
+    )
+
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="run-planning",
+        run_dir=tmp_path / "run-planning",
+        status="running",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+
+    items = repo.list_work_items(run.id)
+
+    assert [item.work_item_id for item in items] == [
+        "PLAN-01",
+        "PLAN-02",
+        "PLAN-03",
+        "PLAN-04",
+    ]
+    assert [item.status for item in items] == ["todo", "todo", "todo", "todo"]
+
+
+def test_pm_queue_materializes_feature_work_items_in_db(tmp_path):
+    repo = ConsoleRepository(tmp_path / "console.db")
+    repo.init_schema()
+    user = repo.create_user(
+        email="pm@example.test",
+        username="pmuser",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="PM",
+        request_text="Build",
+        mode="simple_prototype",
+        complexity="large",
+    )
+    run_dir = tmp_path / "run-pm"
+    pm_dir = run_dir / "upstream-planning" / "project-management"
+    pm_dir.mkdir(parents=True)
+    (pm_dir / "candidate-feature-queue.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "US-rooms",
+                    "title": "Rooms",
+                    "sprint_id": "sprint-01",
+                    "delivery_order": 1,
+                    "suggested_owner_agent": "fullstack-agent",
+                },
+                {
+                    "id": "US-contacts",
+                    "title": "Contacts",
+                    "sprint_id": "sprint-01",
+                    "delivery_order": 2,
+                    "suggested_owner_agent": "fullstack-agent",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="run-pm",
+        run_dir=run_dir,
+        status="running",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+
+    repo.sync_work_items_from_run_dir(run.id, run_dir)
+    items = {item.work_item_id: item for item in repo.list_work_items(run.id)}
+
+    assert items["US-rooms"].status == "todo"
+    assert items["US-rooms"].sprint_id == "sprint-01"
+    assert items["US-contacts"].owner_agent == "fullstack-agent"
+
+
+def test_logs_endpoint_filters_db_activity_by_task_id(tmp_path):
+    repo = ConsoleRepository(tmp_path / "console.db")
+    repo.init_schema()
+    user = repo.create_user(
+        email="logs@example.test",
+        username="logsuser",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Logs",
+        request_text="Build",
+        mode="simple_prototype",
+        complexity="large",
+    )
+    run_dir = tmp_path / "run-logs"
+    pm_dir = run_dir / "upstream-planning" / "project-management"
+    pm_dir.mkdir(parents=True)
+    (pm_dir / "candidate-feature-queue.json").write_text(
+        json.dumps(
+            [
+                {"id": "US-rooms", "title": "Rooms", "sprint_id": "sprint-01"},
+                {"id": "US-contacts", "title": "Contacts", "sprint_id": "sprint-01"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="run-logs",
+        run_dir=run_dir,
+        status="running",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+    record_tool_call_event(
+        run_dir,
+        run_id="run-logs",
+        agent_id="team-lead-agent",
+        tool_name="run_fullstack",
+        tool_call_id="rooms-build",
+        status="fullstack_feature_implemented",
+        work_item_id="US-rooms",
+        output_summary={
+            "dashboard_update": {
+                "status": "review",
+                "comment": "Rooms are ready for QA.",
+            }
+        },
+    )
+    record_tool_call_event(
+        run_dir,
+        run_id="run-logs",
+        agent_id="team-lead-agent",
+        tool_name="run_qa",
+        tool_call_id="rooms-qa",
+        status="qa_passed",
+        work_item_id="US-rooms",
+        output_summary={
+            "dashboard_update": {
+                "status": "done",
+                "comment": "Rooms passed quality review.",
+            }
+        },
+    )
+    record_tool_call_event(
+        run_dir,
+        run_id="run-logs",
+        agent_id="team-lead-agent",
+        tool_name="run_fullstack",
+        tool_call_id="contacts-build",
+        status="fullstack_feature_implemented",
+        work_item_id="US-contacts",
+        output_summary={
+            "dashboard_update": {
+                "status": "review",
+                "comment": "Contacts are ready for QA.",
+            }
+        },
+    )
+    app = create_app(repo)
+    client = TestClient(app)
+    client.cookies.set("agentic_console_session", repo.create_session(user.id))
+
+    response = client.get(f"/api/runs/{run.id}/logs?task_id=US-rooms")
+
+    assert response.status_code == 200
+    text = json.dumps(response.json())
+    assert "Rooms are ready for Quality." in text
+    assert "Rooms passed quality review." in text
+    assert "Contacts are ready for Quality." not in text
+    items = {item.work_item_id: item for item in repo.list_work_items(run.id)}
+    assert items["US-rooms"].owner_agent == "qa-agent"
+    assert items["US-rooms"].status == "done"
+
+
 def test_create_project_can_use_gemini_for_agent_executor(tmp_path, monkeypatch):
     repo = ConsoleRepository(tmp_path / "console.db")
     app = create_app(repo)

@@ -35,6 +35,7 @@ from agentic_company.console.web.product import (
     GEMINI_MODEL_OPTIONS,
     REASONING_OPTIONS,
     GeminiFormatterUnavailable,
+    activity_groups_from_db_events,
     agent_catalog,
     agent_icon_path,
     artifact_owner_groups,
@@ -42,6 +43,8 @@ from agentic_company.console.web.product import (
     artifact_payload_by_id,
     artifact_payload_for_record,
     artifact_phase_groups,
+    board_cards_from_work_items,
+    board_groups_from_work_items,
     canonical_activity_groups_for_run,
     canonical_artifacts_for_run,
     canonical_board_cards_for_run,
@@ -57,11 +60,16 @@ from agentic_company.console.web.product import (
     html_report_document,
     project_type_label,
     render_markdown,
+    rendered_log_entries_from_db_events,
     scope_size_label,
+    sprint_board_groups_from_work_items,
     status_label,
     system_checks,
+    task_detail_from_work_items,
+    task_report_groups_from_work_items,
     user_facing_blockers,
     user_friendly_artifact_label,
+    work_plan_groups_from_work_items,
 )
 from agentic_company.console.web.voice import (
     SpeechmaticsTokenError,
@@ -641,17 +649,27 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         repo = get_repo(request)
         repo.sync_artifact_registry_from_run_dir(run.id, run_dir)
         repo.sync_run_trace_from_run_dir(run.id, run_dir)
+        repo.sync_work_items_from_run_dir(run.id, run_dir)
         business_artifacts = canonical_artifacts_for_run(
             run_dir,
             repo.list_artifact_records(run.id),
         )[0]
-        detail = canonical_task_detail_for_run(
-            run_dir,
-            task_id,
-            repo.list_tool_call_events(run.id),
-            business_artifacts,
-            repo.list_run_events(run.id),
-        )
+        work_items = repo.list_work_items(run.id)
+        if work_items:
+            detail = task_detail_from_work_items(
+                task_id,
+                work_items,
+                business_artifacts,
+                repo.list_activity_events(run.id),
+            )
+        else:
+            detail = canonical_task_detail_for_run(
+                run_dir,
+                task_id,
+                repo.list_tool_call_events(run.id),
+                business_artifacts,
+                repo.list_run_events(run.id),
+            )
         if detail is None:
             raise HTTPException(status_code=404)
         return render(
@@ -676,9 +694,11 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         repo = get_repo(request)
         repo.sync_artifact_registry_from_run_dir(run.id, run_dir)
         repo.sync_run_trace_from_run_dir(run.id, run_dir)
+        repo.sync_work_items_from_run_dir(run.id, run_dir)
         artifact_records = repo.list_artifact_records(run.id)
         run_events = repo.list_run_events(run.id)
         tool_events = repo.list_tool_call_events(run.id)
+        activity_events = repo.list_activity_events(run.id)
         status_value = _canonical_status_from_records_and_trace(artifact_records, tool_events)
         running = _canonical_run_running(run, run_events, tool_events, status_value)
         completed = _canonical_run_completed(status_value, run_events)
@@ -699,7 +719,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
                 "stage": status_label(overview.stage),
                 "running": running,
                 "completed": completed,
-                "events": len(run_events) + len(tool_events),
+                "events": len(run_events) + len(tool_events) + len(activity_events),
             }
         )
 
@@ -716,6 +736,18 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         run_dir = Path(run.run_dir)
         repo = get_repo(request)
         repo.sync_run_trace_from_run_dir(run.id, run_dir)
+        repo.sync_work_items_from_run_dir(run.id, run_dir)
+        activity_events = repo.list_activity_events(
+            run.id,
+            work_item_id=task_id,
+        )
+        if activity_events:
+            return JSONResponse(
+                {
+                    "logs": rendered_log_entries_from_db_events(activity_events),
+                    "groups": activity_groups_from_db_events(activity_events),
+                }
+            )
         run_events = repo.list_run_events(run.id)
         tool_events = repo.list_tool_call_events(run.id)
         return JSONResponse(
@@ -923,12 +955,19 @@ def render_workspace(
         repo = get_repo(request)
         repo.sync_artifact_registry_from_run_dir(run.id, run_dir)
         repo.sync_run_trace_from_run_dir(run.id, run_dir)
+        repo.sync_work_items_from_run_dir(run.id, run_dir)
         artifact_records = repo.list_artifact_records(run.id)
         run_events = repo.list_run_events(run.id)
         tool_events = repo.list_tool_call_events(run.id)
+        work_items = repo.list_work_items(run.id)
+        activity_events = repo.list_activity_events(run.id)
         _sync_canonical_run_completion(repo, project, run, artifact_records, tool_events)
         business_artifacts = canonical_artifacts_for_run(run_dir, artifact_records)[0]
-        board = canonical_board_cards_for_run(run_dir, tool_events, business_artifacts, run_events)
+        board = (
+            board_cards_from_work_items(work_items, business_artifacts)
+            if work_items
+            else canonical_board_cards_for_run(run_dir, tool_events, business_artifacts, run_events)
+        )
         canonical_status = _canonical_status_from_records_and_trace(artifact_records, tool_events)
         run_running = _canonical_run_running(run, run_events, tool_events, canonical_status)
         run_completed = _canonical_run_completed(canonical_status, run_events)
@@ -947,25 +986,49 @@ def render_workspace(
                 "overview": overview,
                 "overview_blockers": user_facing_blockers(overview.blockers),
                 "board": board,
-                "sprints": canonical_board_groups_for_run(
-                    run_dir, tool_events, business_artifacts, run_events
+                "sprints": (
+                    board_groups_from_work_items(work_items, business_artifacts)
+                    if work_items
+                    else canonical_board_groups_for_run(
+                        run_dir, tool_events, business_artifacts, run_events
+                    )
                 ),
-                "work_plan_groups": canonical_work_plan_groups_for_run(
-                    run_dir, tool_events, business_artifacts, run_events
+                "work_plan_groups": (
+                    work_plan_groups_from_work_items(work_items, business_artifacts)
+                    if work_items
+                    else canonical_work_plan_groups_for_run(
+                        run_dir, tool_events, business_artifacts, run_events
+                    )
                 ),
-                "sprint_board_groups": canonical_sprint_board_groups_for_run(
-                    run_dir, tool_events, business_artifacts, run_events
+                "sprint_board_groups": (
+                    sprint_board_groups_from_work_items(work_items, business_artifacts)
+                    if work_items
+                    else canonical_sprint_board_groups_for_run(
+                        run_dir, tool_events, business_artifacts, run_events
+                    )
                 ),
                 "business_artifacts": business_artifacts,
                 "business_artifact_groups": artifact_owner_groups(business_artifacts),
                 "business_artifact_phase_groups": artifact_phase_groups(business_artifacts),
-                "task_report_groups": canonical_task_report_groups_for_run(
-                    run_dir, tool_events, business_artifacts, run_events
+                "task_report_groups": (
+                    task_report_groups_from_work_items(work_items, business_artifacts)
+                    if work_items
+                    else canonical_task_report_groups_for_run(
+                        run_dir, tool_events, business_artifacts, run_events
+                    )
                 ),
                 "technical_artifacts": [],
-                "logs": canonical_rendered_log_entries_for_run(tool_events, run_events),
-                "activity_groups": canonical_activity_groups_for_run(
-                    tool_events, run_events=run_events
+                "logs": (
+                    rendered_log_entries_from_db_events(activity_events)
+                    if activity_events
+                    else canonical_rendered_log_entries_for_run(tool_events, run_events)
+                ),
+                "activity_groups": (
+                    activity_groups_from_db_events(activity_events)
+                    if activity_events
+                    else canonical_activity_groups_for_run(
+                        tool_events, run_events=run_events
+                    )
                 ),
                 "run_running": run_running,
                 "run_completed": run_completed,

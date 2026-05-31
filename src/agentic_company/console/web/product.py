@@ -206,6 +206,7 @@ PLANNING_TOOL_ITEMS = {
     "run_business_analyst": ("PLAN-01", "Requirements brief", "Business Analyst", 1),
     "run_architect": ("PLAN-02", "Solution overview", "Solution Architect", 2),
     "run_project_manager": ("PLAN-03", "Delivery plan", "Delivery Planner", 3),
+    "run_team_lead": ("PLAN-04", "Sprint delivery coordination", "Delivery Lead", 4),
 }
 
 
@@ -480,6 +481,182 @@ def canonical_work_plan_groups_for_run(
             run_dir, tool_events, artifacts, run_events
         ).items()
     ]
+
+
+def board_cards_from_work_items(
+    work_items: Sequence[Any],
+    artifacts: Sequence[ArtifactView],
+) -> dict[str, list[BoardCard]]:
+    groups: dict[str, list[BoardCard]] = {key: [] for key, _ in BOARD_COLUMNS}
+    for item in work_items:
+        card = _board_card_from_work_item(item, artifacts)
+        groups.setdefault(card.column, []).append(card)
+    for column, cards in groups.items():
+        groups[column] = sorted(
+            cards,
+            key=lambda card: (card.sprint != "Planning", card.order, card.id),
+        )
+    return groups
+
+
+def board_groups_from_work_items(
+    work_items: Sequence[Any],
+    artifacts: Sequence[ArtifactView],
+) -> dict[str, list[BoardCard]]:
+    unsorted: dict[str, list[BoardCard]] = {}
+    for item in work_items:
+        card = _board_card_from_work_item(item, artifacts)
+        unsorted.setdefault(sprint_label(card.sprint or "Planning"), []).append(card)
+    return {
+        sprint: sorted(cards, key=lambda card: (card.order, card.id))
+        for sprint, cards in sorted(unsorted.items(), key=lambda item: _sprint_sort_key(item[0]))
+    }
+
+
+def sprint_board_groups_from_work_items(
+    work_items: Sequence[Any],
+    artifacts: Sequence[ArtifactView],
+) -> list[dict[str, object]]:
+    groups: list[dict[str, object]] = []
+    for sprint, cards in board_groups_from_work_items(work_items, artifacts).items():
+        columns: dict[str, list[BoardCard]] = {key: [] for key, _ in BOARD_COLUMNS}
+        for card in cards:
+            columns.setdefault(card.column, []).append(card)
+        groups.append({"sprint": sprint, "count": len(cards), "columns": columns})
+    return groups
+
+
+def work_plan_groups_from_work_items(
+    work_items: Sequence[Any],
+    artifacts: Sequence[ArtifactView],
+) -> list[dict[str, object]]:
+    return [
+        {"name": sprint, "count": len(cards), "cards": cards}
+        for sprint, cards in board_groups_from_work_items(work_items, artifacts).items()
+    ]
+
+
+def task_report_groups_from_work_items(
+    work_items: Sequence[Any],
+    artifacts: Sequence[ArtifactView],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "sprint": sprint,
+            "tasks": [
+                {
+                    "card": card,
+                    "reports": _reports_for_card(card, list(artifacts)),
+                    "count": len(_reports_for_card(card, list(artifacts))),
+                }
+                for card in cards
+            ],
+            "count": len(cards),
+        }
+        for sprint, cards in board_groups_from_work_items(work_items, artifacts).items()
+    ]
+
+
+def activity_groups_from_db_events(
+    activity_events: Sequence[Any],
+    *,
+    task_id: str = "",
+) -> list[dict[str, object]]:
+    task_filter = _canonical_task_id(task_id.strip()) if task_id else ""
+    grouped: dict[str, list[str]] = {}
+    seen: set[tuple[str, str]] = set()
+    for event in activity_events:
+        event_task_id = _canonical_task_id(str(getattr(event, "work_item_id", "")))
+        if task_filter and event_task_id != task_filter:
+            continue
+        message = _business_log_text(str(getattr(event, "message", "")).strip())
+        if not message:
+            continue
+        owner = business_agent_label(
+            str(getattr(event, "owner_agent", "") or getattr(event, "agent_id", "") or "Delivery")
+        )
+        dedupe_key = (owner, _activity_dedupe_text(message))
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        timestamp = _browser_timestamp(str(getattr(event, "created_at", "") or ""))
+        line = f"**{timestamp} - {owner}**\n\n{message}" if timestamp else message
+        grouped.setdefault(owner, []).append(render_markdown(line))
+    return _ordered_activity_groups(grouped)
+
+
+def rendered_log_entries_from_db_events(
+    activity_events: Sequence[Any],
+    *,
+    task_id: str = "",
+) -> list[str]:
+    logs: list[str] = []
+    for group in activity_groups_from_db_events(activity_events, task_id=task_id):
+        logs.extend(str(log) for log in group["logs"])
+    return logs[-180:]
+
+
+def task_detail_from_work_items(
+    task_id: str,
+    work_items: Sequence[Any],
+    artifacts: Sequence[ArtifactView],
+    activity_events: Sequence[Any],
+) -> TaskDetail | None:
+    canonical_task_id = _canonical_task_id(task_id.strip())
+    cards = [
+        card
+        for group in board_groups_from_work_items(work_items, artifacts).values()
+        for card in group
+    ]
+    card = next((candidate for candidate in cards if candidate.id == canonical_task_id), None)
+    if card is None:
+        return None
+    return TaskDetail(
+        card=card,
+        reports=_reports_for_card(card, list(artifacts)),
+        logs=rendered_log_entries_from_db_events(activity_events, task_id=canonical_task_id)[-40:],
+        activity_groups=activity_groups_from_db_events(
+            activity_events,
+            task_id=canonical_task_id,
+        ),
+    )
+
+
+def _board_card_from_work_item(
+    item: Any,
+    artifacts: Sequence[ArtifactView],
+) -> BoardCard:
+    item_id = _canonical_task_id(str(getattr(item, "work_item_id", "")))
+    sprint = str(getattr(item, "sprint_id", "") or "sprint-01")
+    if sprint.lower() == "planning":
+        sprint = "Planning"
+    status = str(getattr(item, "status", "") or "todo")
+    lane = str(getattr(item, "lane", "") or _board_column("", status))
+    artifact_ids = getattr(item, "artifact_ids", []) or []
+    artifact_count = len(artifact_ids) or sum(
+        1 for artifact in artifacts if artifact.task_id == item_id
+    )
+    started_at = "" if lane == "todo" else str(getattr(item, "created_at", "") or "")
+    completed_at = str(getattr(item, "updated_at", "") or "") if lane in {"done", "blocked"} else ""
+    timing = _timing_payload(started_at, completed_at) if started_at else {}
+    return BoardCard(
+        id=item_id,
+        title=str(getattr(item, "title", "") or item_id),
+        owner=business_agent_label(str(getattr(item, "owner_agent", "") or "")),
+        sprint=sprint,
+        status=work_status_label(status),
+        column=(
+            lane
+            if lane in {column for column, _ in BOARD_COLUMNS}
+            else _board_column(lane, status)
+        ),
+        artifact_count=artifact_count,
+        active=bool(getattr(item, "active", False)),
+        order=int(getattr(item, "delivery_order", 0) or 0),
+        started_at=timing.get("started_at", ""),
+        completed_at=timing.get("completed_at", ""),
+        elapsed_label=timing.get("elapsed_label", ""),
+    )
 
 
 def canonical_task_report_groups_for_run(
@@ -994,7 +1171,7 @@ def user_friendly_artifact_label_for_record(record: Any) -> str:
     }.get(str(record.artifact_type), "")
     if type_label:
         task_id = str(record.work_item_id or "")
-        if task_id and task_id not in {"PLAN-01", "PLAN-02", "PLAN-03", "DEPLOY"}:
+        if task_id and task_id not in {"PLAN-01", "PLAN-02", "PLAN-03", "PLAN-04", "DEPLOY"}:
             return f"{type_label} - {task_id}"
         return type_label
     return user_friendly_artifact_label(str(record.label or ""), str(record.relative_path))
@@ -1184,6 +1361,13 @@ def _planning_cards_for_run(run_dir: Path) -> list[BoardCard]:
             run_dir / "upstream-planning" / "project-management" / "release-plan.md",
             3,
         ),
+        (
+            "PLAN-04",
+            "Sprint delivery coordination",
+            "Delivery Lead",
+            run_dir / "team-lead" / "work-board.json",
+            4,
+        ),
     ]
     cards: list[BoardCard] = []
     for item_id, title, owner, path, order in steps:
@@ -1312,6 +1496,7 @@ def _card_timings_for_run(run_dir: Path) -> dict[str, dict[str, str]]:
         "PLAN-01": ("business_analysis_started", "business_analysis_completed"),
         "PLAN-02": ("architecture_started", "architecture_completed"),
         "PLAN-03": ("project_management_started", "project_management_completed"),
+        "PLAN-04": ("team_lead_sprint_started", "team_lead_sprint_completed"),
     }
     events = read_events(run_dir)
     for item_id, (started_event, completed_event) in planning_events.items():
@@ -1412,7 +1597,7 @@ def _canonical_cards_from_trace(
         {
             item_id
             for item_id in event_map
-            if item_id not in {"PLAN-01", "PLAN-02", "PLAN-03"} and item_id
+            if item_id not in {"PLAN-01", "PLAN-02", "PLAN-03", "PLAN-04"} and item_id
         },
         key=_work_item_sort_key,
     )
@@ -1449,11 +1634,14 @@ def _canonical_cards_from_trace(
     for artifact in artifacts:
         if not artifact.task_id or artifact.task_id in cards:
             continue
-        if artifact.task_id in {"PLAN-01", "PLAN-02", "PLAN-03"}:
+        if artifact.task_id in {"PLAN-01", "PLAN-02", "PLAN-03", "PLAN-04"}:
             title = _title_for_artifact_task(artifact.task_id)
             owner = artifact.business_agent
             sprint = "Planning"
-            order = {"PLAN-01": 1, "PLAN-02": 2, "PLAN-03": 3}.get(artifact.task_id, 99)
+            order = {"PLAN-01": 1, "PLAN-02": 2, "PLAN-03": 3, "PLAN-04": 4}.get(
+                artifact.task_id,
+                99,
+            )
         elif artifact.task_id == "DEPLOY":
             title = "Deploy generated app"
             owner = "Publisher"
@@ -1659,6 +1847,7 @@ def _tool_name_for_run_event(work_item_id: str) -> str:
         "PLAN-01": "run_business_analyst",
         "PLAN-02": "run_architect",
         "PLAN-03": "run_project_manager",
+        "PLAN-04": "run_team_lead",
         "DEPLOY": "run_deployment",
     }.get(work_item_id, "runtime_progress")
 
@@ -1749,7 +1938,13 @@ def _canonical_work_item_id(work_item_id: str, event: dict[str, Any]) -> str:
 
 
 def _is_canonical_board_item_id(value: str) -> bool:
-    return value in {"PLAN-01", "PLAN-02", "PLAN-03", "DEPLOY"} or _is_work_item_id(value)
+    return value in {
+        "PLAN-01",
+        "PLAN-02",
+        "PLAN-03",
+        "PLAN-04",
+        "DEPLOY",
+    } or _is_work_item_id(value)
 
 
 def _board_status_from_tool_events(item_id: str, events: Sequence[dict[str, Any]]) -> str:
@@ -1883,7 +2078,7 @@ def _sprint_for_work_item(
     events: Sequence[dict[str, Any]],
     feature_catalog: dict[str, dict[str, Any]],
 ) -> str:
-    if item_id in {"PLAN-01", "PLAN-02", "PLAN-03"}:
+    if item_id in {"PLAN-01", "PLAN-02", "PLAN-03", "PLAN-04"}:
         return "Planning"
     if feature_catalog.get(item_id, {}).get("sprint_id"):
         return str(feature_catalog[item_id]["sprint_id"])
@@ -1922,12 +2117,13 @@ def _title_for_artifact_task(task_id: str) -> str:
         "PLAN-01": "Requirements brief",
         "PLAN-02": "Solution overview",
         "PLAN-03": "Delivery plan",
+        "PLAN-04": "Sprint delivery coordination",
         "DEPLOY": "Deploy generated app",
     }.get(task_id, "")
 
 
 def _sprint_for_artifact_task(task_id: str, record: Any) -> str:
-    if task_id in {"PLAN-01", "PLAN-02", "PLAN-03"}:
+    if task_id in {"PLAN-01", "PLAN-02", "PLAN-03", "PLAN-04"}:
         return "Planning"
     if task_id == "DEPLOY":
         return "Sprint 1"
@@ -2133,6 +2329,10 @@ def _canonical_task_id(task_id: str) -> str:
         "PM": "PLAN-03",
         "PROJECT-MANAGEMENT": "PLAN-03",
         "DELIVERY-PLAN": "PLAN-03",
+        "TL": "PLAN-04",
+        "TEAM-LEAD": "PLAN-04",
+        "TEAM_LEAD": "PLAN-04",
+        "SPRINT-DELIVERY": "PLAN-04",
     }
     return aliases.get(task_id.upper(), task_id)
 
@@ -2145,6 +2345,8 @@ def _card_aliases(card: BoardCard) -> set[str]:
         aliases.update({"ARCH", "ARCHITECTURE"})
     elif card.id == "PLAN-03":
         aliases.update({"PM", "PROJECT-MANAGEMENT"})
+    elif card.id == "PLAN-04":
+        aliases.update({"TL", "TEAM-LEAD", "TEAM_LEAD"})
     return aliases
 
 

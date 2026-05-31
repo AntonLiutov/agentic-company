@@ -848,7 +848,7 @@ def test_board_keeps_stable_planning_cards_when_runtime_has_planning_features(tm
 
     planning_cards = board_groups_for_run(tmp_path)["Planning"]
 
-    assert [card.id for card in planning_cards] == ["PLAN-01", "PLAN-02", "PLAN-03"]
+    assert [card.id for card in planning_cards] == ["PLAN-01", "PLAN-02", "PLAN-03", "PLAN-04"]
 
 
 def test_board_shows_pm_planned_features_before_runtime_events(tmp_path):

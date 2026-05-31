@@ -511,7 +511,7 @@ def test_head_board_is_visible_before_pm_feature_queue(tmp_path):
     toolbox.run_business_analyst(reason="Analyze.", message="Analyze requirements.")
 
     assert seen == {
-        "items": ["BA", "ARCH", "PM", "TL"],
+        "items": ["PLAN-01", "PLAN-02", "PLAN-03", "PLAN-04"],
         "status": "in_progress",
         "assigned_agent": "business-analyst-agent",
     }
