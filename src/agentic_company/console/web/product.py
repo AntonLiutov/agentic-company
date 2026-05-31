@@ -622,6 +622,90 @@ def task_detail_from_work_items(
     )
 
 
+def delivery_overview_from_work_items(
+    *,
+    run_id: str,
+    work_items: Sequence[Any],
+    artifacts: Sequence[ArtifactView],
+    status: str,
+    published_url: str = "",
+) -> DeliveryOverview:
+    cards = [
+        _board_card_from_work_item(item, artifacts)
+        for item in sorted(
+            work_items,
+            key=lambda value: (
+                str(getattr(value, "sprint_id", "") or "planning") != "planning",
+                int(getattr(value, "delivery_order", 0) or 0),
+                str(getattr(value, "work_item_id", "")),
+            ),
+        )
+    ]
+    features = [
+        FeatureProgress(
+            feature_id=card.id,
+            title=card.title,
+            status=_feature_status_from_card(card),
+            delivery_order=card.order,
+            active=card.active,
+            repair_attempts=0,
+            owner=card.owner,
+            sprint_id=card.sprint,
+            lane=card.column,
+            assigned_agent=card.owner,
+            artifact_count=card.artifact_count,
+        )
+        for card in cards
+    ]
+    blockers = [
+        str(getattr(item, "blocker", "") or "").strip()
+        for item in work_items
+        if str(getattr(item, "status", "") or "").lower() == "blocked"
+        and str(getattr(item, "blocker", "") or "").strip()
+    ]
+    normalized_status = status or "running"
+    if blockers:
+        stage = "blocked"
+    elif work_items and all(
+        str(getattr(item, "status", "") or "").lower() == "done" for item in work_items
+    ):
+        stage = "complete"
+    elif any(bool(getattr(item, "active", False)) for item in work_items):
+        stage = "running"
+    else:
+        stage = normalized_status
+    qa_status = (
+        "failed"
+        if blockers
+        else "passed"
+        if work_items and all(
+            str(getattr(item, "status", "") or "").lower() == "done" for item in work_items
+        )
+        else "review"
+        if any(str(getattr(item, "status", "") or "").lower() == "review" for item in work_items)
+        else "pending"
+    )
+    return DeliveryOverview(
+        run_id=run_id,
+        stage=stage,
+        status=normalized_status,
+        active_feature_id=next((card.id for card in cards if card.active), None),
+        features=features,
+        qa_status=qa_status,
+        deployment_status="pending",
+        handoff_status="pending",
+        topology_summary="",
+        deployment_targets=(
+            [DeploymentTarget(label="Open App", url=published_url, service="generated-app")]
+            if published_url
+            else []
+        ),
+        blockers=blockers[-5:],
+        team_lead_steps=[],
+        current_work=None,
+    )
+
+
 def _board_card_from_work_item(
     item: Any,
     artifacts: Sequence[ArtifactView],

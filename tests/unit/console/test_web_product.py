@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from agentic_company.console.web.product import (
     ArtifactView,
@@ -19,6 +20,7 @@ from agentic_company.console.web.product import (
     canonical_delivery_overview_for_run,
     canonical_rendered_log_entries_for_run,
     canonical_task_detail_for_run,
+    delivery_overview_from_work_items,
     format_request_text,
     html_report_document,
     is_user_facing_artifact,
@@ -56,6 +58,35 @@ def write_run_events_fixture(run_dir: Path, events: list[dict[str, object]]) -> 
             data=data,
             created_at=str(event.get("timestamp") or f"2026-05-18T01:00:{index:02d}Z"),
         )
+
+
+def test_delivery_overview_from_work_items_uses_db_state_without_trace():
+    overview = delivery_overview_from_work_items(
+        run_id="42",
+        work_items=[
+            SimpleNamespace(
+                work_item_id="US-rooms",
+                title="Rooms",
+                sprint_id="sprint-01",
+                delivery_order=1,
+                status="review",
+                lane="qa",
+                owner_agent="qa-agent",
+                active=True,
+                artifact_ids=[],
+                blocker="",
+                created_at="2026-05-31T10:00:00Z",
+                updated_at="2026-05-31T10:05:00Z",
+            )
+        ],
+        artifacts=[],
+        status="running",
+    )
+
+    assert overview.features[0].feature_id == "US-rooms"
+    assert overview.features[0].owner == "Quality Reviewer"
+    assert overview.active_feature_id == "US-rooms"
+    assert overview.qa_status == "review"
 
 
 def test_format_request_text_structures_dictated_request_without_greeting():

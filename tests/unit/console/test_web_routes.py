@@ -428,6 +428,108 @@ def test_logs_endpoint_filters_db_activity_by_task_id(tmp_path):
     assert items["US-rooms"].status == "done"
 
 
+def test_logs_endpoint_does_not_fallback_to_trace_when_db_work_items_exist(tmp_path):
+    repo = ConsoleRepository(tmp_path / "console.db")
+    repo.init_schema()
+    user = repo.create_user(
+        email="strict-logs@example.test",
+        username="strictlogs",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Strict logs",
+        request_text="Build",
+        mode="simple_prototype",
+        complexity="large",
+    )
+    run_dir = tmp_path / "run-strict-logs"
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="run-strict-logs",
+        run_dir=run_dir,
+        status="running",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+    record_tool_call_event(
+        run_dir,
+        run_id="run-strict-logs",
+        agent_id="team-lead-agent",
+        tool_name="run_fullstack",
+        tool_call_id="missing-target",
+        status="fullstack_feature_implemented",
+        work_item_id="",
+        output_summary={
+            "dashboard_update": {
+                "status": "review",
+                "comment": "This trace-only message must not leak into DB-backed activity.",
+            }
+        },
+    )
+    app = create_app(repo)
+    client = TestClient(app)
+    client.cookies.set("agentic_console_session", repo.create_session(user.id))
+
+    response = client.get(f"/api/runs/{run.id}/logs")
+
+    assert response.status_code == 200
+    assert response.json() == {"logs": [], "groups": []}
+
+
+def test_db_work_item_sync_does_not_infer_tool_target_from_legacy_fields(tmp_path):
+    repo = ConsoleRepository(tmp_path / "console.db")
+    repo.init_schema()
+    user = repo.create_user(
+        email="strict-sync@example.test",
+        username="strictsync",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Strict sync",
+        request_text="Build",
+        mode="simple_prototype",
+        complexity="large",
+    )
+    run_dir = tmp_path / "run-strict-sync"
+    pm_dir = run_dir / "upstream-planning" / "project-management"
+    pm_dir.mkdir(parents=True)
+    (pm_dir / "candidate-feature-queue.json").write_text(
+        json.dumps([{"id": "US-rooms", "title": "Rooms", "sprint_id": "sprint-01"}]),
+        encoding="utf-8",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="run-strict-sync",
+        run_dir=run_dir,
+        status="running",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+    record_tool_call_event(
+        run_dir,
+        run_id="run-strict-sync",
+        agent_id="team-lead-agent",
+        tool_name="run_qa",
+        tool_call_id="legacy-target-only",
+        status="qa_passed",
+        work_item_id="",
+        output_summary={
+            "target": "US-rooms",
+            "feature_id": "US-rooms",
+            "summary": "Legacy target-only event must not move the Rooms card.",
+        },
+    )
+
+    repo.sync_run_trace_from_run_dir(run.id, run_dir)
+    repo.sync_work_items_from_run_dir(run.id, run_dir)
+
+    rooms = next(item for item in repo.list_work_items(run.id) if item.work_item_id == "US-rooms")
+    assert rooms.status == "todo"
+    assert repo.list_activity_events(run.id, work_item_id="US-rooms") == []
+
+
 def test_create_project_can_use_gemini_for_agent_executor(tmp_path, monkeypatch):
     repo = ConsoleRepository(tmp_path / "console.db")
     app = create_app(repo)

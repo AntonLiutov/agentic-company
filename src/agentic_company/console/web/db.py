@@ -1836,8 +1836,10 @@ def _work_item_id_for_tool_event(event: ToolCallEvent) -> str:
     for source in (event.input_summary, event.output_summary):
         if not isinstance(source, dict):
             continue
-        for key in ("work_item_id", "target_work_item_id", "feature_id", "target"):
-            value = _canonical_work_item_id(str(source.get(key) or ""))
+        dashboard_update = source.get("dashboard_update")
+        dashboard = dashboard_update if isinstance(dashboard_update, dict) else {}
+        for key in ("work_item_id", "target_work_item_id"):
+            value = _canonical_work_item_id(str(source.get(key) or dashboard.get(key) or ""))
             if value:
                 return value
     return ""

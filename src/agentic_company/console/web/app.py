@@ -56,6 +56,7 @@ from agentic_company.console.web.product import (
     canonical_task_detail_for_run,
     canonical_task_report_groups_for_run,
     canonical_work_plan_groups_for_run,
+    delivery_overview_from_work_items,
     format_request_text_with_llm,
     html_report_document,
     project_type_label,
@@ -704,13 +705,25 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         completed = _canonical_run_completed(status_value, run_events)
         if not status_value:
             status_value = "running" if running else run.status
-        overview = canonical_delivery_overview_for_run(
-            run_id=str(run.id),
-            run_events=run_events,
-            tool_events=tool_events,
-            artifacts=canonical_artifacts_for_run(run_dir, artifact_records)[0],
-            status=status_value,
-            published_url=run.generated_app_url or _published_url_from_run_dir(run_dir),
+        work_items = repo.list_work_items(run.id)
+        business_artifacts = canonical_artifacts_for_run(run_dir, artifact_records)[0]
+        overview = (
+            delivery_overview_from_work_items(
+                run_id=str(run.id),
+                work_items=work_items,
+                artifacts=business_artifacts,
+                status=status_value,
+                published_url=run.generated_app_url or _published_url_from_run_dir(run_dir),
+            )
+            if work_items
+            else canonical_delivery_overview_for_run(
+                run_id=str(run.id),
+                run_events=run_events,
+                tool_events=tool_events,
+                artifacts=business_artifacts,
+                status=status_value,
+                published_url=run.generated_app_url or _published_url_from_run_dir(run_dir),
+            )
         )
         repo.update_run_status(run.id, status_value)
         return JSONResponse(
@@ -737,11 +750,12 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         repo = get_repo(request)
         repo.sync_run_trace_from_run_dir(run.id, run_dir)
         repo.sync_work_items_from_run_dir(run.id, run_dir)
+        work_items = repo.list_work_items(run.id)
         activity_events = repo.list_activity_events(
             run.id,
             work_item_id=task_id,
         )
-        if activity_events:
+        if work_items:
             return JSONResponse(
                 {
                     "logs": rendered_log_entries_from_db_events(activity_events),
@@ -971,15 +985,27 @@ def render_workspace(
         canonical_status = _canonical_status_from_records_and_trace(artifact_records, tool_events)
         run_running = _canonical_run_running(run, run_events, tool_events, canonical_status)
         run_completed = _canonical_run_completed(canonical_status, run_events)
-        overview = canonical_delivery_overview_for_run(
-            run_id=str(run.id),
-            run_events=run_events,
-            tool_events=tool_events,
-            artifacts=business_artifacts,
-            status=canonical_status or ("running" if run_running else run.status),
-            published_url=project.generated_app_url
-            or run.generated_app_url
-            or _published_url_from_run_dir(run_dir),
+        overview = (
+            delivery_overview_from_work_items(
+                run_id=str(run.id),
+                work_items=work_items,
+                artifacts=business_artifacts,
+                status=canonical_status or ("running" if run_running else run.status),
+                published_url=project.generated_app_url
+                or run.generated_app_url
+                or _published_url_from_run_dir(run_dir),
+            )
+            if work_items
+            else canonical_delivery_overview_for_run(
+                run_id=str(run.id),
+                run_events=run_events,
+                tool_events=tool_events,
+                artifacts=business_artifacts,
+                status=canonical_status or ("running" if run_running else run.status),
+                published_url=project.generated_app_url
+                or run.generated_app_url
+                or _published_url_from_run_dir(run_dir),
+            )
         )
         context.update(
             {
@@ -1020,12 +1046,12 @@ def render_workspace(
                 "technical_artifacts": [],
                 "logs": (
                     rendered_log_entries_from_db_events(activity_events)
-                    if activity_events
+                    if work_items
                     else canonical_rendered_log_entries_for_run(tool_events, run_events)
                 ),
                 "activity_groups": (
                     activity_groups_from_db_events(activity_events)
-                    if activity_events
+                    if work_items
                     else canonical_activity_groups_for_run(
                         tool_events, run_events=run_events
                     )
