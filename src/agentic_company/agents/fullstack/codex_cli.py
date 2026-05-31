@@ -55,7 +55,7 @@ class CodexCliRunner:
 
     def run(self, run_dir: Path) -> AgentRunResult:
         request = load_execution_request(run_dir)
-        event_log = run_dir / "events.jsonl"
+        event_log = run_dir
         target_dir = Path(request.target_project_dir)
         active_feature_id = _active_feature_id(request)
         execution_id = _execution_id(request, active_feature_id)
@@ -128,6 +128,10 @@ class CodexCliRunner:
                 log_path,
                 raw_events_path,
                 codex_execution_id=codex_execution_id,
+                run_dir=run_dir,
+                run_id=request.run_id,
+                agent_id=request.agent_id,
+                work_item_id=active_feature_id,
             )
         except FileNotFoundError as exc:
             LOGGER.exception("Codex CLI missing run_id=%s", request.run_id)
@@ -253,6 +257,10 @@ class CodexCliRunner:
         raw_events_path: Path,
         *,
         codex_execution_id: str,
+        run_dir: Path,
+        run_id: int | str,
+        agent_id: str,
+        work_item_id: str | None,
     ) -> subprocess.CompletedProcess[str]:
         if self.command_executor:
             return self.command_executor(
@@ -266,6 +274,10 @@ class CodexCliRunner:
             log_path,
             raw_events_path,
             codex_execution_id=codex_execution_id,
+            trace_run_dir=run_dir,
+            trace_run_id=run_id,
+            trace_agent_id=agent_id,
+            trace_work_item_id=work_item_id,
         )
 
 
@@ -351,7 +363,13 @@ Workspace ownership:
   creating duplicate run-level reports.
 
 Credential handling:
-- If `{request.target_project_dir}\\.env` already exists, preserve it.
+- Treat platform/provider keys as agent runtime secrets. They are available to
+  tools through the process environment; they must not be copied into the
+  generated application folder.
+- If `{request.target_project_dir}\\.env` is needed, it may contain only
+  app-owned runtime variables from `.env.example` with empty placeholders or
+  safe defaults. Never store OpenAI, Codex, Gemini, Azure, platform, or user
+  account secrets there.
 - Do not print secret values in generated files, logs, summaries, or comments.
 - Keep `.env.example` limited to empty placeholders or safe defaults.
 - Use ASCII in generated source and documentation unless non-ASCII is explicitly required.
@@ -410,6 +428,20 @@ Cloud/runtime readiness:
   mismatch, repair the generated app accordingly. Examples include persistence support,
   startup initialization, runtime config, health endpoint behavior, container definition,
   and application-owned environment assumptions.
+
+UI delivery honesty:
+- For UI/web features, every visible primary button, menu item, tab, form, and
+  modal control must either work for the current feature scope or be hidden until
+  it is implemented.
+- Show admin/moderation controls only to roles that are allowed to use them by
+  the active acceptance criteria.
+- Do not use demo/static chat data, fake notifications, placeholder files, or
+  future-only controls in a way that looks like delivered functionality.
+- If the acceptance criteria require a visible UI flow, such as private room
+  invitations or joining by invitation, implement the flow in the UI instead of
+  proving it only through API calls.
+- Preserve responsive desktop and mobile usability; avoid overlapping text,
+  clipped controls, and layout states that block the primary chat workflow.
 
 Request context:
 {request_context}

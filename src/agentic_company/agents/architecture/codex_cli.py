@@ -97,7 +97,7 @@ class ArchitectCodexRunner:
             encoding="utf-8",
         )
         write_event(
-            run_dir / "events.jsonl",
+            run_dir,
             str(request["run_id"]),
             ARCHITECT_AGENT_ID,
             "architecture_codex_started",
@@ -110,6 +110,10 @@ class ArchitectCodexRunner:
                 log_path,
                 raw_events_path,
                 codex_execution_id=codex_execution_id,
+                run_dir=run_dir,
+                run_id=str(request["run_id"]),
+                agent_id=ARCHITECT_AGENT_ID,
+                work_item_id="PLAN-02",
             )
         except FileNotFoundError:
             LOGGER.exception("Architect Codex CLI missing run_id=%s", request["run_id"])
@@ -149,7 +153,7 @@ class ArchitectCodexRunner:
             *structured_artifacts,
         ]
         write_event(
-            run_dir / "events.jsonl",
+            run_dir,
             str(request["run_id"]),
             ARCHITECT_AGENT_ID,
             "architecture_codex_completed",
@@ -183,6 +187,10 @@ class ArchitectCodexRunner:
         raw_events_path: Path,
         *,
         codex_execution_id: str,
+        run_dir: Path,
+        run_id: int | str,
+        agent_id: str,
+        work_item_id: str | None,
     ) -> subprocess.CompletedProcess[str]:
         if self.command_executor:
             return self.command_executor(
@@ -199,6 +207,10 @@ class ArchitectCodexRunner:
             log_path,
             raw_events_path,
             codex_execution_id=codex_execution_id,
+            trace_run_dir=run_dir,
+            trace_run_id=run_id,
+            trace_agent_id=agent_id,
+            trace_work_item_id=work_item_id,
         )
 
 

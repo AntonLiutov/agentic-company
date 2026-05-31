@@ -236,8 +236,7 @@ def _run_agent_executor(runner: FeatureQaRunner | None, agent_executor: Speciali
 
         delivery_state = state["delivery_state"]
         run_dir = Path(state["run_dir"])
-        event_log = run_dir / "events.jsonl"
-        event_log.parent.mkdir(parents=True, exist_ok=True)
+        event_log = run_dir
         event_data = {"feature_id": feature_id} if feature_id else {}
         write_event(event_log, delivery_state["run_id"], QUALITY_AGENT_ID, "qa_started", event_data)
         result = agent_executor.run(
@@ -265,7 +264,7 @@ def _apply_quality_result(state: QualityAgentGraphState) -> QualityAgentGraphSta
 
     delivery_state = state["delivery_state"]
     status = state.get("status") or _normalize_qa_status(result.status)
-    event_log = Path(state["run_dir"]) / "events.jsonl"
+    event_log = Path(state["run_dir"])
     artifact = (
         _primary_report_artifact(str(feature_id), result.output_artifacts)
         if feature_id

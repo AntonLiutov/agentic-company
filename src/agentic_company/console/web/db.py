@@ -244,6 +244,14 @@ class ConsoleRepository:
                     created_at TEXT NOT NULL,
                     UNIQUE(run_id, event_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS runtime_sync_state (
+                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                    sync_kind TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (run_id, sync_kind)
+                );
                 """
             )
             self._ensure_artifact_metadata_columns(conn)
@@ -625,49 +633,57 @@ class ConsoleRepository:
 
     def upsert_artifact_record(self, run_id: int, record: ArtifactRecord) -> None:
         with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO artifact_metadata (
-                    run_id, artifact_id, path, project_id, work_item_id, label, agent,
-                    owner_agent, artifact_type, visibility, storage_uri, source_tool,
-                    source_model, external_refs, metadata, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(run_id, path) DO UPDATE SET
-                    artifact_id = excluded.artifact_id,
-                    project_id = excluded.project_id,
-                    work_item_id = excluded.work_item_id,
-                    label = excluded.label,
-                    agent = excluded.agent,
-                    owner_agent = excluded.owner_agent,
-                    artifact_type = excluded.artifact_type,
-                    visibility = excluded.visibility,
-                    storage_uri = excluded.storage_uri,
-                    source_tool = excluded.source_tool,
-                    source_model = excluded.source_model,
-                    external_refs = excluded.external_refs,
-                    metadata = excluded.metadata,
-                    created_at = excluded.created_at
-                """,
-                (
-                    run_id,
-                    record.artifact_id,
-                    record.relative_path,
-                    record.project_id,
-                    record.work_item_id,
-                    record.label,
-                    record.owner_agent,
-                    record.owner_agent,
-                    record.artifact_type,
-                    record.visibility,
-                    record.storage_uri,
-                    record.source_tool,
-                    record.source_model,
-                    json.dumps(record.external_refs, sort_keys=True),
-                    json.dumps(record.metadata, sort_keys=True),
-                    record.created_at,
-                ),
+            self._upsert_artifact_record_conn(conn, run_id, record)
+
+    def _upsert_artifact_record_conn(
+        self,
+        conn: sqlite3.Connection,
+        run_id: int,
+        record: ArtifactRecord,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO artifact_metadata (
+                run_id, artifact_id, path, project_id, work_item_id, label, agent,
+                owner_agent, artifact_type, visibility, storage_uri, source_tool,
+                source_model, external_refs, metadata, created_at
             )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id, path) DO UPDATE SET
+                artifact_id = excluded.artifact_id,
+                project_id = excluded.project_id,
+                work_item_id = excluded.work_item_id,
+                label = excluded.label,
+                agent = excluded.agent,
+                owner_agent = excluded.owner_agent,
+                artifact_type = excluded.artifact_type,
+                visibility = excluded.visibility,
+                storage_uri = excluded.storage_uri,
+                source_tool = excluded.source_tool,
+                source_model = excluded.source_model,
+                external_refs = excluded.external_refs,
+                metadata = excluded.metadata,
+                created_at = excluded.created_at
+            """,
+            (
+                run_id,
+                record.artifact_id,
+                record.relative_path,
+                record.project_id,
+                record.work_item_id,
+                record.label,
+                record.owner_agent,
+                record.owner_agent,
+                record.artifact_type,
+                record.visibility,
+                record.storage_uri,
+                record.source_tool,
+                record.source_model,
+                json.dumps(record.external_refs, sort_keys=True),
+                json.dumps(record.metadata, sort_keys=True),
+                record.created_at,
+            ),
+        )
 
     def list_artifact_records(
         self,
@@ -701,47 +717,61 @@ class ConsoleRepository:
     def sync_artifact_registry_from_run_dir(self, run_id: int, run_dir: Path) -> None:
         from agentic_company.platform.artifact_registry import load_artifact_registry
 
-        for record in load_artifact_registry(run_dir):
-            self.upsert_artifact_record(run_id, record)
+        registry_path = run_dir / "delivery" / "artifact-registry.json"
+        signature = _file_signature([registry_path])
+        with self.connect() as conn:
+            if self._sync_signature_matches(conn, run_id, "artifact_registry", signature):
+                return
+            for record in load_artifact_registry(run_dir):
+                self._upsert_artifact_record_conn(conn, run_id, record)
+            self._save_sync_signature(conn, run_id, "artifact_registry", signature)
 
     def upsert_run_event(self, run_id: int, event: RunEvent) -> None:
         with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO run_events (
-                    run_id, runtime_run_id, event_id, project_id, work_item_id, agent_id,
-                    event_type, status, message, artifact_ids, external_refs, data, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(run_id, event_id) DO UPDATE SET
-                    runtime_run_id = excluded.runtime_run_id,
-                    project_id = excluded.project_id,
-                    work_item_id = excluded.work_item_id,
-                    agent_id = excluded.agent_id,
-                    event_type = excluded.event_type,
-                    status = excluded.status,
-                    message = excluded.message,
-                    artifact_ids = excluded.artifact_ids,
-                    external_refs = excluded.external_refs,
-                    data = excluded.data,
-                    created_at = excluded.created_at
-                """,
-                (
-                    run_id,
-                    str(event.run_id),
-                    event.event_id,
-                    event.project_id,
-                    event.work_item_id,
-                    event.agent_id,
-                    event.event_type,
-                    event.status,
-                    event.message,
-                    json.dumps(event.artifact_ids, sort_keys=True),
-                    json.dumps(event.external_refs, sort_keys=True),
-                    json.dumps(event.data, sort_keys=True),
-                    event.created_at,
-                ),
+            self._upsert_run_event_conn(conn, run_id, event)
+
+    def _upsert_run_event_conn(
+        self,
+        conn: sqlite3.Connection,
+        run_id: int,
+        event: RunEvent,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO run_events (
+                run_id, runtime_run_id, event_id, project_id, work_item_id, agent_id,
+                event_type, status, message, artifact_ids, external_refs, data, created_at
             )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id, event_id) DO UPDATE SET
+                runtime_run_id = excluded.runtime_run_id,
+                project_id = excluded.project_id,
+                work_item_id = excluded.work_item_id,
+                agent_id = excluded.agent_id,
+                event_type = excluded.event_type,
+                status = excluded.status,
+                message = excluded.message,
+                artifact_ids = excluded.artifact_ids,
+                external_refs = excluded.external_refs,
+                data = excluded.data,
+                created_at = excluded.created_at
+            """,
+            (
+                run_id,
+                str(event.run_id),
+                event.event_id,
+                event.project_id,
+                event.work_item_id,
+                event.agent_id,
+                event.event_type,
+                event.status,
+                event.message,
+                json.dumps(event.artifact_ids, sort_keys=True),
+                json.dumps(event.external_refs, sort_keys=True),
+                json.dumps(event.data, sort_keys=True),
+                event.created_at,
+            ),
+        )
 
     def list_run_events(
         self,
@@ -765,45 +795,53 @@ class ConsoleRepository:
 
     def upsert_tool_call_event(self, run_id: int, event: ToolCallEvent) -> None:
         with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO tool_call_events (
-                    run_id, runtime_run_id, event_id, work_item_id, agent_id, tool_name,
-                    tool_call_id, input_summary, output_summary, artifact_ids, status,
-                    failure_mode, duration_ms, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(run_id, event_id) DO UPDATE SET
-                    runtime_run_id = excluded.runtime_run_id,
-                    work_item_id = excluded.work_item_id,
-                    agent_id = excluded.agent_id,
-                    tool_name = excluded.tool_name,
-                    tool_call_id = excluded.tool_call_id,
-                    input_summary = excluded.input_summary,
-                    output_summary = excluded.output_summary,
-                    artifact_ids = excluded.artifact_ids,
-                    status = excluded.status,
-                    failure_mode = excluded.failure_mode,
-                    duration_ms = excluded.duration_ms,
-                    created_at = excluded.created_at
-                """,
-                (
-                    run_id,
-                    str(event.run_id),
-                    event.event_id,
-                    event.work_item_id,
-                    event.agent_id,
-                    event.tool_name,
-                    event.tool_call_id,
-                    json.dumps(event.input_summary, sort_keys=True),
-                    json.dumps(event.output_summary, sort_keys=True),
-                    json.dumps(event.artifact_ids, sort_keys=True),
-                    event.status,
-                    event.failure_mode,
-                    event.duration_ms,
-                    event.created_at,
-                ),
+            self._upsert_tool_call_event_conn(conn, run_id, event)
+
+    def _upsert_tool_call_event_conn(
+        self,
+        conn: sqlite3.Connection,
+        run_id: int,
+        event: ToolCallEvent,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO tool_call_events (
+                run_id, runtime_run_id, event_id, work_item_id, agent_id, tool_name,
+                tool_call_id, input_summary, output_summary, artifact_ids, status,
+                failure_mode, duration_ms, created_at
             )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id, event_id) DO UPDATE SET
+                runtime_run_id = excluded.runtime_run_id,
+                work_item_id = excluded.work_item_id,
+                agent_id = excluded.agent_id,
+                tool_name = excluded.tool_name,
+                tool_call_id = excluded.tool_call_id,
+                input_summary = excluded.input_summary,
+                output_summary = excluded.output_summary,
+                artifact_ids = excluded.artifact_ids,
+                status = excluded.status,
+                failure_mode = excluded.failure_mode,
+                duration_ms = excluded.duration_ms,
+                created_at = excluded.created_at
+            """,
+            (
+                run_id,
+                str(event.run_id),
+                event.event_id,
+                event.work_item_id,
+                event.agent_id,
+                event.tool_name,
+                event.tool_call_id,
+                json.dumps(event.input_summary, sort_keys=True),
+                json.dumps(event.output_summary, sort_keys=True),
+                json.dumps(event.artifact_ids, sort_keys=True),
+                event.status,
+                event.failure_mode,
+                event.duration_ms,
+                event.created_at,
+            ),
+        )
 
     def list_tool_call_events(
         self,
@@ -831,45 +869,53 @@ class ConsoleRepository:
 
     def upsert_model_call_event(self, run_id: int, event: ModelCallEvent) -> None:
         with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO model_call_events (
-                    run_id, runtime_run_id, event_id, agent_id, provider, model, purpose,
-                    prompt_ref, input_tokens, output_tokens, estimated_cost_usd, status,
-                    duration_ms, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(run_id, event_id) DO UPDATE SET
-                    runtime_run_id = excluded.runtime_run_id,
-                    agent_id = excluded.agent_id,
-                    provider = excluded.provider,
-                    model = excluded.model,
-                    purpose = excluded.purpose,
-                    prompt_ref = excluded.prompt_ref,
-                    input_tokens = excluded.input_tokens,
-                    output_tokens = excluded.output_tokens,
-                    estimated_cost_usd = excluded.estimated_cost_usd,
-                    status = excluded.status,
-                    duration_ms = excluded.duration_ms,
-                    created_at = excluded.created_at
-                """,
-                (
-                    run_id,
-                    str(event.run_id),
-                    event.event_id,
-                    event.agent_id,
-                    event.provider,
-                    event.model,
-                    event.purpose,
-                    event.prompt_ref,
-                    event.input_tokens,
-                    event.output_tokens,
-                    event.estimated_cost_usd,
-                    event.status,
-                    event.duration_ms,
-                    event.created_at,
-                ),
+            self._upsert_model_call_event_conn(conn, run_id, event)
+
+    def _upsert_model_call_event_conn(
+        self,
+        conn: sqlite3.Connection,
+        run_id: int,
+        event: ModelCallEvent,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO model_call_events (
+                run_id, runtime_run_id, event_id, agent_id, provider, model, purpose,
+                prompt_ref, input_tokens, output_tokens, estimated_cost_usd, status,
+                duration_ms, created_at
             )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id, event_id) DO UPDATE SET
+                runtime_run_id = excluded.runtime_run_id,
+                agent_id = excluded.agent_id,
+                provider = excluded.provider,
+                model = excluded.model,
+                purpose = excluded.purpose,
+                prompt_ref = excluded.prompt_ref,
+                input_tokens = excluded.input_tokens,
+                output_tokens = excluded.output_tokens,
+                estimated_cost_usd = excluded.estimated_cost_usd,
+                status = excluded.status,
+                duration_ms = excluded.duration_ms,
+                created_at = excluded.created_at
+            """,
+            (
+                run_id,
+                str(event.run_id),
+                event.event_id,
+                event.agent_id,
+                event.provider,
+                event.model,
+                event.purpose,
+                event.prompt_ref,
+                event.input_tokens,
+                event.output_tokens,
+                event.estimated_cost_usd,
+                event.status,
+                event.duration_ms,
+                event.created_at,
+            ),
+        )
 
     def list_model_call_events(
         self,
@@ -892,12 +938,57 @@ class ConsoleRepository:
         return [_model_call_event(row) for row in rows]
 
     def sync_run_trace_from_run_dir(self, run_id: int, run_dir: Path) -> None:
-        for event in load_run_events(run_dir):
-            self.upsert_run_event(run_id, event)
-        for event in load_tool_call_events(run_dir):
-            self.upsert_tool_call_event(run_id, event)
-        for event in load_model_call_events(run_dir):
-            self.upsert_model_call_event(run_id, event)
+        signature = _file_signature(
+            [
+                run_dir / "delivery" / "run-events.jsonl",
+                run_dir / "delivery" / "tool-call-events.jsonl",
+                run_dir / "delivery" / "model-call-events.jsonl",
+            ]
+        )
+        with self.connect() as conn:
+            if self._sync_signature_matches(conn, run_id, "run_trace", signature):
+                return
+            for event in load_run_events(run_dir):
+                self._upsert_run_event_conn(conn, run_id, event)
+            for event in load_tool_call_events(run_dir):
+                self._upsert_tool_call_event_conn(conn, run_id, event)
+            for event in load_model_call_events(run_dir):
+                self._upsert_model_call_event_conn(conn, run_id, event)
+            self._save_sync_signature(conn, run_id, "run_trace", signature)
+
+    def _sync_signature_matches(
+        self,
+        conn: sqlite3.Connection,
+        run_id: int,
+        sync_kind: str,
+        signature: str,
+    ) -> bool:
+        row = conn.execute(
+            """
+            SELECT signature FROM runtime_sync_state
+            WHERE run_id = ? AND sync_kind = ?
+            """,
+            (run_id, sync_kind),
+        ).fetchone()
+        return bool(row and str(row["signature"]) == signature)
+
+    def _save_sync_signature(
+        self,
+        conn: sqlite3.Connection,
+        run_id: int,
+        sync_kind: str,
+        signature: str,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO runtime_sync_state (run_id, sync_kind, signature, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(run_id, sync_kind) DO UPDATE SET
+                signature = excluded.signature,
+                updated_at = excluded.updated_at
+            """,
+            (run_id, sync_kind, signature, utc_now()),
+        )
 
     def save_provider_secret(self, user_id: int, provider: str, secret: str) -> ProviderCredential:
         encrypted = encrypt_secret(secret)
@@ -1008,6 +1099,24 @@ class ConsoleRepository:
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _file_signature(paths: list[Path]) -> str:
+    entries: list[dict[str, object]] = []
+    for path in paths:
+        try:
+            stat = path.stat()
+        except OSError:
+            entries.append({"path": path.as_posix(), "missing": True})
+            continue
+        entries.append(
+            {
+                "path": path.as_posix(),
+                "mtime_ns": stat.st_mtime_ns,
+                "size": stat.st_size,
+            }
+        )
+    return json.dumps(entries, sort_keys=True)
 
 
 def _user(row: sqlite3.Row) -> User:

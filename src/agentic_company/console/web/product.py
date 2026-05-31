@@ -10,13 +10,17 @@ import re
 import shutil
 import socket
 import urllib.request
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from agentic_company.console.live_logs import friendly_log_entries
 from agentic_company.console.support import (
+    DeliveryOverview,
+    DeploymentTarget,
+    FeatureProgress,
     artifact_groups_for_run,
     console_status_label,
     delivery_overview_for_run,
@@ -150,8 +154,10 @@ BOARD_COLUMNS = [
 ]
 
 TECHNICAL_HINTS = (
-    ".delivery-state.json",
-    "events.jsonl",
+    "run-state.json",
+    "run-events.jsonl",
+    "tool-call-events.jsonl",
+    "model-call-events.jsonl",
     "execution.log",
     ".log",
     "prompt.md",
@@ -160,6 +166,47 @@ TECHNICAL_HINTS = (
     "decisions/",
     "codex/",
 )
+USER_FACING_ARTIFACT_TYPES = {
+    "requirements_brief",
+    "architecture_report",
+    "delivery_plan",
+    "execution_summary",
+    "qa_report",
+    "repair_request",
+    "deployment_summary",
+    "release_report",
+    "screenshot_evidence",
+}
+INTERNAL_ARTIFACT_FILENAMES = {
+    ".env",
+    ".env.example",
+    "run-events.jsonl",
+    "tool-call-events.jsonl",
+    "model-call-events.jsonl",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "prompt.md",
+    "pyproject.toml",
+    "request.json",
+    "uv.lock",
+}
+INTERNAL_ARTIFACT_PATH_PARTS = {
+    ".deno-cache",
+    ".npm-cache",
+    ".uv-cache",
+    ".venv",
+    "__pycache__",
+    "codex",
+    "decisions",
+    "node_modules",
+    "playwright-results",
+    "test-results",
+}
+PLANNING_TOOL_ITEMS = {
+    "run_business_analyst": ("PLAN-01", "Requirements brief", "Business Analyst", 1),
+    "run_architect": ("PLAN-02", "Solution overview", "Solution Architect", 2),
+    "run_project_manager": ("PLAN-03", "Delivery plan", "Delivery Planner", 3),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -341,6 +388,483 @@ def artifacts_for_run(run_dir: Path) -> tuple[list[ArtifactView], list[ArtifactV
     return _legacy_artifacts_for_run(run_dir)
 
 
+def canonical_artifacts_for_run(
+    run_dir: Path,
+    records: Sequence[Any],
+) -> tuple[list[ArtifactView], list[ArtifactView]]:
+    """Build artifact views from Artifact Registry records only."""
+
+    business: list[ArtifactView] = []
+    technical: list[ArtifactView] = []
+    task_titles: dict[str, str] = {}
+    task_sprints: dict[str, str] = {}
+    for record in records:
+        if not _artifact_record_file_exists(run_dir, record):
+            continue
+        task_id = str(record.work_item_id or _task_id_for_artifact(record.relative_path))
+        task_titles.setdefault(task_id, _title_for_artifact_task(task_id))
+        task_sprints.setdefault(task_id, _sprint_for_artifact_task(task_id, record))
+        if not is_user_facing_artifact_record(record):
+            technical.append(_artifact_view_from_record(record, task_titles, task_sprints))
+            continue
+        business.append(_artifact_view_from_record(record, task_titles, task_sprints))
+    return sorted(business, key=_artifact_sort_key), sorted(technical, key=_artifact_sort_key)
+
+
+def canonical_board_cards_for_run(
+    run_dir: Path,
+    tool_events: Sequence[Any],
+    artifacts: Sequence[ArtifactView],
+    run_events: Sequence[Any] = (),
+) -> dict[str, list[BoardCard]]:
+    """Project board cards from structured tool trace and artifact records."""
+
+    groups: dict[str, list[BoardCard]] = {key: [] for key, _ in BOARD_COLUMNS}
+    cards = _canonical_cards_from_trace(run_dir, tool_events, artifacts, run_events)
+    if not cards:
+        return groups
+    for card in cards:
+        groups.setdefault(card.column, []).append(card)
+    for column, column_cards in groups.items():
+        groups[column] = sorted(
+            column_cards,
+            key=lambda card: (card.sprint != "Planning", card.order, card.id),
+        )
+    return groups
+
+
+def canonical_board_groups_for_run(
+    run_dir: Path,
+    tool_events: Sequence[Any],
+    artifacts: Sequence[ArtifactView],
+    run_events: Sequence[Any] = (),
+) -> dict[str, list[BoardCard]]:
+    unsorted: dict[str, list[BoardCard]] = {}
+    for cards in canonical_board_cards_for_run(
+        run_dir, tool_events, artifacts, run_events
+    ).values():
+        for card in cards:
+            unsorted.setdefault(sprint_label(card.sprint or "Planning"), []).append(card)
+    return {
+        sprint: sorted(cards, key=lambda card: (card.order, card.id))
+        for sprint, cards in sorted(unsorted.items(), key=lambda item: _sprint_sort_key(item[0]))
+    }
+
+
+def canonical_sprint_board_groups_for_run(
+    run_dir: Path,
+    tool_events: Sequence[Any],
+    artifacts: Sequence[ArtifactView],
+    run_events: Sequence[Any] = (),
+) -> list[dict[str, object]]:
+    groups: list[dict[str, object]] = []
+    for sprint, cards in canonical_board_groups_for_run(
+        run_dir, tool_events, artifacts, run_events
+    ).items():
+        columns: dict[str, list[BoardCard]] = {key: [] for key, _ in BOARD_COLUMNS}
+        for card in cards:
+            columns.setdefault(card.column, []).append(card)
+        groups.append({"sprint": sprint, "count": len(cards), "columns": columns})
+    return groups
+
+
+def canonical_work_plan_groups_for_run(
+    run_dir: Path,
+    tool_events: Sequence[Any],
+    artifacts: Sequence[ArtifactView],
+    run_events: Sequence[Any] = (),
+) -> list[dict[str, object]]:
+    return [
+        {"name": sprint, "count": len(cards), "cards": cards}
+        for sprint, cards in canonical_board_groups_for_run(
+            run_dir, tool_events, artifacts, run_events
+        ).items()
+    ]
+
+
+def canonical_task_report_groups_for_run(
+    run_dir: Path,
+    tool_events: Sequence[Any],
+    artifacts: Sequence[ArtifactView],
+    run_events: Sequence[Any] = (),
+) -> list[dict[str, object]]:
+    return [
+        {
+            "sprint": sprint,
+            "tasks": [
+                {
+                    "card": card,
+                    "reports": _reports_for_card(card, artifacts),
+                    "count": len(_reports_for_card(card, artifacts)),
+                }
+                for card in cards
+            ],
+            "count": len(cards),
+        }
+        for sprint, cards in canonical_board_groups_for_run(
+            run_dir, tool_events, artifacts, run_events
+        ).items()
+    ]
+
+
+def canonical_activity_groups_for_run(
+    tool_events: Sequence[Any],
+    *,
+    task_id: str = "",
+    run_events: Sequence[Any] = (),
+) -> list[dict[str, object]]:
+    grouped: dict[str, list[str]] = {}
+    seen: set[tuple[str, str]] = set()
+    task_filter = _canonical_task_id(task_id.strip()) if task_id else ""
+    payloads = [
+        *[_run_event_as_work_event(event) or _event_payload(event) for event in run_events],
+        *[_event_payload(event) for event in tool_events],
+    ]
+    for payload in _sorted_activity_payloads(payloads):
+        if _is_developer_only_run_event(payload):
+            continue
+        work_item_id = str(payload.get("work_item_id") or "")
+        if task_filter and _canonical_work_item_id(work_item_id, payload) != task_filter:
+            continue
+        owner = business_agent_label(str(payload.get("agent_id") or "Delivery"))
+        summary = _dashboard_comment_for_event(payload)
+        if not summary:
+            continue
+        dedupe_key = (owner, _activity_dedupe_text(summary))
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        timestamp = _browser_timestamp(str(payload.get("created_at") or ""))
+        line = f"**{timestamp} - {owner}**\n\n{summary}" if timestamp else summary
+        grouped.setdefault(owner, []).append(render_markdown(line))
+    return _ordered_activity_groups(grouped)
+
+
+def canonical_rendered_log_entries_for_run(
+    tool_events: Sequence[Any],
+    run_events: Sequence[Any] = (),
+    *,
+    task_id: str = "",
+) -> list[str]:
+    entries: list[str] = []
+    seen: set[str] = set()
+    task_filter = _canonical_task_id(task_id.strip()) if task_id else ""
+    payloads = [
+        *[_run_event_as_work_event(event) or _event_payload(event) for event in run_events],
+        *[_event_payload(event) for event in tool_events],
+    ]
+    for payload in _sorted_activity_payloads(payloads):
+        if _is_developer_only_run_event(payload):
+            continue
+        work_item_id = str(payload.get("work_item_id") or "")
+        if task_filter and _canonical_work_item_id(work_item_id, payload) != task_filter:
+            continue
+        comment = _dashboard_comment_for_event(payload)
+        if not comment:
+            continue
+        dedupe_key = _activity_dedupe_text(comment)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        entries.append(render_markdown(comment))
+    return entries[-180:]
+
+
+def canonical_task_detail_for_run(
+    run_dir: Path,
+    task_id: str,
+    tool_events: Sequence[Any],
+    artifacts: Sequence[ArtifactView],
+    run_events: Sequence[Any] = (),
+) -> TaskDetail | None:
+    task_id = _canonical_task_id(task_id.strip())
+    cards = [
+        card
+        for group in canonical_board_groups_for_run(
+            run_dir, tool_events, artifacts, run_events
+        ).values()
+        for card in group
+    ]
+    card = next((candidate for candidate in cards if candidate.id == task_id), None)
+    if card is None:
+        return None
+    reports = _reports_for_card(card, list(artifacts))
+    return TaskDetail(
+        card=card,
+        reports=reports,
+        logs=[],
+        activity_groups=canonical_activity_groups_for_run(
+            tool_events, task_id=task_id, run_events=run_events
+        ),
+    )
+
+
+def canonical_delivery_overview_for_run(
+    *,
+    run_id: str,
+    run_events: Sequence[Any],
+    tool_events: Sequence[Any],
+    artifacts: Sequence[ArtifactView],
+    status: str,
+    published_url: str = "",
+) -> DeliveryOverview:
+    """Build Overview metrics from structured trace and registry records only."""
+
+    board_groups = canonical_board_cards_for_run(Path(), tool_events, artifacts, run_events)
+    cards = [card for cards in board_groups.values() for card in cards]
+    features = [
+        FeatureProgress(
+            feature_id=card.id,
+            title=card.title,
+            status=_feature_status_from_card(card),
+            delivery_order=card.order,
+            active=card.active,
+            repair_attempts=0,
+            owner=card.owner,
+            sprint_id=card.sprint,
+            lane=card.column,
+            assigned_agent=card.owner,
+            artifact_count=card.artifact_count,
+        )
+        for card in sorted(cards, key=lambda card: (card.sprint != "Planning", card.order, card.id))
+    ]
+    latest_tool = _latest_payload(tool_events)
+    qa_status = _canonical_quality_status(tool_events, run_events)
+    deployment_status = _latest_tool_status(
+        tool_events,
+        {"run_deployment"},
+        success="deployed",
+        default="pending",
+    )
+    handoff_status = _latest_tool_status(
+        tool_events,
+        {"run_handoff"},
+        success="ready",
+        default="pending",
+    )
+    stage = _canonical_stage_from_trace(run_events, latest_tool, status)
+    deployment_targets = (
+        [DeploymentTarget(label="Open App", url=published_url, service="generated-app")]
+        if published_url
+        else []
+    )
+    return DeliveryOverview(
+        run_id=run_id,
+        stage=stage,
+        status=status or "running",
+        active_feature_id=str(latest_tool.get("work_item_id") or "") or None,
+        features=features,
+        qa_status=qa_status,
+        deployment_status=deployment_status,
+        handoff_status=handoff_status,
+        topology_summary=_canonical_topology_summary(tool_events, artifacts),
+        deployment_targets=deployment_targets,
+        blockers=_canonical_blockers(tool_events),
+        team_lead_steps=[],
+        current_work=None,
+    )
+
+
+def canonical_run_timing_for_trace(
+    run_events: Sequence[Any],
+    tool_events: Sequence[Any],
+    *,
+    completed: bool,
+) -> dict[str, str]:
+    payloads = [
+        *(_event_payload(event) for event in run_events),
+        *(_event_payload(event) for event in tool_events),
+    ]
+    timestamps = [
+        str(payload.get("created_at") or "")
+        for payload in payloads
+        if str(payload.get("created_at") or "")
+    ]
+    if not timestamps:
+        return {}
+    start = min(timestamps)
+    terminal = [
+        str(payload.get("created_at") or "")
+        for payload in payloads
+        if _trace_status_terminal(str(payload.get("status") or ""))
+        and str(payload.get("created_at") or "")
+    ]
+    end = max(terminal or timestamps) if completed else ""
+    return _timing_payload(start, end)
+
+
+def _feature_status_from_card(card: BoardCard) -> str:
+    if card.column == "done":
+        return "done"
+    if card.column == "blocked":
+        return "blocked"
+    if card.column == "review":
+        return "qa_passed" if "pass" in card.status.lower() else "review"
+    if card.column == "in_progress":
+        return "in_progress"
+    return "pending"
+
+
+def _latest_payload(events: Sequence[Any]) -> dict[str, Any]:
+    payloads = [_event_payload(event) for event in events]
+    payloads = [payload for payload in payloads if payload]
+    if not payloads:
+        return {}
+    return sorted(payloads, key=lambda payload: str(payload.get("created_at") or ""))[-1]
+
+
+def _latest_tool_status(
+    tool_events: Sequence[Any],
+    tool_names: set[str],
+    *,
+    success: str,
+    default: str,
+) -> str:
+    events = [
+        _event_payload(event)
+        for event in tool_events
+        if str(_event_payload(event).get("tool_name") or "") in tool_names
+    ]
+    if not events:
+        return default
+    latest = sorted(events, key=lambda event: str(event.get("created_at") or ""))[-1]
+    status = str(latest.get("status") or "").lower()
+    failure = str(latest.get("failure_mode") or "").lower()
+    if failure or any(token in status for token in ("failed", "blocked", "human_approval")):
+        return "failed" if "human_approval" not in status else "human_approval_required"
+    if any(token in status for token in ("passed", "ready", "deployed", "completed", "done")):
+        return success
+    return status or default
+
+
+def _canonical_quality_status(
+    tool_events: Sequence[Any],
+    run_events: Sequence[Any],
+) -> str:
+    quality_events = [
+        _event_payload(event)
+        for event in tool_events
+        if str(_event_payload(event).get("tool_name") or "")
+        in {"run_qa", "run_post_deploy_qa"}
+    ]
+    if not quality_events:
+        return "pending"
+    latest_quality = sorted(quality_events, key=lambda event: str(event.get("created_at") or ""))[
+        -1
+    ]
+    latest_quality_time = str(latest_quality.get("created_at") or "")
+    latest_quality_item = _canonical_work_item_id(
+        str(latest_quality.get("work_item_id") or ""), latest_quality
+    )
+    status = str(latest_quality.get("status") or "").lower()
+    failure = str(latest_quality.get("failure_mode") or "").lower()
+    if failure or any(token in status for token in ("failed", "blocked", "human_approval")):
+        later_tool_events = [
+            _event_payload(event)
+            for event in tool_events
+            if str(_event_payload(event).get("created_at") or "") > latest_quality_time
+        ]
+        later_same_item = [
+            event
+            for event in later_tool_events
+            if _canonical_work_item_id(str(event.get("work_item_id") or ""), event)
+            == latest_quality_item
+        ]
+        if any(
+            str(event.get("tool_name") or "") in {"run_fullstack", "codex_exec"}
+            and any(
+                token in str(event.get("status") or "").lower()
+                for token in ("completed", "implemented", "succeeded")
+            )
+            for event in later_same_item
+        ):
+            later_qa_started = any(
+                str(_event_payload(event).get("created_at") or "") > latest_quality_time
+                and _canonical_task_id(
+                    str((_event_payload(event).get("data") or {}).get("feature_id") or "")
+                )
+                == latest_quality_item
+                and str(_event_payload(event).get("event_type") or "")
+                in {"qa_started", "qa_codex_started"}
+                for event in run_events
+                if isinstance(_event_payload(event).get("data"), dict)
+            )
+            return "review" if later_qa_started else "pending"
+        return "failed" if "human_approval" not in status else "human_approval_required"
+    if any(token in status for token in ("passed", "ready", "completed", "done")):
+        return "passed"
+    if any(token in status for token in ("running", "started", "review", "limited")):
+        return "review"
+    return status or "pending"
+
+
+def _canonical_stage_from_trace(
+    run_events: Sequence[Any],
+    latest_tool: dict[str, Any],
+    status: str,
+) -> str:
+    if status in {"complete", "completed"}:
+        return "release"
+    if status in {"blocked", "failed", "stopped"}:
+        return status
+    tool_name = str(latest_tool.get("tool_name") or "")
+    if tool_name == "run_handoff":
+        return "release"
+    if tool_name in {"run_deployment", "run_post_deploy_qa"}:
+        return "publishing"
+    if tool_name == "run_qa":
+        return "quality_review"
+    if tool_name == "run_fullstack":
+        return "build"
+    if tool_name in {"run_business_analyst", "run_architect", "run_project_manager"}:
+        return "planning"
+    latest_run = _latest_payload(run_events)
+    return str(latest_run.get("status") or "running") or "running"
+
+
+def _canonical_topology_summary(
+    tool_events: Sequence[Any],
+    artifacts: Sequence[ArtifactView],
+) -> str:
+    for event in reversed([_event_payload(event) for event in tool_events]):
+        if str(event.get("tool_name") or "") not in {"run_deployment", "run_handoff"}:
+            continue
+        comment = _dashboard_comment_for_event(event)
+        if comment:
+            return comment
+    if any(artifact.artifact_type == "deployment_summary" for artifact in artifacts):
+        return "The generated application has deployment evidence attached to this run."
+    if any(artifact.artifact_type == "release_report" for artifact in artifacts):
+        return "The release report is ready for review."
+    return ""
+
+
+def _canonical_blockers(tool_events: Sequence[Any]) -> list[str]:
+    latest_by_item: dict[str, dict[str, Any]] = {}
+    fallback_key = 0
+    for event in (_event_payload(event) for event in tool_events):
+        item_id = _canonical_work_item_id(str(event.get("work_item_id") or ""), event)
+        if not item_id:
+            fallback_key += 1
+            item_id = f"event-{fallback_key}"
+        current = latest_by_item.get(item_id)
+        if current is None or str(event.get("created_at") or "") >= str(
+            current.get("created_at") or ""
+        ):
+            latest_by_item[item_id] = event
+
+    blockers: list[str] = []
+    for event in latest_by_item.values():
+        status = str(event.get("status") or "").lower()
+        failure = str(event.get("failure_mode") or "").strip()
+        if not failure and not any(token in status for token in ("failed", "blocked")):
+            continue
+        summary = _dashboard_comment_for_event(event)
+        if summary and summary not in blockers:
+            blockers.append(summary)
+    return blockers[-5:]
+
+
 def _legacy_artifacts_for_run(run_dir: Path) -> tuple[list[ArtifactView], list[ArtifactView]]:
     business: list[ArtifactView] = []
     technical: list[ArtifactView] = []
@@ -381,14 +905,16 @@ def _registry_artifacts_for_run(run_dir: Path) -> tuple[list[ArtifactView], list
             continue
         if not _safe_artifact_path(run_dir, record.relative_path).exists():
             continue
+        if not is_user_facing_artifact_record(record):
+            continue
         task_id = record.work_item_id or _task_id_for_artifact(record.relative_path)
         view = ArtifactView(
             path=record.relative_path,
-            label=user_friendly_artifact_label(record.label, record.relative_path),
+            label=user_friendly_artifact_label_for_record(record),
             agent=record.owner_agent,
             business_agent=business_agent_label(record.owner_agent),
             kind=artifact_kind(record.relative_path),
-            technical=record.visibility not in USER_FACING_VISIBILITIES,
+            technical=False,
             phase=task_sprints.get(
                 task_id,
                 _artifact_phase(record.relative_path, record.owner_agent),
@@ -404,6 +930,74 @@ def _registry_artifacts_for_run(run_dir: Path) -> tuple[list[ArtifactView], list
         else:
             business.append(view)
     return sorted(business, key=_artifact_sort_key), sorted(technical, key=_artifact_sort_key)
+
+
+def _artifact_view_from_record(
+    record: Any,
+    task_titles: dict[str, str],
+    task_sprints: dict[str, str],
+) -> ArtifactView:
+    task_id = str(record.work_item_id or _task_id_for_artifact(record.relative_path))
+    return ArtifactView(
+        path=record.relative_path,
+        label=user_friendly_artifact_label_for_record(record),
+        agent=record.owner_agent,
+        business_agent=business_agent_label(record.owner_agent),
+        kind=artifact_kind(record.relative_path),
+        technical=not is_user_facing_artifact_record(record),
+        phase=task_sprints.get(task_id, _artifact_phase(record.relative_path, record.owner_agent)),
+        task_id=task_id,
+        task_title=task_titles.get(task_id, ""),
+        artifact_id=record.artifact_id,
+        visibility=record.visibility,
+        artifact_type=record.artifact_type,
+    )
+
+
+def _artifact_record_file_exists(run_dir: Path, record: Any) -> bool:
+    try:
+        return _safe_artifact_path(run_dir, record.relative_path).exists()
+    except ValueError:
+        return False
+
+
+def is_user_facing_artifact_record(record: Any) -> bool:
+    """Return whether an ArtifactRecord is safe and useful for product UI."""
+
+    normalized = str(record.relative_path).replace("\\", "/")
+    filename = Path(normalized).name
+    parts = set(Path(normalized).parts)
+    if record.visibility not in USER_FACING_VISIBILITIES:
+        return False
+    if record.artifact_type not in USER_FACING_ARTIFACT_TYPES:
+        return False
+    if filename in INTERNAL_ARTIFACT_FILENAMES or parts & INTERNAL_ARTIFACT_PATH_PARTS:
+        return False
+    if normalized.startswith("delivery/") or normalized.startswith("generated-project/"):
+        return False
+    if filename.endswith((".jsonl", ".log", ".lock", ".toml")):
+        return False
+    return True
+
+
+def user_friendly_artifact_label_for_record(record: Any) -> str:
+    type_label = {
+        "requirements_brief": "Requirements brief",
+        "architecture_report": "Solution overview",
+        "delivery_plan": "Delivery plan",
+        "execution_summary": "Build summary",
+        "qa_report": "Quality summary",
+        "repair_request": "Fix request",
+        "deployment_summary": "Deployment summary",
+        "release_report": "Final report",
+        "screenshot_evidence": "Screenshot evidence",
+    }.get(str(record.artifact_type), "")
+    if type_label:
+        task_id = str(record.work_item_id or "")
+        if task_id and task_id not in {"PLAN-01", "PLAN-02", "PLAN-03", "DEPLOY"}:
+            return f"{type_label} - {task_id}"
+        return type_label
+    return user_friendly_artifact_label(str(record.label or ""), str(record.relative_path))
 
 
 def _backfill_visible_legacy_artifacts(run_dir: Path) -> None:
@@ -779,6 +1373,570 @@ def _apply_role_timing_fallbacks(grouped: dict[str, list[BoardCard]], run_dir: P
         grouped[column] = updated_cards
 
 
+def _canonical_cards_from_trace(
+    run_dir: Path,
+    tool_events: Sequence[Any],
+    artifacts: Sequence[ArtifactView],
+    run_events: Sequence[Any] = (),
+) -> list[BoardCard]:
+    feature_catalog = _feature_catalog_for_run(run_dir)
+    event_map: dict[str, list[dict[str, Any]]] = {}
+    all_events = [_run_event_as_work_event(event) for event in run_events]
+    all_events.extend(_event_payload(event) for event in tool_events)
+    all_events = [event for event in all_events if event]
+    for payload in all_events:
+        item_id = _canonical_work_item_id(str(payload.get("work_item_id") or ""), payload)
+        if item_id and _is_canonical_board_item_id(item_id):
+            event_map.setdefault(item_id, []).append(payload)
+
+    cards: dict[str, BoardCard] = {}
+    for tool_name, (item_id, title, owner, order) in PLANNING_TOOL_ITEMS.items():
+        events = [
+            event
+            for event in event_map.get(item_id, [])
+            if str(event.get("tool_name") or "") == tool_name
+        ] or [event for event in all_events if str(event.get("tool_name") or "") == tool_name]
+        if events or any(artifact.task_id == item_id for artifact in artifacts):
+            cards[item_id] = _card_from_events(
+                item_id=item_id,
+                title=title,
+                owner=owner,
+                sprint="Planning",
+                order=order,
+                events=events,
+                artifacts=artifacts,
+                feature_catalog=feature_catalog,
+            )
+
+    delivery_ids = sorted(
+        {
+            item_id
+            for item_id in event_map
+            if item_id not in {"PLAN-01", "PLAN-02", "PLAN-03"} and item_id
+        },
+        key=_work_item_sort_key,
+    )
+    for index, item_id in enumerate(delivery_ids, start=10):
+        events = event_map[item_id]
+        cards[item_id] = _card_from_events(
+            item_id=item_id,
+            title=_title_for_work_item(item_id, events, artifacts, feature_catalog),
+            owner=_owner_for_work_item(item_id, events, feature_catalog),
+            sprint=_sprint_for_work_item(item_id, events, feature_catalog),
+            order=index,
+            events=events,
+            artifacts=artifacts,
+            feature_catalog=feature_catalog,
+        )
+
+    for item_id, feature in feature_catalog.items():
+        if item_id in cards:
+            continue
+        cards[item_id] = BoardCard(
+            id=item_id,
+            title=str(feature.get("title") or feature.get("name") or item_id),
+            owner=business_agent_label(
+                str(feature.get("owner_agent") or feature.get("suggested_owner_agent") or "Builder")
+            ),
+            sprint=str(feature.get("sprint_id") or "Sprint 1"),
+            status=work_status_label(str(feature.get("status") or "pending")),
+            column="todo",
+            artifact_count=sum(1 for artifact in artifacts if artifact.task_id == item_id),
+            active=False,
+            order=_work_item_catalog_order(item_id, feature),
+        )
+
+    for artifact in artifacts:
+        if not artifact.task_id or artifact.task_id in cards:
+            continue
+        if artifact.task_id in {"PLAN-01", "PLAN-02", "PLAN-03"}:
+            title = _title_for_artifact_task(artifact.task_id)
+            owner = artifact.business_agent
+            sprint = "Planning"
+            order = {"PLAN-01": 1, "PLAN-02": 2, "PLAN-03": 3}.get(artifact.task_id, 99)
+        elif artifact.task_id == "DEPLOY":
+            title = "Deploy generated app"
+            owner = "Publisher"
+            sprint = artifact.phase or "Sprint 1"
+            order = 90
+        else:
+            title = artifact.task_title or artifact.label
+            owner = artifact.business_agent
+            sprint = artifact.phase or "Sprint 1"
+            order = 99
+        cards[artifact.task_id] = BoardCard(
+            id=artifact.task_id,
+            title=title,
+            owner=owner,
+            sprint=sprint,
+            status="Done",
+            column="done",
+            artifact_count=sum(1 for item in artifacts if item.task_id == artifact.task_id),
+            active=False,
+            order=order,
+        )
+    return list(cards.values())
+
+
+def _feature_catalog_for_run(run_dir: Path) -> dict[str, dict[str, Any]]:
+    """Load planned feature metadata so canonical board cards do not depend on filenames."""
+
+    queue_path = (
+        run_dir / "upstream-planning" / "project-management" / "candidate-feature-queue.json"
+    )
+    try:
+        payload = json.loads(queue_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, list):
+        return {}
+    catalog: dict[str, dict[str, Any]] = {}
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        item_id = _canonical_task_id(str(item.get("id") or ""))
+        if item_id and _is_canonical_board_item_id(item_id):
+            catalog[item_id] = item
+    return catalog
+
+
+def _card_from_events(
+    *,
+    item_id: str,
+    title: str,
+    owner: str,
+    sprint: str,
+    order: int,
+    events: Sequence[dict[str, Any]],
+    artifacts: Sequence[ArtifactView],
+    feature_catalog: dict[str, dict[str, Any]],
+) -> BoardCard:
+    status = _board_status_from_tool_events(item_id, events)
+    column = _board_column("", status)
+    timing = _timing_from_tool_events(events)
+    feature = feature_catalog.get(item_id, {})
+    return BoardCard(
+        id=item_id,
+        title=str(feature.get("title") or title),
+        owner=owner,
+        sprint=str(feature.get("sprint_id") or sprint),
+        status=work_status_label(status),
+        column=column,
+        artifact_count=sum(1 for artifact in artifacts if artifact.task_id == item_id),
+        active=column == "in_progress",
+        order=order,
+        started_at=timing.get("started_at", ""),
+        completed_at=timing.get("completed_at", ""),
+        elapsed_label=timing.get("elapsed_label", ""),
+    )
+
+
+def _event_payload(event: Any) -> dict[str, Any]:
+    if hasattr(event, "to_dict"):
+        return event.to_dict()
+    if isinstance(event, dict):
+        return event
+    return {}
+
+
+def _run_event_as_work_event(event: Any) -> dict[str, Any]:
+    payload = _event_payload(event)
+    event_type = str(payload.get("event_type") or payload.get("event") or "")
+    if event_type.startswith("codex_command"):
+        return {}
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    work_item_id = _work_item_for_run_event(payload, data, event_type)
+    if not work_item_id:
+        return {}
+    status = str(payload.get("status") or data.get("status") or "")
+    if not status:
+        status = _status_for_run_event(event_type)
+    return {
+        "agent_id": str(payload.get("agent_id") or ""),
+        "created_at": str(payload.get("created_at") or payload.get("timestamp") or ""),
+        "event_type": event_type,
+        "input_summary": data,
+        "message": _message_for_run_event(payload, data, event_type),
+        "output_summary": {
+            "dashboard_update": {
+                "comment": _message_for_run_event(payload, data, event_type),
+                "status": _dashboard_status_for_run_event(event_type, status),
+                "summary": _message_for_run_event(payload, data, event_type),
+            }
+        },
+        "status": status,
+        "tool_name": _tool_name_for_run_event(work_item_id),
+        "work_item_id": work_item_id,
+    }
+
+
+def _is_developer_only_run_event(payload: dict[str, Any]) -> bool:
+    event_type = str(payload.get("event_type") or payload.get("event") or "")
+    return event_type.startswith("codex_command")
+
+
+def _activity_dedupe_text(text: str) -> str:
+    return re.sub(r"\s+", " ", html.unescape(str(text))).strip().lower()
+
+
+def _sorted_activity_payloads(payloads: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        payload
+        for _, payload in sorted(
+            enumerate(payloads),
+            key=lambda item: (_activity_payload_sort_timestamp(item[1]), item[0]),
+        )
+    ]
+
+
+def _activity_payload_sort_timestamp(payload: dict[str, Any]) -> str:
+    timestamp = str(payload.get("created_at") or payload.get("timestamp") or "")
+    parsed = _parse_timestamp(timestamp)
+    if parsed is None:
+        return "9999-12-31T23:59:59Z"
+    return parsed.isoformat(timespec="microseconds")
+
+
+def _work_item_for_run_event(payload: dict[str, Any], data: dict[str, Any], event_type: str) -> str:
+    explicit = _canonical_task_id(
+        str(payload.get("work_item_id") or data.get("work_item_id") or "")
+    )
+    if explicit and _is_canonical_board_item_id(explicit):
+        return explicit
+    node = str(data.get("node") or data.get("stage") or "")
+    token = f"{event_type} {node}".lower()
+    if "business_analyst" in token or "business_analysis" in token:
+        return "PLAN-01"
+    if "architecture" in token or "architect" in token:
+        return "PLAN-02"
+    if "project_management" in token or "project_manager" in token:
+        return "PLAN-03"
+    if "deployment" in token or "deploy" in token:
+        return "DEPLOY"
+    feature_id = _canonical_task_id(
+        str(
+            data.get("active_feature_id")
+            or data.get("feature_id")
+            or payload.get("work_item_id")
+            or ""
+        )
+    )
+    if feature_id and _is_canonical_board_item_id(feature_id):
+        return feature_id
+    return ""
+
+
+def _status_for_run_event(event_type: str) -> str:
+    token = event_type.lower()
+    if "work_item_planned" in token:
+        return "pending"
+    if any(value in token for value in ("completed", "passed", "ready", "deployed")):
+        return "done"
+    if any(value in token for value in ("failed", "blocked")):
+        return "blocked"
+    if any(value in token for value in ("started", "selected", "running")):
+        return "in_progress"
+    return "in_progress"
+
+
+def _dashboard_status_for_run_event(event_type: str, status: str) -> str:
+    token = f"{event_type} {status}".lower()
+    if "work_item_planned" in token or any(
+        value in token for value in ("pending", "todo", "planned")
+    ):
+        return "pending"
+    if any(value in token for value in ("completed", "passed", "ready", "deployed", "done")):
+        return "done"
+    if any(value in token for value in ("failed", "blocked")):
+        return "blocked"
+    return "in_progress"
+
+
+def _tool_name_for_run_event(work_item_id: str) -> str:
+    return {
+        "PLAN-01": "run_business_analyst",
+        "PLAN-02": "run_architect",
+        "PLAN-03": "run_project_manager",
+        "DEPLOY": "run_deployment",
+    }.get(work_item_id, "runtime_progress")
+
+
+def _message_for_run_event(payload: dict[str, Any], data: dict[str, Any], event_type: str) -> str:
+    message = str(payload.get("message") or data.get("message") or "").strip()
+    if message and message != event_type:
+        return message
+    label = {
+        "business_analysis_started": "Business Analyst started working.",
+        "business_analysis_codex_started": "Business Analyst is preparing requirements.",
+        "business_analysis_completed": "Requirements brief is ready.",
+        "business_analysis_codex_completed": "Business Analyst completed the requirements pass.",
+        "architecture_started": "Solution Architect started working.",
+        "architecture_codex_started": "Solution Architect is preparing the solution overview.",
+        "architecture_completed": "Solution overview is ready.",
+        "architecture_codex_completed": "Solution Architect completed the architecture pass.",
+        "project_management_started": "Delivery Planner started working.",
+        "project_management_codex_started": "Delivery Planner is preparing the work plan.",
+        "project_management_completed": "Delivery plan is ready.",
+        "project_management_codex_completed": "Delivery Planner completed the planning pass.",
+        "deployment_started": "Publisher started deployment.",
+    }.get(event_type)
+    if label:
+        return label
+    node = str(data.get("node") or "").replace("_", " ").strip()
+    if event_type == "head_worker_started" and node:
+        return f"Coordinator routed work to {node}."
+    if event_type == "head_worker_completed" and node:
+        return f"Coordinator received completed {node} work."
+    return event_type.replace("_", " ").title()
+
+
+def _dashboard_update(event: dict[str, Any]) -> dict[str, Any]:
+    output = event.get("output_summary")
+    if not isinstance(output, dict):
+        return {}
+    update = output.get("dashboard_update")
+    return update if isinstance(update, dict) else {}
+
+
+def _dashboard_comment_for_event(event: dict[str, Any]) -> str:
+    update = _dashboard_update(event)
+    values = [
+        update.get("comment"),
+        update.get("summary"),
+        event.get("business_summary"),
+    ]
+    output = event.get("output_summary")
+    if isinstance(output, dict):
+        values.extend(
+            [output.get("business_summary"), output.get("summary"), output.get("message")]
+        )
+    for value in values:
+        if str(value or "").strip():
+            return _business_log_text(str(value).strip())
+    tool_name = str(event.get("tool_name") or "").replace("_", " ").title()
+    status = status_label(str(event.get("status") or ""))
+    return f"{tool_name} {status}".strip()
+
+
+def _canonical_work_item_id(work_item_id: str, event: dict[str, Any]) -> str:
+    tool_name = str(event.get("tool_name") or "")
+    if tool_name in PLANNING_TOOL_ITEMS:
+        return PLANNING_TOOL_ITEMS[tool_name][0]
+    if tool_name == "run_deployment":
+        return "DEPLOY"
+    if tool_name == "run_post_deploy_qa":
+        return "DEPLOY"
+    candidate = _canonical_task_id(work_item_id.strip())
+    if candidate and _is_canonical_board_item_id(candidate):
+        return candidate
+    input_summary = event.get("input_summary")
+    if isinstance(input_summary, dict):
+        for key in ("work_item_id", "feature_id", "target"):
+            value = str(input_summary.get(key) or "").strip()
+            candidate = _canonical_task_id(value)
+            if candidate and _is_canonical_board_item_id(candidate):
+                return candidate
+    output_summary = event.get("output_summary")
+    if isinstance(output_summary, dict):
+        for key in ("work_item_id", "feature_id", "target"):
+            value = str(output_summary.get(key) or "").strip()
+            candidate = _canonical_task_id(value)
+            if candidate and _is_canonical_board_item_id(candidate):
+                return candidate
+    return ""
+
+
+def _is_canonical_board_item_id(value: str) -> bool:
+    return value in {"PLAN-01", "PLAN-02", "PLAN-03", "DEPLOY"} or _is_work_item_id(value)
+
+
+def _board_status_from_tool_events(item_id: str, events: Sequence[dict[str, Any]]) -> str:
+    latest_state = ""
+    for event in _sorted_activity_payloads(list(events)):
+        state = _board_state_for_event(item_id, event)
+        if state:
+            latest_state = state
+    if latest_state:
+        return latest_state
+    if events:
+        return "in_progress"
+    return "done"
+
+
+def _timing_from_tool_events(events: Sequence[dict[str, Any]]) -> dict[str, str]:
+    ordered = _sorted_activity_payloads(list(events))
+    timestamps = [
+        str(event.get("created_at") or "") for event in ordered if event.get("created_at")
+    ]
+    if not timestamps:
+        return {}
+    start = min(timestamps)
+    latest_event = ordered[-1] if ordered else {}
+    latest_state = _board_state_for_event("", latest_event)
+    end = str(latest_event.get("created_at") or "") if latest_state in {"done", "blocked"} else ""
+    if not end:
+        return _timing_payload(start, "")
+    if start == end:
+        durations = [
+            int(duration)
+            for event in ordered
+            if (duration := event.get("duration_ms")) is not None
+            and isinstance(duration, int | float)
+            and duration > 0
+        ]
+        parsed_end = _parse_timestamp(end)
+        if durations and parsed_end:
+            start = (
+                (parsed_end - timedelta(milliseconds=max(durations)))
+                .isoformat(timespec="seconds")
+                .replace("+00:00", "Z")
+            )
+    return _timing_payload(start, end)
+
+
+def _board_state_for_event(item_id: str, event: dict[str, Any]) -> str:
+    update_status = str(_dashboard_update(event).get("status") or "").lower()
+    status = str(event.get("status") or "").lower()
+    failure = str(event.get("failure_mode") or "").lower()
+    token = f"{update_status} {status} {failure}".strip()
+    if not token:
+        return ""
+    if any(value in token for value in ("failed", "blocked", "human_approval")):
+        return "blocked"
+    if item_id == "DEPLOY" and any(value in token for value in ("deployed", "post_deploy")):
+        return "done"
+    if any(value in token for value in ("pending", "todo", "planned")):
+        return "pending"
+    if "qa_passed" in token:
+        return "done"
+    if any(value in token for value in ("review", "quality_review")):
+        return "review"
+    if "implemented" in token or "codex_completed" in token:
+        return "review"
+    if any(value in token for value in ("done", "passed", "deployed", "ready", "closed")):
+        return "done"
+    if any(value in token for value in ("in_progress", "running", "active", "started")):
+        return "in_progress"
+    return ""
+
+
+def _trace_status_terminal(status: str) -> bool:
+    token = status.lower()
+    return any(
+        value in token
+        for value in ("succeeded", "completed", "passed", "done", "failed", "blocked", "deployed")
+    )
+
+
+def _title_for_work_item(
+    item_id: str,
+    events: Sequence[dict[str, Any]],
+    artifacts: Sequence[ArtifactView],
+    feature_catalog: dict[str, dict[str, Any]],
+) -> str:
+    if item_id in feature_catalog and feature_catalog[item_id].get("title"):
+        return str(feature_catalog[item_id]["title"])
+    artifact_title = next(
+        (
+            artifact.task_title
+            for artifact in artifacts
+            if artifact.task_id == item_id and artifact.task_title
+        ),
+        "",
+    )
+    if artifact_title:
+        return artifact_title
+    for event in reversed(events):
+        for source in (event.get("input_summary"), event.get("output_summary")):
+            if not isinstance(source, dict):
+                continue
+            for key in ("title", "feature_title", "summary"):
+                value = str(source.get(key) or "").strip()
+                if value and len(value) <= 120:
+                    return value
+    if item_id == "DEPLOY":
+        return "Deploy generated app"
+    return f"Work item {item_id}"
+
+
+def _owner_for_work_item(
+    item_id: str,
+    events: Sequence[dict[str, Any]],
+    feature_catalog: dict[str, dict[str, Any]],
+) -> str:
+    if item_id == "DEPLOY":
+        return "Publisher"
+    owner = str(feature_catalog.get(item_id, {}).get("suggested_owner_agent") or "")
+    if owner:
+        return business_agent_label(owner)
+    latest = events[-1] if events else {}
+    tool_name = str(latest.get("tool_name") or "")
+    if tool_name in {"run_qa", "run_post_deploy_qa"}:
+        return "Quality Reviewer"
+    return business_agent_label(str(latest.get("agent_id") or "Builder"))
+
+
+def _sprint_for_work_item(
+    item_id: str,
+    events: Sequence[dict[str, Any]],
+    feature_catalog: dict[str, dict[str, Any]],
+) -> str:
+    if item_id in {"PLAN-01", "PLAN-02", "PLAN-03"}:
+        return "Planning"
+    if feature_catalog.get(item_id, {}).get("sprint_id"):
+        return str(feature_catalog[item_id]["sprint_id"])
+    for event in reversed(events):
+        for source in (event.get("input_summary"), event.get("output_summary")):
+            if isinstance(source, dict):
+                value = str(source.get("sprint_id") or source.get("sprint") or "").strip()
+                if value:
+                    return value
+    return "sprint-01"
+
+
+def _work_item_sort_key(item_id: str) -> tuple[int, int, str]:
+    match = re.fullmatch(r"F(\d+)", item_id, flags=re.IGNORECASE)
+    if match:
+        return (0, int(match.group(1)), item_id)
+    match = re.fullmatch(r"US-(\d+)", item_id, flags=re.IGNORECASE)
+    if match:
+        return (0, int(match.group(1)), item_id)
+    if item_id.startswith("QA"):
+        return (1, 0, item_id)
+    if item_id == "DEPLOY":
+        return (2, 0, item_id)
+    return (3, 0, item_id)
+
+
+def _work_item_catalog_order(item_id: str, feature: dict[str, Any]) -> int:
+    try:
+        return int(feature.get("delivery_order") or 0)
+    except (TypeError, ValueError):
+        return 0 if not item_id else _work_item_sort_key(item_id)[1]
+
+
+def _title_for_artifact_task(task_id: str) -> str:
+    return {
+        "PLAN-01": "Requirements brief",
+        "PLAN-02": "Solution overview",
+        "PLAN-03": "Delivery plan",
+        "DEPLOY": "Deploy generated app",
+    }.get(task_id, "")
+
+
+def _sprint_for_artifact_task(task_id: str, record: Any) -> str:
+    if task_id in {"PLAN-01", "PLAN-02", "PLAN-03"}:
+        return "Planning"
+    if task_id == "DEPLOY":
+        return "Sprint 1"
+    metadata = getattr(record, "metadata", {}) or {}
+    if isinstance(metadata, dict) and metadata.get("sprint_id"):
+        return str(metadata["sprint_id"])
+    return _artifact_phase(str(record.relative_path), str(record.owner_agent))
+
+
 def _looks_like_release_report_card(card: BoardCard) -> bool:
     token = f"{card.id} {card.title}".lower()
     return any(value in token for value in ("demo-deliverables", "release report", "final report"))
@@ -872,7 +2030,7 @@ def _parse_timestamp(value: str) -> datetime | None:
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone().astimezone(UTC)
     return parsed.astimezone(UTC)
 
 
@@ -899,8 +2057,14 @@ def _artifact_matches_card(
     artifact: ArtifactView,
     card: BoardCard,
 ) -> bool:
-    if artifact.business_agent in {"Publisher", "Release Reporter"}:
+    if (
+        artifact.business_agent in {"Publisher", "Release Reporter"}
+        and card.owner != artifact.business_agent
+        and card.id != "DEPLOY"
+    ):
         return False
+    if card.id.upper().startswith("QA") and artifact.business_agent == "Quality Reviewer":
+        return artifact.phase == card.sprint or artifact.task_id in _card_aliases(card)
     card_ids = _card_aliases(card)
     return (
         artifact.task_id in card_ids
@@ -1243,7 +2407,7 @@ def artifact_payload_by_id(run_dir: Path, artifact_id: str) -> dict[str, Any]:
 
 
 def artifact_payload_for_record(run_dir: Path, record: Any) -> dict[str, Any]:
-    if record is None or record.visibility not in USER_FACING_VISIBILITIES:
+    if record is None or not is_user_facing_artifact_record(record):
         raise ValueError("Artifact is not user-facing")
     return _artifact_payload_for_path(run_dir, record.relative_path)
 
@@ -1467,7 +2631,9 @@ def render_markdown(text: str) -> str:
     """Render enough Markdown for business artifacts without adding a dependency."""
 
     text = _plain_markdown_links(text)
-    escaped = html.escape(text)
+    blocks = _extract_fenced_blocks(text)
+    escaped = html.escape(blocks["text"])
+    escaped = _restore_fenced_blocks(escaped, blocks["blocks"])
     escaped = re.sub(r"^### (.+)$", r"<h3>\1</h3>", escaped, flags=re.MULTILINE)
     escaped = re.sub(r"^## (.+)$", r"<h2>\1</h2>", escaped, flags=re.MULTILINE)
     escaped = re.sub(r"^# (.+)$", r"<h1>\1</h1>", escaped, flags=re.MULTILINE)
@@ -1475,7 +2641,22 @@ def render_markdown(text: str) -> str:
     escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
     lines = []
     in_list = False
+    table_buffer: list[str] = []
+
+    def flush_table() -> None:
+        nonlocal table_buffer
+        if table_buffer:
+            lines.append(_render_markdown_table(table_buffer))
+            table_buffer = []
+
     for line in escaped.splitlines():
+        if _looks_like_table_row(line):
+            if in_list:
+                lines.append("</ul>")
+                in_list = False
+            table_buffer.append(line)
+            continue
+        flush_table()
         if line.startswith("- "):
             if not in_list:
                 lines.append("<ul>")
@@ -1503,7 +2684,65 @@ def render_markdown(text: str) -> str:
             lines.append(f"<p>{line}</p>")
     if in_list:
         lines.append("</ul>")
+    flush_table()
     return "\n".join(lines)
+
+
+def _extract_fenced_blocks(text: str) -> dict[str, Any]:
+    blocks: list[tuple[str, str]] = []
+
+    def replace(match: re.Match[str]) -> str:
+        language = (match.group(1) or "").strip().lower()
+        content = match.group(2)
+        token = f"@@FENCED_BLOCK_{len(blocks)}@@"
+        if language == "mermaid":
+            rendered = f'<pre class="mermaid">{html.escape(_normalize_mermaid(content))}</pre>'
+        else:
+            class_attr = f' class="language-{html.escape(language)}"' if language else ""
+            rendered = f"<pre><code{class_attr}>{html.escape(content.rstrip())}</code></pre>"
+        blocks.append((token, rendered))
+        return token
+
+    cleaned = re.sub(r"```([A-Za-z0-9_-]*)\s*\n(.*?)```", replace, text, flags=re.DOTALL)
+    return {"text": cleaned, "blocks": blocks}
+
+
+def _restore_fenced_blocks(text: str, blocks: list[tuple[str, str]]) -> str:
+    restored = text
+    for token, rendered in blocks:
+        restored = restored.replace(token, rendered)
+    return restored
+
+
+def _looks_like_table_row(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2
+
+
+def _render_markdown_table(rows: list[str]) -> str:
+    parsed = [
+        [cell.strip() for cell in row.strip().strip("|").split("|")]
+        for row in rows
+        if _looks_like_table_row(row)
+    ]
+    if len(parsed) >= 2 and all(re.fullmatch(r":?-{3,}:?", cell) for cell in parsed[1]):
+        header, body = parsed[0], parsed[2:]
+    else:
+        header, body = [], parsed
+    html_rows: list[str] = ['<div class="table-scroll"><table>']
+    if header:
+        html_rows.append("<thead><tr>")
+        html_rows.extend(f"<th>{cell}</th>" for cell in header)
+        html_rows.append("</tr></thead>")
+    if body:
+        html_rows.append("<tbody>")
+        for row in body:
+            html_rows.append("<tr>")
+            html_rows.extend(f"<td>{cell}</td>" for cell in row)
+            html_rows.append("</tr>")
+        html_rows.append("</tbody>")
+    html_rows.append("</table></div>")
+    return "".join(html_rows)
 
 
 def _plain_markdown_links(text: str) -> str:

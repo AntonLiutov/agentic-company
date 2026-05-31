@@ -283,14 +283,19 @@ def failure_mode_from_status(status: str, blockers: list[Any] | tuple[Any, ...] 
     """Return a machine-readable failure mode for a runtime status when obvious."""
 
     normalized = status.strip().lower()
-    if blockers:
-        return "blocked"
     if "human" in normalized or "approval" in normalized:
         return "human_approval_required"
     if "repair" in normalized or "qa_failed" in normalized:
         return "needs_repair"
     if any(token in normalized for token in ("blocked", "failed", "error", "precondition")):
         return "failed"
+    if any(
+        token in normalized
+        for token in ("ready", "done", "completed", "deployed", "passed", "implemented")
+    ):
+        return None
+    if blockers:
+        return "blocked"
     return None
 
 

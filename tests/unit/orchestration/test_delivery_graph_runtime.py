@@ -10,6 +10,7 @@ from agentic_company.orchestration.runtime import (
     DeliveryGraphRuntime,
 )
 from agentic_company.platform.artifacts import artifact_ref
+from agentic_company.platform.run_trace import load_run_events
 from agentic_company.platform.state import DeliveryState, initial_delivery_state
 
 
@@ -127,19 +128,16 @@ def test_delivery_graph_runtime_writes_graph_events(tmp_path):
 
     runtime.start(run_dir)
 
-    events = [
-        json.loads(line)
-        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
-    event_names = [event["event"] for event in events]
-    node_events = [event for event in events if event["event"] == "delivery_graph_node_completed"]
+    events = load_run_events(run_dir)
+    event_names = [event.event_type for event in events]
+    node_events = [event for event in events if event.event_type == "delivery_graph_node_completed"]
 
     assert visited == CONSOLE_EXECUTION_NODE_ORDER
     assert "delivery_graph_started" in event_names
     assert "delivery_graph_completed" in event_names
     assert "delivery_graph_state_written" in event_names
-    assert [event["data"]["node"] for event in node_events] == CONSOLE_EXECUTION_NODE_ORDER
-    assert {event["agent_id"] for event in events} == {"delivery-graph"}
+    assert [event.data["node"] for event in node_events] == CONSOLE_EXECUTION_NODE_ORDER
+    assert {event.agent_id for event in events} == {"delivery-graph"}
 
 
 def test_delivery_graph_runtime_hydrates_feature_queue_from_existing_execution_request(
@@ -255,14 +253,11 @@ def test_delivery_graph_runtime_skips_downstream_nodes_when_state_has_blockers(t
 
     result = runtime.start(run_dir)
 
-    events = [
-        json.loads(line)
-        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
-    skipped = [event for event in events if event["event"] == "delivery_graph_node_skipped"]
+    events = load_run_events(run_dir)
+    skipped = [event for event in events if event.event_type == "delivery_graph_node_skipped"]
 
     assert visited == ["business_analyst"]
     assert result["stage"] == "business_analysis"
     assert result["status"] == "business_analysis_verified_downstream_paused"
     assert result["blockers"] == ["Downstream agents are intentionally paused."]
-    assert [event["data"]["node"] for event in skipped] == ["team_lead"]
+    assert [event.data["node"] for event in skipped] == ["team_lead"]

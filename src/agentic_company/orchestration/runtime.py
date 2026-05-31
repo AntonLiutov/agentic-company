@@ -21,13 +21,14 @@ from agentic_company.platform.artifacts import (
 )
 from agentic_company.platform.events import write_event
 from agentic_company.platform.state import (
+    DELIVERY_STATE_SNAPSHOT,
     DeliveryState,
     initial_delivery_state,
     write_delivery_state,
 )
 
 LOGGER = logging.getLogger(__name__)
-DEFAULT_STATE_FILENAME = ".delivery-state.json"
+DEFAULT_STATE_FILENAME = DELIVERY_STATE_SNAPSHOT.as_posix()
 GRAPH_AGENT_ID = "delivery-graph"
 
 
@@ -51,7 +52,7 @@ class DeliveryGraphRuntime:
         """Load or create graph state, invoke configured nodes, and persist final state."""
 
         run_dir.mkdir(parents=True, exist_ok=True)
-        event_log = run_dir / "events.jsonl"
+        event_log = run_dir
         node_order = list(self.node_order or DELIVERY_GRAPH_NODE_ORDER)
         state = self.load_state(run_dir)
         if state is None:

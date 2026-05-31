@@ -12,7 +12,7 @@ selection:
 contracts:
   required_tools: [inspect_delivery_status]
   allowed_tools: [inspect_delivery_status, inspect_sprint_status, codex_review, codex_exec, block_planning]
-  consumes_artifacts: [qa_report, quality_gate_report, repair_request, deployment_summary, execution_summary, debug_trace]
+  consumes_artifacts: [qa_report, repair_request, deployment_summary, execution_summary, debug_trace]
   produces_artifacts:
     - artifact_type: tool_result
       visibility: developer

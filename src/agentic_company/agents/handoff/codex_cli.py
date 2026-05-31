@@ -71,7 +71,7 @@ class HandoffCodexRunner:
     def run(self, run_dir: Path) -> AgentRunResult:
         request = load_execution_request(run_dir)
         contract_paths = handoff_contract_paths(request, run_dir)
-        event_log = run_dir / "events.jsonl"
+        event_log = run_dir
         execution_id = _execution_id(request)
         write_event(
             event_log,
@@ -211,7 +211,7 @@ class HandoffCodexRunner:
             encoding="utf-8",
         )
         write_event(
-            run_dir / "events.jsonl",
+            run_dir,
             request.run_id,
             HANDOFF_CODEX_AGENT_ID,
             "handoff_codex_attempt_started",
@@ -228,6 +228,10 @@ class HandoffCodexRunner:
                 log_path,
                 raw_events_path,
                 codex_execution_id=codex_execution_id,
+                run_dir=run_dir,
+                run_id=request.run_id,
+                agent_id=HANDOFF_CODEX_AGENT_ID,
+                work_item_id=str((request.active_feature or {}).get("id") or ""),
             )
         except FileNotFoundError:
             LOGGER.exception("Handoff Codex CLI missing run_id=%s", request.run_id)
@@ -247,7 +251,7 @@ class HandoffCodexRunner:
         )
         codex_thread_id = extract_codex_thread_id(raw_events_path) or request.codex_resume_thread_id
         write_event(
-            run_dir / "events.jsonl",
+            run_dir,
             request.run_id,
             HANDOFF_CODEX_AGENT_ID,
             "handoff_codex_attempt_completed",
@@ -280,6 +284,10 @@ class HandoffCodexRunner:
         raw_events_path: Path,
         *,
         codex_execution_id: str,
+        run_dir: Path,
+        run_id: int | str,
+        agent_id: str,
+        work_item_id: str | None,
     ) -> subprocess.CompletedProcess[str]:
         if self.command_executor:
             return self.command_executor(
@@ -296,6 +304,10 @@ class HandoffCodexRunner:
             log_path,
             raw_events_path,
             codex_execution_id=codex_execution_id,
+            trace_run_dir=run_dir,
+            trace_run_id=run_id,
+            trace_agent_id=agent_id,
+            trace_work_item_id=work_item_id,
         )
 
 
@@ -363,7 +375,8 @@ Release context:
 - QA reports/results describe feature validation.
 - Deployment artifacts describe public URLs, cloud resources, risks, and
   post-deploy targets.
-- `.delivery-state.json` is the orchestration state of record.
+- `delivery/run-state.json` is the internal graph snapshot.
+- Structured trace and the artifact registry are the product source of truth.
 
 Upstream agent messages:
 {upstream_messages}

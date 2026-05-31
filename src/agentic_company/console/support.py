@@ -19,6 +19,8 @@ from agentic_company.orchestration.graphs import (
     CONSOLE_EXECUTION_NODE_ORDER,
 )
 from agentic_company.platform.artifacts import EXECUTION_REQUEST_ARTIFACT
+from agentic_company.platform.run_trace import load_run_events
+from agentic_company.platform.state import DELIVERY_STATE_SNAPSHOT
 
 LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +32,7 @@ DEFAULT_ENV_VALUES = {
     "SPECIALIST_AGENT_REASONING_EFFORT": "none",
 }
 DEFAULT_SAMPLE_REQUIREMENTS = "multi-service-task-tracker.md"
+AGENT_RUNTIME_ENV_RELATIVE_PATH = Path("delivery") / "agent-runtime.env"
 
 
 @dataclass(slots=True)
@@ -486,8 +489,9 @@ def _execution_status_is_stale(run_dir: Path) -> bool:
 def _latest_execution_activity_mtime(run_dir: Path) -> float:
     candidates = [
         run_dir / ".codex-execution.status",
-        run_dir / ".delivery-state.json",
-        run_dir / "events.jsonl",
+        run_dir / DELIVERY_STATE_SNAPSHOT,
+        run_dir / "delivery" / "run-events.jsonl",
+        run_dir / "delivery" / "tool-call-events.jsonl",
     ]
     for directory in (
         run_dir / "upstream-planning",
@@ -552,7 +556,7 @@ def _feature_codex_log_paths(run_dir: Path) -> list[Path]:
 
 
 def _read_delivery_state(run_dir: Path) -> dict[str, Any]:
-    state_path = run_dir / ".delivery-state.json"
+    state_path = run_dir / DELIVERY_STATE_SNAPSHOT
     if not state_path.exists():
         return {}
     for attempt in range(3):
@@ -657,18 +661,22 @@ def clear_console_runs(output_root: Path | None = None) -> CleanupResult:
 
 
 def read_events(run_dir: Path) -> list[dict[str, Any]]:
-    event_path = run_dir / "events.jsonl"
-    if not event_path.exists():
-        return []
-
     events: list[dict[str, Any]] = []
-    for line in event_path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        event = json.loads(line)
-        agent_id = str(event.get("agent_id", ""))
-        event["runtime"] = RUNTIME_BY_AGENT.get(agent_id, "Unknown Runtime")
-        events.append(event)
+    for trace_event in load_run_events(run_dir):
+        agent_id = str(trace_event.agent_id)
+        events.append(
+            {
+                "timestamp": trace_event.created_at,
+                "run_id": trace_event.run_id,
+                "agent_id": agent_id,
+                "event": trace_event.event_type,
+                "data": trace_event.data,
+                "runtime": RUNTIME_BY_AGENT.get(agent_id, "Unknown Runtime"),
+                "status": trace_event.status,
+                "message": trace_event.message,
+                "artifact_ids": trace_event.artifact_ids,
+            }
+        )
     return events
 
 
@@ -1534,7 +1542,7 @@ def initial_env_value(key: str, root: Path | None = None) -> str:
 
 
 def missing_required_env_keys(run_dir: Path, values: dict[str, str] | None = None) -> list[str]:
-    current = read_env_keys(_target_project_dir(run_dir) / ".env")
+    current = read_env_keys(agent_runtime_env_path(run_dir))
     proposed = values or {}
     missing: list[str] = []
 
@@ -1550,8 +1558,7 @@ def missing_required_env_keys(run_dir: Path, values: dict[str, str] | None = Non
 
 
 def ensure_required_env_defaults(run_dir: Path) -> Path:
-    target_dir = _target_project_dir(run_dir)
-    env_path = target_dir / ".env"
+    env_path = agent_runtime_env_path(run_dir)
     current = read_env_keys(env_path)
     defaults = {
         key: default_env_value(key)
@@ -1564,9 +1571,15 @@ def ensure_required_env_defaults(run_dir: Path) -> Path:
 
 
 def write_target_env(run_dir: Path, values: dict[str, str]) -> Path:
-    target_dir = _target_project_dir(run_dir)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    env_path = target_dir / ".env"
+    """Persist agent runtime configuration outside the generated app project.
+
+    The historic function name is kept for compatibility with the web console.
+    Provider/platform keys must not be copied into generated-project/.env because
+    that folder is a deliverable product artifact.
+    """
+
+    env_path = agent_runtime_env_path(run_dir)
+    env_path.parent.mkdir(parents=True, exist_ok=True)
     existing = read_env_keys(env_path)
 
     merged = {**existing}
@@ -1576,8 +1589,12 @@ def write_target_env(run_dir: Path, values: dict[str, str]) -> Path:
 
     lines = [f"{key}={value}" for key, value in sorted(merged.items())]
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    LOGGER.info("Wrote run-local env keys=%s run_dir=%s", sorted(merged), run_dir)
+    LOGGER.info("Wrote agent runtime env keys=%s run_dir=%s", sorted(merged), run_dir)
     return env_path
+
+
+def agent_runtime_env_path(run_dir: Path) -> Path:
+    return run_dir / AGENT_RUNTIME_ENV_RELATIVE_PATH
 
 
 def read_env_keys(env_path: Path) -> dict[str, str]:
@@ -1595,7 +1612,7 @@ def read_env_keys(env_path: Path) -> dict[str, str]:
 
 
 def saved_env_keys(run_dir: Path) -> list[str]:
-    return sorted(read_env_keys(_target_project_dir(run_dir) / ".env"))
+    return sorted(read_env_keys(agent_runtime_env_path(run_dir)))
 
 
 def _target_project_dir(run_dir: Path) -> Path:

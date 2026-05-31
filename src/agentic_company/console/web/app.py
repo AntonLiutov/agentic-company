@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import asdict
 from pathlib import Path
@@ -15,12 +16,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from agentic_company.console.support import (
-    codex_execution_running,
+    agent_runtime_env_path,
     create_console_run,
-    delivery_overview_for_run,
-    execution_completed,
     read_env_keys,
-    read_events,
     repo_root,
     request_codex_execution_stop,
     start_codex_execution,
@@ -37,7 +35,6 @@ from agentic_company.console.web.product import (
     GEMINI_MODEL_OPTIONS,
     REASONING_OPTIONS,
     GeminiFormatterUnavailable,
-    activity_groups_for_run,
     agent_catalog,
     agent_icon_path,
     artifact_owner_groups,
@@ -45,24 +42,26 @@ from agentic_company.console.web.product import (
     artifact_payload_by_id,
     artifact_payload_for_record,
     artifact_phase_groups,
-    artifacts_for_run,
-    board_cards_for_run,
+    canonical_activity_groups_for_run,
+    canonical_artifacts_for_run,
+    canonical_board_cards_for_run,
+    canonical_board_groups_for_run,
+    canonical_delivery_overview_for_run,
+    canonical_rendered_log_entries_for_run,
+    canonical_run_timing_for_trace,
+    canonical_sprint_board_groups_for_run,
+    canonical_task_detail_for_run,
+    canonical_task_report_groups_for_run,
+    canonical_work_plan_groups_for_run,
     format_request_text_with_llm,
     html_report_document,
     project_type_label,
     render_markdown,
-    rendered_log_entries_for_run,
-    run_timing_for_run,
     scope_size_label,
-    sprint_board_groups_for_run,
-    sprint_groups_for_run,
     status_label,
     system_checks,
-    task_detail_for_run,
-    task_report_groups_for_run,
     user_facing_blockers,
     user_friendly_artifact_label,
-    work_plan_groups_for_run,
 )
 from agentic_company.console.web.voice import (
     SpeechmaticsTokenError,
@@ -427,7 +426,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         if not project or project.owner_user_id != user.id:
             raise HTTPException(status_code=404)
         latest_run = repo.latest_run_for_project(project.id, user.id)
-        if not _run_showcase_ready(latest_run):
+        if not _run_showcase_ready(repo, latest_run):
             raise HTTPException(status_code=400, detail="Project is not ready for showcase yet.")
         promoted = repo.set_project_visibility(project_id, user.id, "public_demo")
         if not promoted:
@@ -639,8 +638,20 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         if not run:
             raise HTTPException(status_code=404)
         run_dir = Path(run.run_dir)
-        artifacts = artifacts_for_run(run_dir)[0]
-        detail = task_detail_for_run(run_dir, task_id, artifacts)
+        repo = get_repo(request)
+        repo.sync_artifact_registry_from_run_dir(run.id, run_dir)
+        repo.sync_run_trace_from_run_dir(run.id, run_dir)
+        business_artifacts = canonical_artifacts_for_run(
+            run_dir,
+            repo.list_artifact_records(run.id),
+        )[0]
+        detail = canonical_task_detail_for_run(
+            run_dir,
+            task_id,
+            repo.list_tool_call_events(run.id),
+            business_artifacts,
+            repo.list_run_events(run.id),
+        )
         if detail is None:
             raise HTTPException(status_code=404)
         return render(
@@ -662,25 +673,33 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         if not run:
             raise HTTPException(status_code=404)
         run_dir = Path(run.run_dir)
-        overview = delivery_overview_for_run(run_dir)
-        if run.status == "stopped":
-            running = False
-            completed = False
-            status_value = "stopped"
-        else:
-            running = codex_execution_running(run_dir)
-            completed = execution_completed(run_dir)
-            status_value = "running" if running else overview.status
-            if completed and not running:
-                status_value = overview.status or "completed"
-            get_repo(request).update_run_status(run.id, status_value)
+        repo = get_repo(request)
+        repo.sync_artifact_registry_from_run_dir(run.id, run_dir)
+        repo.sync_run_trace_from_run_dir(run.id, run_dir)
+        artifact_records = repo.list_artifact_records(run.id)
+        run_events = repo.list_run_events(run.id)
+        tool_events = repo.list_tool_call_events(run.id)
+        status_value = _canonical_status_from_records_and_trace(artifact_records, tool_events)
+        running = _canonical_run_running(run, run_events, tool_events, status_value)
+        completed = _canonical_run_completed(status_value, run_events)
+        if not status_value:
+            status_value = "running" if running else run.status
+        overview = canonical_delivery_overview_for_run(
+            run_id=str(run.id),
+            run_events=run_events,
+            tool_events=tool_events,
+            artifacts=canonical_artifacts_for_run(run_dir, artifact_records)[0],
+            status=status_value,
+            published_url=run.generated_app_url or _published_url_from_run_dir(run_dir),
+        )
+        repo.update_run_status(run.id, status_value)
         return JSONResponse(
             {
                 "status": status_label(status_value),
                 "stage": status_label(overview.stage),
                 "running": running,
                 "completed": completed,
-                "events": len(read_events(run_dir)),
+                "events": len(run_events) + len(tool_events),
             }
         )
 
@@ -689,15 +708,28 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         request: Request,
         run_id: int,
         user: CurrentUser,
+        task_id: str = "",
     ) -> JSONResponse:
         run = get_repo(request).get_run_for_user(run_id, user.id)
         if not run:
             raise HTTPException(status_code=404)
         run_dir = Path(run.run_dir)
+        repo = get_repo(request)
+        repo.sync_run_trace_from_run_dir(run.id, run_dir)
+        run_events = repo.list_run_events(run.id)
+        tool_events = repo.list_tool_call_events(run.id)
         return JSONResponse(
             {
-                "logs": rendered_log_entries_for_run(run_dir),
-                "groups": activity_groups_for_run(run_dir),
+                "logs": canonical_rendered_log_entries_for_run(
+                    tool_events,
+                    run_events,
+                    task_id=task_id,
+                ),
+                "groups": canonical_activity_groups_for_run(
+                    tool_events,
+                    task_id=task_id,
+                    run_events=run_events,
+                ),
             }
         )
 
@@ -835,17 +867,19 @@ def get_visible_project_or_404(request: Request, project_id: int, user: User) ->
     return project
 
 
-def _run_showcase_ready(run: Run | None) -> bool:
+def _run_showcase_ready(repo: ConsoleRepository, run: Run | None) -> bool:
     if run is None or run.status == "stopped":
         return False
     run_dir = Path(run.run_dir)
-    if codex_execution_running(run_dir) or not execution_completed(run_dir):
+    repo.sync_artifact_registry_from_run_dir(run.id, run_dir)
+    repo.sync_run_trace_from_run_dir(run.id, run_dir)
+    artifacts = repo.list_artifact_records(run.id)
+    tool_events = repo.list_tool_call_events(run.id)
+    run_events = repo.list_run_events(run.id)
+    status = _canonical_status_from_records_and_trace(artifacts, tool_events)
+    if _canonical_run_running(run, run_events, tool_events, status):
         return False
-    overview = delivery_overview_for_run(run_dir)
-    status_token = f"{overview.status} {overview.stage}".lower()
-    if any(token in status_token for token in ("blocked", "failed", "stopped")):
-        return False
-    return not overview.blockers
+    return status == "complete"
 
 
 def render_workspace(
@@ -886,27 +920,53 @@ def render_workspace(
     }
     if run:
         run_dir = Path(run.run_dir)
-        run_running = codex_execution_running(run_dir)
-        run_completed = execution_completed(run_dir)
-        overview = delivery_overview_for_run(run_dir)
-        business_artifacts = artifacts_for_run(run_dir)[0]
-        get_repo(request).sync_artifact_registry_from_run_dir(run.id, run_dir)
-        get_repo(request).sync_run_trace_from_run_dir(run.id, run_dir)
+        repo = get_repo(request)
+        repo.sync_artifact_registry_from_run_dir(run.id, run_dir)
+        repo.sync_run_trace_from_run_dir(run.id, run_dir)
+        artifact_records = repo.list_artifact_records(run.id)
+        run_events = repo.list_run_events(run.id)
+        tool_events = repo.list_tool_call_events(run.id)
+        _sync_canonical_run_completion(repo, project, run, artifact_records, tool_events)
+        business_artifacts = canonical_artifacts_for_run(run_dir, artifact_records)[0]
+        board = canonical_board_cards_for_run(run_dir, tool_events, business_artifacts, run_events)
+        canonical_status = _canonical_status_from_records_and_trace(artifact_records, tool_events)
+        run_running = _canonical_run_running(run, run_events, tool_events, canonical_status)
+        run_completed = _canonical_run_completed(canonical_status, run_events)
+        overview = canonical_delivery_overview_for_run(
+            run_id=str(run.id),
+            run_events=run_events,
+            tool_events=tool_events,
+            artifacts=business_artifacts,
+            status=canonical_status or ("running" if run_running else run.status),
+            published_url=project.generated_app_url
+            or run.generated_app_url
+            or _published_url_from_run_dir(run_dir),
+        )
         context.update(
             {
                 "overview": overview,
                 "overview_blockers": user_facing_blockers(overview.blockers),
-                "board": board_cards_for_run(run_dir),
-                "sprints": sprint_groups_for_run(run_dir),
-                "work_plan_groups": work_plan_groups_for_run(run_dir),
-                "sprint_board_groups": sprint_board_groups_for_run(run_dir),
+                "board": board,
+                "sprints": canonical_board_groups_for_run(
+                    run_dir, tool_events, business_artifacts, run_events
+                ),
+                "work_plan_groups": canonical_work_plan_groups_for_run(
+                    run_dir, tool_events, business_artifacts, run_events
+                ),
+                "sprint_board_groups": canonical_sprint_board_groups_for_run(
+                    run_dir, tool_events, business_artifacts, run_events
+                ),
                 "business_artifacts": business_artifacts,
                 "business_artifact_groups": artifact_owner_groups(business_artifacts),
                 "business_artifact_phase_groups": artifact_phase_groups(business_artifacts),
-                "task_report_groups": task_report_groups_for_run(run_dir, business_artifacts),
+                "task_report_groups": canonical_task_report_groups_for_run(
+                    run_dir, tool_events, business_artifacts, run_events
+                ),
                 "technical_artifacts": [],
-                "logs": rendered_log_entries_for_run(run_dir),
-                "activity_groups": activity_groups_for_run(run_dir),
+                "logs": canonical_rendered_log_entries_for_run(tool_events, run_events),
+                "activity_groups": canonical_activity_groups_for_run(
+                    tool_events, run_events=run_events
+                ),
                 "run_running": run_running,
                 "run_completed": run_completed,
                 "can_restart": (
@@ -914,11 +974,158 @@ def render_workspace(
                     and project.visibility != "public_demo"
                     and not run_running
                 ),
-                "showcase_ready": _run_showcase_ready(run),
-                "run_timing": run_timing_for_run(run_dir),
+                "showcase_ready": _run_showcase_ready(repo, run),
+                "run_timing": canonical_run_timing_for_trace(
+                    run_events,
+                    tool_events,
+                    completed=run_completed,
+                ),
             }
         )
     return render(request, "project_workspace.html", **context)
+
+
+def _sync_canonical_run_completion(
+    repo: ConsoleRepository,
+    project: Project,
+    run: Run,
+    artifact_records: list[object],
+    tool_events: list[object],
+) -> None:
+    """Mirror structured trace/registry terminal state back to DB rows."""
+
+    status = _canonical_status_from_records_and_trace(artifact_records, tool_events)
+    url = _published_url_from_run_dir(Path(run.run_dir))
+    if status and (run.status != status or (url and not run.generated_app_url)):
+        repo.update_run_status(run.id, status, generated_app_url=url)
+    if status and project.status != status:
+        repo.update_project_status(project.id, status)
+
+
+def _canonical_status_from_records_and_trace(
+    artifact_records: list[object],
+    tool_events: list[object],
+) -> str:
+    has_release_report = any(
+        str(getattr(record, "artifact_type", "")) == "release_report" for record in artifact_records
+    )
+    has_deploy_success = _has_successful_tool_status(tool_events, "run_deployment", "deployed")
+    has_handoff_success = _has_successful_tool_status(tool_events, "run_handoff", "handoff_ready")
+    has_post_deploy_pass = _has_successful_tool_status(tool_events, "run_post_deploy_qa", "passed")
+    if has_release_report and (has_handoff_success or has_deploy_success or has_post_deploy_pass):
+        return "complete"
+    if has_release_report and any(
+        str(getattr(event, "tool_name", "")) == "run_handoff" for event in tool_events
+    ):
+        return "complete"
+    if _latest_unresolved_blocker(tool_events):
+        return "blocked"
+    if has_release_report:
+        return "complete"
+    return ""
+
+
+def _canonical_run_running(
+    run: Run,
+    run_events: list[object],
+    tool_events: list[object],
+    canonical_status: str,
+) -> bool:
+    if run.status in {"stopped", "complete", "completed", "failed", "blocked"}:
+        return False
+    if canonical_status in {"complete", "completed", "failed", "blocked", "stopped"}:
+        return False
+    latest_run_status = _latest_event_status(run_events)
+    if latest_run_status in {"stopped", "failed", "blocked"}:
+        return False
+    if _graph_terminal_seen(run_events):
+        return False
+    return run.status in {"running", "starting"} or bool(run_events or tool_events)
+
+
+def _canonical_run_completed(canonical_status: str, run_events: list[object]) -> bool:
+    if canonical_status in {"complete", "completed", "failed", "blocked", "stopped"}:
+        return True
+    return _graph_terminal_seen(run_events)
+
+
+def _graph_terminal_seen(run_events: list[object]) -> bool:
+    return any(
+        str(getattr(event, "event_type", "")).lower()
+        in {"delivery_graph_completed", "delivery_graph_failed"}
+        for event in run_events
+    )
+
+
+def _latest_event_status(events: list[object]) -> str:
+    if not events:
+        return ""
+    latest = sorted(events, key=lambda event: str(getattr(event, "created_at", "")))[-1]
+    return str(getattr(latest, "status", "") or "").lower()
+
+
+def _has_successful_tool_status(
+    tool_events: list[object],
+    tool_name: str,
+    status_token: str,
+) -> bool:
+    for event in tool_events:
+        if str(getattr(event, "tool_name", "")) != tool_name:
+            continue
+        status = str(getattr(event, "status", "")).lower()
+        if status_token in status and not _event_has_failure_mode(event):
+            return True
+    return False
+
+
+def _latest_unresolved_blocker(tool_events: list[object]) -> bool:
+    ordered = sorted(tool_events, key=lambda event: str(getattr(event, "created_at", "")))
+    latest_blocked_index = -1
+    latest_success_index = -1
+    for index, event in enumerate(ordered):
+        status = str(getattr(event, "status", "")).lower()
+        if _event_has_failure_mode(event) or any(
+            token in status for token in ("blocked", "failed", "human_approval_required")
+        ):
+            latest_blocked_index = index
+        if any(token in status for token in ("ready", "completed", "deployed", "passed")) and not (
+            "failed" in status or "blocked" in status
+        ):
+            latest_success_index = index
+    return latest_blocked_index > latest_success_index
+
+
+def _event_has_failure_mode(event: object) -> bool:
+    failure_mode = str(getattr(event, "failure_mode", "") or "").lower()
+    status = str(getattr(event, "status", "") or "").lower()
+    if not failure_mode:
+        return False
+    if any(token in status for token in ("ready", "completed", "deployed", "passed")) and not (
+        "failed" in status or "blocked" in status
+    ):
+        return False
+    return True
+
+
+def _published_url_from_run_dir(run_dir: Path) -> str:
+    for path in (run_dir / "deployment" / "result.json",):
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        urls = payload.get("public_urls")
+        if isinstance(urls, list):
+            first = next((str(url).strip() for url in urls if str(url).strip()), "")
+            if first:
+                return first
+        url = str(payload.get("public_url") or payload.get("url") or "").strip()
+        if url:
+            return url
+    return ""
 
 
 def _project_request_text(project: Project, run: Run | None) -> str:
@@ -1169,7 +1376,7 @@ def restart_run_settings(repo: ConsoleRepository, project: Project, user: User) 
 def _run_env(run: Run | None) -> dict[str, str]:
     if run is None:
         return {}
-    return read_env_keys(Path(run.run_dir) / "generated-project" / ".env")
+    return read_env_keys(agent_runtime_env_path(Path(run.run_dir)))
 
 
 def redirect(url: str) -> RedirectResponse:
@@ -1211,6 +1418,7 @@ def main() -> None:
         port=port,
         reload=False,
         factory=True,
+        access_log=False,
     )
 
 

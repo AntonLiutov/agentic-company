@@ -14,6 +14,7 @@ from agentic_company.integrations.codex.events import (
     write_structured_codex_artifacts,
 )
 from agentic_company.platform.artifacts import EXECUTION_REQUEST_ARTIFACT
+from agentic_company.platform.run_trace import load_run_events
 
 
 def test_codex_cli_runner_invokes_codex_exec_with_planning_context(
@@ -575,8 +576,14 @@ def _execution_request(
 
 def _read_events(run_dir: Path) -> list[dict[str, object]]:
     return [
-        json.loads(line)
-        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        {
+            "timestamp": event.created_at,
+            "run_id": event.run_id,
+            "agent_id": event.agent_id,
+            "event": event.event_type,
+            "data": event.data,
+        }
+        for event in load_run_events(run_dir)
     ]
 
 

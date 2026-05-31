@@ -8,6 +8,7 @@ from agentic_company.platform.codex_review import CodexReviewRequest, CodexRevie
 from agentic_company.platform.messages import AgentMessageStore
 from agentic_company.platform.models import AgentRunResult
 from agentic_company.platform.state import (
+    DELIVERY_STATE_SNAPSHOT,
     DeliveryState,
     initial_delivery_state,
     mark_node_completed,
@@ -485,7 +486,7 @@ def test_head_board_is_visible_before_pm_feature_queue(tmp_path):
     seen: dict[str, object] = {}
 
     def business_analyst(worker_state: DeliveryState) -> DeliveryState:
-        saved = json.loads((tmp_path / ".delivery-state.json").read_text(encoding="utf-8"))
+        saved = json.loads((tmp_path / DELIVERY_STATE_SNAPSHOT).read_text(encoding="utf-8"))
         seen["items"] = [item["item_id"] for item in saved["work_board"]["items"]]
         seen["status"] = saved["work_board"]["items"][0]["status"]
         seen["assigned_agent"] = saved["work_board"]["items"][0]["assigned_agent"]
@@ -608,7 +609,7 @@ def test_head_codex_review_marks_explicit_board_item_as_review(tmp_path):
 
     toolbox.codex_review(target="BA", reason="Review BA.", message="Review BA artifacts.")
 
-    saved = json.loads((tmp_path / ".delivery-state.json").read_text(encoding="utf-8"))
+    saved = json.loads((tmp_path / DELIVERY_STATE_SNAPSHOT).read_text(encoding="utf-8"))
     assert saved["work_board"]["items"][0]["status"] == "review"
     assert saved["work_board"]["items"][0]["lane"] == "review"
 
@@ -645,7 +646,7 @@ def test_head_codex_review_does_not_mark_active_feature_without_explicit_target(
     )
 
     assert toolbox.delivery_state.get("feature_statuses", {}) == {}
-    saved = json.loads((tmp_path / ".delivery-state.json").read_text(encoding="utf-8"))
+    saved = json.loads((tmp_path / DELIVERY_STATE_SNAPSHOT).read_text(encoding="utf-8"))
     assert saved.get("feature_statuses", {}) == {}
 
 

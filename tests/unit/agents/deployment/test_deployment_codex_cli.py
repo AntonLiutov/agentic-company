@@ -9,6 +9,7 @@ from agentic_company.agents.deployment.codex_cli import (
     read_deployment_contract,
 )
 from agentic_company.platform.artifacts import load_execution_request
+from agentic_company.platform.state import DELIVERY_STATE_SNAPSHOT
 
 
 def test_deployment_codex_runner_accepts_contract_artifacts(tmp_path):
@@ -286,7 +287,9 @@ def test_deployment_codex_prompt_does_not_prescribe_topology_or_commands(tmp_pat
 
 def test_deployment_codex_prompt_reads_release_scope_from_delivery_state(tmp_path):
     run_dir = _create_run(tmp_path)
-    (run_dir / ".delivery-state.json").write_text(
+    state_path = run_dir / DELIVERY_STATE_SNAPSHOT
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
         json.dumps({"completed_feature_ids": ["F1", "F2"]}),
         encoding="utf-8",
     )

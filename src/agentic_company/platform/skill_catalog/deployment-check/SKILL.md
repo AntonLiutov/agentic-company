@@ -27,7 +27,9 @@ Turn a locally generated app into a reachable demo and capture evidence that the
 2. Verify the app has a runnable entrypoint and required configuration.
 3. Deploy or validate deployment using the configured platform path.
 4. Open or check the deployed URL when possible.
-5. Capture deployment URL, logs summary, blockers, and post-deploy QA instructions.
+5. Confirm that the deployed runtime serves required static assets or clearly
+   hand off asset/style risk to post-deploy QA.
+6. Capture deployment URL, logs summary, blockers, and post-deploy QA instructions.
 6. Return deployment summary artifact and evidence refs.
 
 ## Output Contract
@@ -41,6 +43,8 @@ Turn a locally generated app into a reachable demo and capture evidence that the
 - Do not report success without a reachable URL or clear limitation.
 - Do not expose secrets in artifacts or comments.
 - Separate deployment success from product behavior success.
+- Do not claim visual/product success just because the URL returned HTTP 200;
+  post-deploy QA must validate behavior, CSS/static assets, and visible layout.
 
 ## Failure And Repair
 

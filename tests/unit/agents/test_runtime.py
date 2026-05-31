@@ -51,6 +51,17 @@ class RepairingToolCallingAgent:
         return {"output": "Repaired after reviewing the second Codex result."}
 
 
+class DuplicateSuccessfulToolCallingAgent:
+    def __init__(self, tools, tool_responses: list[str]) -> None:
+        self.tools = tools
+        self.tool_responses = tool_responses
+
+    def invoke(self, input: dict[str, object], config: dict[str, object] | None = None):
+        self.tool_responses.append(self.tools[0](reason="initial", message="execute"))
+        self.tool_responses.append(self.tools[0](reason="duplicate", message="execute again"))
+        return {"output": "Accepted cached result."}
+
+
 class FakeSpecialistRunner:
     def __init__(self) -> None:
         self.run_dirs = []
@@ -85,7 +96,9 @@ def test_langchain_create_agent_runtime_invokes_agent_with_scoped_prompt(
     run_dir = tmp_path / "run"
     target_dir = run_dir / "generated-project"
     target_dir.mkdir(parents=True)
-    (target_dir / ".env").write_text(
+    runtime_env = run_dir / "delivery" / "agent-runtime.env"
+    runtime_env.parent.mkdir(parents=True)
+    runtime_env.write_text(
         "OPENAI_API_KEY=sk-test\nAGENT_ROUTER_MODEL=gpt-router-test\n"
         "AGENT_LLM_MODEL=gpt-agent-test\n",
         encoding="utf-8",
@@ -320,6 +333,49 @@ def test_langchain_specialist_agent_executor_runs_codex_exec_tool(tmp_path, monk
     assert captured["tools"][0].__name__ == "codex_exec"
 
 
+def test_langchain_specialist_agent_executor_suppresses_duplicate_successful_codex_exec(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    runner = FakeSpecialistRunner()
+    state = initial_delivery_state(run_id="duplicate-success", run_dir=tmp_path)
+    tool_responses: list[str] = []
+
+    def create_agent_factory(model, tools, system_prompt):
+        return DuplicateSuccessfulToolCallingAgent(tools, tool_responses)
+
+    executor = LangChainSpecialistAgentExecutor(
+        LangChainCreateAgentRuntime(
+            chat_model_factory=lambda model, api_key, reasoning_effort: {
+                "model": model,
+                "reasoning_effort": reasoning_effort,
+            },
+            create_agent_factory=create_agent_factory,
+        )
+    )
+
+    result = executor.run(
+        SpecialistAgentRequest(
+            agent_id="specialist-agent",
+            agent_name="Specialist Agent",
+            stage="specialist",
+            system_prompt="system",
+            user_prompt="user",
+            runner=runner,
+            run_dir=tmp_path,
+            delivery_state=state,
+        )
+    )
+
+    assert result.status == "codex_completed"
+    assert runner.run_dirs == [tmp_path]
+    assert '"cached_successful_result": true' in tool_responses[1]
+    assert [
+        event.event_type for event in load_run_events(tmp_path)
+    ] == ["duplicate_execution_suppressed"]
+
+
 def test_langchain_specialist_agent_executor_injects_selected_skills_and_traces(
     tmp_path,
     monkeypatch,
@@ -552,13 +608,13 @@ def test_langchain_runtime_keeps_reasoning_for_reasoning_models(
     assert captured["model"] == {"model": "gpt-5.5", "reasoning_effort": "high"}
 
 
-def test_agent_env_value_reads_generated_project_env(tmp_path, monkeypatch):
+def test_agent_env_value_reads_run_agent_runtime_env(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.chdir(tmp_path)
     run_dir = tmp_path / "run"
-    generated_project = run_dir / "generated-project"
-    generated_project.mkdir(parents=True)
-    (generated_project / ".env").write_text("OPENAI_API_KEY=sk-generated\n", encoding="utf-8")
+    runtime_env = run_dir / "delivery" / "agent-runtime.env"
+    runtime_env.parent.mkdir(parents=True)
+    runtime_env.write_text("OPENAI_API_KEY=sk-generated\n", encoding="utf-8")
     state = initial_delivery_state(run_id="run", run_dir=run_dir)
 
     assert agent_env_value("OPENAI_API_KEY", state) == "sk-generated"
@@ -569,9 +625,9 @@ def test_agent_env_value_prefers_run_env_over_process_env(tmp_path, monkeypatch)
     monkeypatch.setenv("AGENT_LLM_MODEL", "gpt-4.1")
     monkeypatch.chdir(tmp_path)
     run_dir = tmp_path / "run"
-    generated_project = run_dir / "generated-project"
-    generated_project.mkdir(parents=True)
-    (generated_project / ".env").write_text(
+    runtime_env = run_dir / "delivery" / "agent-runtime.env"
+    runtime_env.parent.mkdir(parents=True)
+    runtime_env.write_text(
         "AGENT_LLM_PROVIDER=google_gemini\nAGENT_LLM_MODEL=gemini-3.1-flash-lite\n",
         encoding="utf-8",
     )

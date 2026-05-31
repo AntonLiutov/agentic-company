@@ -12,7 +12,7 @@ from agentic_company.platform.artifact_registry import (
 from agentic_company.platform.artifacts import artifact_ref
 
 
-def test_artifact_id_is_deterministic():
+def test_artifact_id_is_stable():
     assert artifact_id_for("run-1", "reports/summary.md") == artifact_id_for(
         "run-1", "reports\\summary.md"
     )

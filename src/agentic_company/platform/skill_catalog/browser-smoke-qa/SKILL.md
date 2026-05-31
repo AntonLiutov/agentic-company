@@ -40,6 +40,7 @@ Verify that the generated app behaves like a usable prototype, not only that fil
 
 - Do not pass work based only on source inspection.
 - Do not ignore broken buttons, placeholder flows, invisible text, or unusable layout.
+- For web UI work, prefer Playwright or an equivalent real browser automation path.
 - If browser execution is unavailable, clearly mark the evidence as limited.
 
 ## Failure And Repair

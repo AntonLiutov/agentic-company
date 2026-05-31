@@ -1031,6 +1031,19 @@ def promote_candidate_feature_queue(state: DeliveryState) -> DeliveryState:
     """Promote PM's candidate feature queue into the active delivery queue."""
 
     if state.get("feature_queue"):
+        if not state.get("active_feature_id"):
+            updated = {**state}
+            next_feature = sorted(
+                [
+                    feature
+                    for feature in list(updated.get("feature_queue", []))
+                    if isinstance(feature, dict) and feature.get("id")
+                ],
+                key=lambda feature: int(feature.get("delivery_order", 0) or 0),
+            )
+            if next_feature:
+                updated["active_feature_id"] = str(next_feature[0]["id"])
+            state = cast(DeliveryState, updated)
         return sync_work_board(
             state,
             sprint_id=str(state.get("team_lead_sprint_id") or ""),
@@ -1153,7 +1166,7 @@ def write_json_artifact(state: DeliveryState, relative_path: str, payload: dict[
 
 def write_head_event(state: DeliveryState, event: str, data: dict[str, Any]) -> None:
     write_event(
-        Path(state["run_dir"]) / "events.jsonl",
+        Path(state["run_dir"]),
         state["run_id"],
         HEAD_AGENT_ID,
         event,

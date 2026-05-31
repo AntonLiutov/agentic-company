@@ -21,6 +21,7 @@ def test_quality_codex_runner_accepts_contract_artifacts(tmp_path):
                 {
                     "feature_id": feature_id,
                     "status": "passed",
+                    **_qa_evidence_fields(),
                     "checks_performed": [
                         {
                             "name": "QA Codex selected evidence",
@@ -48,12 +49,11 @@ def test_quality_codex_runner_accepts_contract_artifacts(tmp_path):
     assert result.status == "qa_passed"
     assert "08-qa-report-F1.md" in result.output_artifacts
     assert "qa/results-F1.json" in result.output_artifacts
-    assert "qa/gates/F1/quality-gate-report.json" in result.output_artifacts
     payload = json.loads((run_dir / "qa" / "results-F1.json").read_text(encoding="utf-8"))
-    assert payload["gate_coverage"]
+    assert payload["status"] == "passed"
 
 
-def test_quality_codex_runner_fails_ui_task_without_browser_evidence(tmp_path):
+def test_quality_codex_runner_does_not_override_agent_pass_for_ui_task(tmp_path):
     run_dir = _create_run(tmp_path, ui=True)
 
     def executor(command: Sequence[str], prompt: str, timeout: int, log: Path, raw: Path):
@@ -64,6 +64,7 @@ def test_quality_codex_runner_fails_ui_task_without_browser_evidence(tmp_path):
                 {
                     "feature_id": feature_id,
                     "status": "passed",
+                    **_qa_evidence_fields(browser_used=False),
                     "checks_performed": [
                         {
                             "name": "source inspection",
@@ -87,11 +88,10 @@ def test_quality_codex_runner_fails_ui_task_without_browser_evidence(tmp_path):
 
     result = QualityCodexRunner(command_executor=executor).run(run_dir)
 
-    assert result.status == "qa_failed"
-    assert "10-fix-request-F1.json" in result.output_artifacts
+    assert result.status == "qa_passed"
+    assert "10-fix-request-F1.json" not in result.output_artifacts
     payload = json.loads((run_dir / "qa" / "results-F1.json").read_text(encoding="utf-8"))
-    assert payload["status"] == "failed"
-    assert payload["repair_request_artifact_refs"]
+    assert payload["status"] == "passed"
 
 
 def test_quality_codex_runner_fails_when_contract_missing(tmp_path):
@@ -123,6 +123,7 @@ def test_quality_codex_runner_recovers_artifacts_from_generated_project(tmp_path
                 {
                     "feature_id": feature_id,
                     "status": "passed",
+                    **_qa_evidence_fields(),
                     "checks_performed": [],
                     "acceptance_criteria_coverage": [],
                     "risks": [],
@@ -158,6 +159,7 @@ def test_quality_codex_runner_recovers_report_from_agent_qa_folder(tmp_path):
                 {
                     "feature_id": feature_id,
                     "status": "passed",
+                    **_qa_evidence_fields(),
                     "checks_performed": [],
                     "acceptance_criteria_coverage": [],
                     "risks": [],
@@ -180,7 +182,7 @@ def test_quality_codex_runner_recovers_report_from_agent_qa_folder(tmp_path):
     assert (run_dir / "qa" / "results-F1.json").exists()
 
 
-def test_quality_codex_prompt_uses_platform_quality_gates_without_prescribing_commands(tmp_path):
+def test_quality_codex_prompt_has_no_platform_gate_override(tmp_path):
     run_dir = _create_run(tmp_path)
     request = load_execution_request(run_dir)
     prompt = build_quality_codex_prompt(
@@ -191,8 +193,7 @@ def test_quality_codex_prompt_uses_platform_quality_gates_without_prescribing_co
         previous_summary="",
     )
 
-    assert "Platform quality gates" in prompt
-    assert "must not mark QA as passed when a\n  required platform gate failed" in prompt
+    assert "hardcoded platform checklist" in prompt
     assert "uv sync" not in prompt
     assert "compileall" not in prompt
     assert "docker compose config" not in prompt
@@ -213,13 +214,18 @@ def test_quality_codex_prompt_suggests_non_exhaustive_toolbox(tmp_path):
     assert "Non-exhaustive QA toolbox" in prompt
     assert "not a complete or limiting checklist" in prompt
     assert "You may use other tools or approaches" in prompt
-    assert "Playwright can be useful" in prompt
+    assert "browser-level evidence with Playwright" in prompt
     assert "evaluate both behavior and user experience" in prompt
     assert "classify failures for Team\n  Lead routing" in prompt
     assert "usually\n  need Fullstack repair" in prompt
     assert "usually need Deployment\n  repair" in prompt
     assert "remediation_owner" in prompt
     assert "Do not run every possible tool mechanically" in prompt
+    assert "browser_automation" in prompt
+    assert "role_specific_control_visibility" in prompt
+    assert "dead_or_future_controls_found" in prompt
+    assert "api_only_gaps" in prompt
+    assert "css_static_assets" in prompt
 
 
 def test_quality_codex_prompt_includes_exact_artifact_paths_and_repair_errors(tmp_path):
@@ -280,3 +286,27 @@ def _create_run(tmp_path: Path, *, ui: bool = False) -> Path:
         encoding="utf-8",
     )
     return run_dir
+
+
+def _qa_evidence_fields(*, browser_used: bool = True) -> dict[str, object]:
+    return {
+        "browser_automation": {
+            "used": browser_used,
+            "tool": "Playwright" if browser_used else "not used",
+            "limitation": "" if browser_used else "Unit fixture without browser runtime.",
+        },
+        "screenshots": [],
+        "visible_ui_flows_tested": [],
+        "role_specific_control_visibility": [],
+        "dead_or_future_controls_found": [],
+        "api_only_gaps": [],
+        "responsive_viewports": {
+            "desktop": "passed" if browser_used else "limited",
+            "mobile": "passed" if browser_used else "limited",
+            "evidence": "Unit fixture evidence.",
+        },
+        "css_static_assets": {
+            "status": "passed" if browser_used else "limited",
+            "evidence": "Unit fixture evidence.",
+        },
+    }

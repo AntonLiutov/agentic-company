@@ -140,8 +140,7 @@ def _prepare_context(state: DeploymentAgentGraphState) -> DeploymentAgentGraphSt
         parent_message_id=str(delivery_state.get("agent_call_message_id") or ""),
         codex_resume_thread_id=codex_resume_thread_id(delivery_state, DEPLOYMENT_CODEX_AGENT_ID),
     )
-    event_log = run_dir / "events.jsonl"
-    event_log.parent.mkdir(parents=True, exist_ok=True)
+    event_log = run_dir
     write_event(
         event_log,
         delivery_state["run_id"],
@@ -251,7 +250,7 @@ def _apply_deployment_result(state: DeploymentAgentGraphState) -> DeploymentAgen
     delivery_state = state["delivery_state"]
     deployment_status = state.get("status") or _normalize_deployment_status(result.status)
     public_urls = state.get("public_urls", [])
-    event_log = Path(state["run_dir"]) / "events.jsonl"
+    event_log = Path(state["run_dir"])
     write_event(
         event_log,
         delivery_state["run_id"],

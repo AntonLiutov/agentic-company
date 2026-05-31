@@ -8,6 +8,13 @@ from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.platform.artifact_registry import register_artifact
 from agentic_company.platform.events import write_event
 from agentic_company.platform.run_trace import record_tool_call_event
+from agentic_company.platform.state import DELIVERY_STATE_SNAPSHOT
+
+
+def delivery_state_path(run_dir: Path) -> Path:
+    state_path = run_dir / DELIVERY_STATE_SNAPSHOT
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    return state_path
 
 
 def test_landing_page_renders_public_story(tmp_path):
@@ -222,9 +229,9 @@ def test_create_project_starts_run_with_monkeypatched_runtime(tmp_path, monkeypa
 
     assert response.status_code == 303
     assert (run_root / "console-test" / "00-requirements.md").exists()
-    env_text = (run_root / "console-test" / "generated-project" / ".env").read_text(
-        encoding="utf-8"
-    )
+    run_dir = run_root / "console-test"
+    env_text = (run_dir / "delivery" / "agent-runtime.env").read_text(encoding="utf-8")
+    assert not (run_dir / "generated-project" / ".env").exists()
     assert "OPENAI_API_KEY=sk-test-project" in env_text
     assert "CODEX_API_KEY=sk-test-project" in env_text
     assert "AGENT_LLM_PROVIDER=openai" in env_text
@@ -278,9 +285,9 @@ def test_create_project_can_use_gemini_for_agent_executor(tmp_path, monkeypatch)
     )
 
     assert response.status_code == 303
-    env_text = (run_root / "console-gemini" / "generated-project" / ".env").read_text(
-        encoding="utf-8"
-    )
+    run_dir = run_root / "console-gemini"
+    env_text = (run_dir / "delivery" / "agent-runtime.env").read_text(encoding="utf-8")
+    assert not (run_dir / "generated-project" / ".env").exists()
     assert "AGENT_LLM_PROVIDER=google_gemini" in env_text
     assert "AGENT_LLM_MODEL=gemini-3.1-flash-lite" in env_text
     assert "GOOGLE_API_KEY=AIza-project" in env_text
@@ -332,9 +339,9 @@ def test_create_project_can_use_platform_gemini_key(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 303
-    env_text = (run_root / "console-platform-gemini" / "generated-project" / ".env").read_text(
-        encoding="utf-8"
-    )
+    run_dir = run_root / "console-platform-gemini"
+    env_text = (run_dir / "delivery" / "agent-runtime.env").read_text(encoding="utf-8")
+    assert not (run_dir / "generated-project" / ".env").exists()
     assert "AGENT_LLM_PROVIDER=google_gemini" in env_text
     assert "GOOGLE_API_KEY=AIza-platform" in env_text
 
@@ -450,7 +457,7 @@ def test_restart_project_creates_new_run_from_saved_request(tmp_path, monkeypatc
         complexity="simple",
     )
     old_run_dir = tmp_path / "runs" / "old"
-    old_env = old_run_dir / "generated-project" / ".env"
+    old_env = old_run_dir / "delivery" / "agent-runtime.env"
     old_env.parent.mkdir(parents=True)
     old_env.write_text(
         "\n".join(
@@ -493,7 +500,8 @@ def test_restart_project_creates_new_run_from_saved_request(tmp_path, monkeypatc
 
     assert response.status_code == 303
     assert "Build a tiny app" in (new_run_dir / "00-requirements.md").read_text(encoding="utf-8")
-    new_env = (new_run_dir / "generated-project" / ".env").read_text(encoding="utf-8")
+    new_env = (new_run_dir / "delivery" / "agent-runtime.env").read_text(encoding="utf-8")
+    assert not (new_run_dir / "generated-project" / ".env").exists()
     assert "AGENT_LLM_MODEL=gpt-5.5" in new_env
     assert "COORDINATOR_AGENT_REASONING_EFFORT=high" in new_env
     assert "AGENT_CODEX_MODEL=gpt-5.5" in new_env
@@ -519,7 +527,7 @@ def test_restart_button_visible_for_blocked_private_run(tmp_path):
     )
     run_dir = tmp_path / "runs" / "blocked"
     run_dir.mkdir(parents=True)
-    (run_dir / ".delivery-state.json").write_text(
+    delivery_state_path(run_dir).write_text(
         json.dumps(
             {
                 "run_id": "blocked",
@@ -677,28 +685,40 @@ def test_promote_and_demote_project_from_workspace(tmp_path):
     )
     run_dir = tmp_path / "runs" / "showcase"
     run_dir.mkdir(parents=True)
-    (run_dir / ".delivery-state.json").write_text(
-        json.dumps(
-            {
-                "run_id": "showcase",
-                "run_dir": str(run_dir),
-                "stage": "head",
-                "status": "head_delivery_completed",
-                "repair_attempts": 0,
-                "max_repair_attempts": 5,
-                "artifacts": [],
-                "blockers": [],
-                "auto_confirmations": [],
-                "completed_nodes": [],
-            }
-        ),
-        encoding="utf-8",
+    release_path = run_dir / "handoff" / "project" / "final" / "release-report.html"
+    release_path.parent.mkdir(parents=True)
+    release_path.write_text("<h1>Release ready</h1>", encoding="utf-8")
+    release = register_artifact(
+        run_dir,
+        relative_path="handoff/project/final/release-report.html",
+        owner_agent="handoff-agent",
+        artifact_type="release_report",
+        visibility="release",
+        label="Final report",
+        source_tool="run_handoff",
+    )
+    record_tool_call_event(
+        run_dir,
+        run_id="showcase",
+        agent_id="team-lead-agent",
+        tool_name="run_handoff",
+        tool_call_id="tool_showcase_handoff",
+        status="handoff_ready",
+        output_summary={
+            "business_summary": "Release report is ready.",
+            "dashboard_update": {
+                "status": "done",
+                "summary": "Release report is ready.",
+                "comment": "Release report is ready.",
+            },
+        },
+        artifact_ids=[release.artifact_id],
     )
     repo.create_run(
         project_id=project.id,
         run_uid="showcase",
         run_dir=run_dir,
-        status="head_delivery_completed",
+        status="complete",
         mode="simple_prototype",
         reasoning="medium",
     )

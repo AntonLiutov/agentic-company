@@ -193,7 +193,10 @@ TEAM_LEAD_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
             {
                 "target": "post-deploy",
                 "reason": "Validate deployed sprint.",
-                "message": "Open the public URL and verify the delivered behavior.",
+                "message": (
+                    "Open the public URL and verify delivered behavior, CSS/static asset "
+                    "loading, and obvious layout/style regressions before handoff."
+                ),
             },
         ),
     ),

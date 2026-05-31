@@ -146,8 +146,7 @@ def _prepare_context(state: HandoffAgentGraphState) -> HandoffAgentGraphState:
         handoff_output_dir=str(delivery_state.get("handoff_output_dir") or ""),
         handoff_expected_outputs=list(delivery_state.get("handoff_expected_outputs", [])),
     )
-    event_log = run_dir / "events.jsonl"
-    event_log.parent.mkdir(parents=True, exist_ok=True)
+    event_log = run_dir
     write_event(
         event_log,
         delivery_state["run_id"],
@@ -241,7 +240,7 @@ def _apply_handoff_result(state: HandoffAgentGraphState) -> HandoffAgentGraphSta
 
     status = state.get("status") or _normalize_handoff_status(result.status)
     delivery_state = state["delivery_state"]
-    event_log = Path(state["run_dir"]) / "events.jsonl"
+    event_log = Path(state["run_dir"])
     primary_artifact = (
         result.output_artifacts[0] if result.output_artifacts else "release-report.html"
     )

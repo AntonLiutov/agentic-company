@@ -5,6 +5,7 @@ from agentic_company.agents.quality.agent import QualityAgent
 from agentic_company.agents.quality.graph import run_quality_agent_graph
 from agentic_company.platform.agent_runtime import DirectSpecialistAgentExecutor
 from agentic_company.platform.models import AgentRunResult
+from agentic_company.platform.run_trace import load_run_events
 from agentic_company.platform.state import DeliveryState, initial_delivery_state
 
 
@@ -180,7 +181,4 @@ class FakeQaRunner:
 
 
 def _event_names(run_dir: Path) -> list[str]:
-    return [
-        json.loads(line)["event"]
-        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
+    return [event.event_type for event in load_run_events(run_dir)]

@@ -116,6 +116,9 @@ class CodexReviewRunner:
             raw_events_path,
             request.run_dir,
             codex_execution_id=codex_execution_id,
+            run_id=request.run_id,
+            agent_id=review_agent_id,
+            work_item_id=request.correlation_id,
         )
         duration_ms = max(0, int((time.perf_counter() - started) * 1000))
         content = (
@@ -169,6 +172,9 @@ class CodexReviewRunner:
         run_dir: Path,
         *,
         codex_execution_id: str,
+        run_id: int | str,
+        agent_id: str,
+        work_item_id: str | None,
     ) -> subprocess.CompletedProcess[str]:
         if self.command_executor:
             return self.command_executor(
@@ -188,6 +194,10 @@ class CodexReviewRunner:
             raw_events_path,
             env=env,
             codex_execution_id=codex_execution_id,
+            trace_run_dir=run_dir,
+            trace_run_id=run_id,
+            trace_agent_id=agent_id,
+            trace_work_item_id=work_item_id,
         )
 
 

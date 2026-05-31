@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -14,6 +16,7 @@ from agentic_company.integrations.codex.cli import (
 )
 from agentic_company.integrations.codex.events import append_raw_codex_event
 from agentic_company.integrations.commands import StreamedCommand, stream_command
+from agentic_company.platform.run_trace import record_run_event
 
 CODEX_SANDBOX_ENV = "AGENTIC_CODEX_SANDBOX"
 CODEX_INHERIT_ENV_ENV = "AGENTIC_CODEX_INHERIT_ENV"
@@ -89,27 +92,211 @@ def stream_codex_exec_to_log(
     raw_events_path: Path,
     env: dict[str, str] | None = None,
     codex_execution_id: str = "",
+    trace_run_dir: Path | None = None,
+    trace_run_id: int | str = "",
+    trace_agent_id: str = "",
+    trace_work_item_id: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run Codex while streaming command output and raw JSON events to artifacts."""
 
+    raw_events_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     raw_events_path.write_text("", encoding="utf-8")
     log_path.write_text(f"timeout_seconds={timeout_seconds}\n\n", encoding="utf-8")
     command_env = env or build_codex_exec_environment(_target_project_dir_from_command(command))
-    return stream_command(
-        StreamedCommand(
-            command=command,
-            cwd=log_path.parent,
-            timeout_seconds=timeout_seconds,
-            log_path=log_path,
-            input_text=prompt,
-            env=command_env,
-            on_stdout_line=lambda line: append_raw_codex_event(
-                raw_events_path,
-                line,
-                metadata={"codex_execution_id": codex_execution_id},
-            ),
-            terminal_output_predicate=_is_codex_terminal_event,
+    lock_path = _codex_execution_lock_path(
+        trace_run_dir=trace_run_dir,
+        fallback_dir=raw_events_path.parent,
+        codex_execution_id=codex_execution_id,
+    )
+    lock_handle: int | None = None
+    if lock_path is not None:
+        lock_handle = _try_acquire_codex_execution_lock(lock_path)
+        if lock_handle is None:
+            _record_duplicate_execution_suppressed(
+                trace_run_dir=trace_run_dir,
+                trace_run_id=trace_run_id,
+                trace_agent_id=trace_agent_id,
+                trace_work_item_id=trace_work_item_id,
+                codex_execution_id=codex_execution_id,
+            )
+            if _wait_for_codex_execution_unlock(lock_path, timeout_seconds):
+                return subprocess.CompletedProcess(
+                    args=list(command),
+                    returncode=0,
+                    stdout="",
+                    stderr="duplicate_execution_suppressed",
+                )
+            return subprocess.CompletedProcess(
+                args=list(command),
+                returncode=124,
+                stdout="",
+                stderr="duplicate_execution_lock_timeout",
+            )
+
+    def on_stdout_line(line: str) -> None:
+        event = append_raw_codex_event(
+            raw_events_path,
+            line,
+            metadata={
+                "codex_execution_id": codex_execution_id,
+                "agent_id": trace_agent_id,
+                "work_item_id": trace_work_item_id or "",
+            },
         )
+        if event:
+            _record_codex_progress_event(
+                event,
+                trace_run_dir=trace_run_dir,
+                trace_run_id=trace_run_id,
+                trace_agent_id=trace_agent_id,
+                trace_work_item_id=trace_work_item_id,
+            )
+
+    try:
+        return stream_command(
+            StreamedCommand(
+                command=command,
+                cwd=log_path.parent,
+                timeout_seconds=timeout_seconds,
+                log_path=log_path,
+                input_text=prompt,
+                env=command_env,
+                on_stdout_line=on_stdout_line,
+                terminal_output_predicate=_is_codex_terminal_event,
+            )
+        )
+    finally:
+        if lock_handle is not None and lock_path is not None:
+            os.close(lock_handle)
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
+
+
+def _codex_execution_lock_path(
+    *,
+    trace_run_dir: Path | None,
+    fallback_dir: Path,
+    codex_execution_id: str,
+) -> Path | None:
+    if not codex_execution_id:
+        return None
+    root = trace_run_dir or fallback_dir
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", codex_execution_id).strip("-")
+    if not safe_id:
+        return None
+    lock_dir = root / ".agentic-codex-locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    return lock_dir / f"{safe_id}.lock"
+
+
+def _try_acquire_codex_execution_lock(lock_path: Path) -> int | None:
+    try:
+        return os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return None
+
+
+def _wait_for_codex_execution_unlock(lock_path: Path, timeout_seconds: int) -> bool:
+    deadline = time.monotonic() + max(1, timeout_seconds)
+    while time.monotonic() < deadline:
+        if not lock_path.exists():
+            return True
+        time.sleep(1)
+    return not lock_path.exists()
+
+
+def _record_duplicate_execution_suppressed(
+    *,
+    trace_run_dir: Path | None,
+    trace_run_id: int | str,
+    trace_agent_id: str,
+    trace_work_item_id: str | None,
+    codex_execution_id: str,
+) -> None:
+    if trace_run_dir is None or not trace_run_id or not trace_agent_id:
+        return
+    record_run_event(
+        trace_run_dir,
+        run_id=trace_run_id,
+        agent_id=trace_agent_id,
+        event_type="duplicate_execution_suppressed",
+        status="suppressed",
+        message="Duplicate Codex execution suppressed; existing execution lock is active.",
+        work_item_id=trace_work_item_id,
+        data={
+            "codex_execution_id": codex_execution_id,
+            "work_item_id": trace_work_item_id or "",
+        },
+    )
+
+
+def _record_codex_progress_event(
+    event: dict[str, object],
+    *,
+    trace_run_dir: Path | None,
+    trace_run_id: int | str,
+    trace_agent_id: str,
+    trace_work_item_id: str | None,
+) -> None:
+    """Mirror operator-meaningful Codex stream events into canonical run trace."""
+
+    if trace_run_dir is None or not trace_run_id or not trace_agent_id:
+        return
+
+    item = _codex_event_item(event)
+    item_type = _codex_item_type(item)
+    event_type = _codex_event_type(event)
+    recorded_at = str(event.get("recorded_at") or "")
+    item_id = str(item.get("id") or "")
+
+    if event_type == "item.completed" and item_type == "agent_message":
+        text = str(item.get("text") or "").strip()
+        if not text:
+            return
+        record_run_event(
+            trace_run_dir,
+            run_id=trace_run_id,
+            agent_id=trace_agent_id,
+            event_type="codex_agent_message",
+            status="in_progress",
+            message=text,
+            work_item_id=trace_work_item_id,
+            data={
+                "codex_item_id": item_id,
+                "codex_event_type": event_type,
+                "message": text,
+            },
+            created_at=recorded_at or None,
+        )
+        return
+
+    # Command executions stay in raw Codex logs for developer debugging. Product
+    # activity should show only the agent's user-facing progress commentary.
+
+
+def _codex_event_item(event: dict[str, object]) -> dict[str, object]:
+    params = event.get("params") if isinstance(event.get("params"), dict) else {}
+    item = params.get("item") if isinstance(params.get("item"), dict) else event.get("item")
+    return item if isinstance(item, dict) else {}
+
+
+def _codex_event_type(event: dict[str, object]) -> str:
+    return (
+        str(event.get("method") or event.get("type") or "")
+        .replace("/", ".")
+        .replace("agentMessage", "agent_message")
+        .replace("commandExecution", "command_execution")
+    )
+
+
+def _codex_item_type(item: dict[str, object]) -> str:
+    return (
+        str(item.get("type") or "")
+        .replace("agentMessage", "agent_message")
+        .replace("commandExecution", "command_execution")
     )
 
 
@@ -176,27 +363,39 @@ def build_codex_exec_environment(target_project_dir: Path) -> dict[str, str]:
         )
     if not env.get(CODEX_API_KEY_ENV, "").strip():
         env.pop(CODEX_API_KEY_ENV, None)
+    cache_root = Path(
+        env.get("AGENTIC_RUNTIME_CACHE_DIR", str(target_project_dir.parent / ".agentic-cache"))
+    )
     env.setdefault(
         "UV_CACHE_DIR",
-        env.get(CODEX_UV_CACHE_DIR_ENV, str(target_project_dir / ".uv-cache")),
+        env.get(CODEX_UV_CACHE_DIR_ENV, str(cache_root / "uv")),
+    )
+    env.setdefault(
+        "UV_PROJECT_ENVIRONMENT",
+        str(cache_root / "venv"),
     )
     env.setdefault(
         "DENO_DIR",
-        env.get(CODEX_DENO_DIR_ENV, str(target_project_dir / ".deno-cache")),
+        env.get(CODEX_DENO_DIR_ENV, str(cache_root / "deno")),
     )
     env.setdefault(
         "npm_config_cache",
-        env.get(CODEX_NPM_CACHE_ENV, str(target_project_dir / ".npm-cache")),
+        env.get(CODEX_NPM_CACHE_ENV, str(cache_root / "npm")),
     )
     return env
 
 
 def _merge_run_local_env(env: dict[str, str], target_project_dir: Path) -> None:
-    """Allow web-console run-local env files to configure Codex subprocesses."""
+    """Allow web-console run-local agent env files to configure Codex subprocesses.
+
+    Provider credentials are intentionally read from the run-level delivery
+    directory, not from generated-project/.env. The generated project folder is a
+    deliverable artifact and must not become the carrier for platform secrets.
+    """
 
     for env_path in (
-        target_project_dir / ".env",
-        target_project_dir / "generated-project" / ".env",
+        target_project_dir / "delivery" / "agent-runtime.env",
+        target_project_dir.parent / "delivery" / "agent-runtime.env",
     ):
         if not env_path.exists():
             continue

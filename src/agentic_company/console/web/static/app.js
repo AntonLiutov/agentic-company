@@ -59,8 +59,10 @@ async function pollRunLogs() {
   const target = document.querySelector("[data-live-logs-run]");
   if (!target) return;
   const runId = target.getAttribute("data-live-logs-run");
+  const taskId = target.getAttribute("data-live-task-id");
+  const query = taskId ? `?task_id=${encodeURIComponent(taskId)}` : "";
   try {
-    const response = await fetch(`/api/runs/${runId}/logs`);
+    const response = await fetch(`/api/runs/${runId}/logs${query}`);
     if (!response.ok) return;
     const payload = await response.json();
     if (payload.groups?.length) {

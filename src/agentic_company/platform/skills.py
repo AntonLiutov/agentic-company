@@ -31,8 +31,6 @@ KNOWN_ARTIFACT_TYPES = {
     "delivery_plan",
     "execution_summary",
     "qa_report",
-    "quality_gate_plan",
-    "quality_gate_report",
     "repair_request",
     "deployment_summary",
     "release_report",

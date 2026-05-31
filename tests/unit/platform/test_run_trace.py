@@ -21,7 +21,7 @@ from agentic_company.platform.run_trace import (
 from agentic_company.platform.status_inspector import StatusInspectionRequest, StatusInspectorRunner
 
 
-def test_write_event_keeps_legacy_log_and_mirrors_structured_trace(tmp_path: Path):
+def test_write_event_records_structured_trace_without_legacy_root_log(tmp_path: Path):
     event_log = tmp_path / "events.jsonl"
 
     write_event(
@@ -37,10 +37,9 @@ def test_write_event_keeps_legacy_log_and_mirrors_structured_trace(tmp_path: Pat
         },
     )
 
-    legacy = [json.loads(line) for line in event_log.read_text(encoding="utf-8").splitlines()]
     events = load_run_events(tmp_path)
 
-    assert legacy[0]["event"] == "tool_completed"
+    assert not event_log.exists()
     assert events[0].event_type == "tool_completed"
     assert events[0].status == "ready"
     assert events[0].data["api_key"] == "[REDACTED]"

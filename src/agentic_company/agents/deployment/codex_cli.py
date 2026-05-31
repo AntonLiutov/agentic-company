@@ -28,6 +28,7 @@ from agentic_company.platform.executions import (
 )
 from agentic_company.platform.messages import render_incoming_messages_for_prompt
 from agentic_company.platform.models import AgentRunResult, ExecutionRequest
+from agentic_company.platform.state import DELIVERY_STATE_SNAPSHOT
 
 LOGGER = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ class DeploymentCodexRunner:
 
     def run(self, run_dir: Path) -> AgentRunResult:
         request = load_execution_request(run_dir)
-        event_log = run_dir / "events.jsonl"
+        event_log = run_dir
         execution_id = _execution_id(request)
         write_event(
             event_log,
@@ -214,7 +215,7 @@ class DeploymentCodexRunner:
             encoding="utf-8",
         )
         write_event(
-            run_dir / "events.jsonl",
+            run_dir,
             request.run_id,
             DEPLOYMENT_CODEX_AGENT_ID,
             "deployment_codex_attempt_started",
@@ -231,6 +232,10 @@ class DeploymentCodexRunner:
                 log_path,
                 raw_events_path,
                 codex_execution_id=codex_execution_id,
+                run_dir=run_dir,
+                run_id=request.run_id,
+                agent_id=DEPLOYMENT_CODEX_AGENT_ID,
+                work_item_id="DEPLOY",
             )
         except FileNotFoundError:
             LOGGER.exception("Deployment Codex CLI missing run_id=%s", request.run_id)
@@ -250,7 +255,7 @@ class DeploymentCodexRunner:
         )
         codex_thread_id = extract_codex_thread_id(raw_events_path) or request.codex_resume_thread_id
         write_event(
-            run_dir / "events.jsonl",
+            run_dir,
             request.run_id,
             DEPLOYMENT_CODEX_AGENT_ID,
             "deployment_codex_attempt_completed",
@@ -283,6 +288,10 @@ class DeploymentCodexRunner:
         raw_events_path: Path,
         *,
         codex_execution_id: str,
+        run_dir: Path,
+        run_id: int | str,
+        agent_id: str,
+        work_item_id: str | None,
     ) -> subprocess.CompletedProcess[str]:
         if self.command_executor:
             return self.command_executor(
@@ -299,6 +308,10 @@ class DeploymentCodexRunner:
             log_path,
             raw_events_path,
             codex_execution_id=codex_execution_id,
+            trace_run_dir=run_dir,
+            trace_run_id=run_id,
+            trace_agent_id=agent_id,
+            trace_work_item_id=work_item_id,
         )
 
 
@@ -438,8 +451,10 @@ Your job:
   suitable for the cloud target.
 - Decide whether this project can be safely deployed to the configured dev
   environment now.
-- If deployable, create any safe runtime `.env` needed from `.env.example` and
-  existing non-secret values, build and start local containers as needed,
+- If deployable, create only app-owned safe runtime `.env` values needed from
+  `.env.example`; never copy OpenAI, Codex, Gemini, Azure, platform, or user
+  account secrets into the generated project or deployment artifacts. Build and
+  start local containers as needed,
   prepare Azure Container Apps resources, deploy the service or services, and
   report public URL(s).
 - If not deployable or a deployment attempt exposes a runtime mismatch, return
@@ -732,7 +747,7 @@ def _deployment_release_context(
     of truth for release-batch deployment.
     """
 
-    state_path = run_dir / ".delivery-state.json"
+    state_path = run_dir / DELIVERY_STATE_SNAPSHOT
     completed = list(request.completed_feature_ids)
     if state_path.exists():
         try:

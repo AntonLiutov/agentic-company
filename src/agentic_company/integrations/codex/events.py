@@ -14,13 +14,13 @@ def append_raw_codex_event(
     line: str,
     *,
     metadata: dict[str, str] | None = None,
-) -> None:
+) -> dict[str, object] | None:
     try:
         parsed = json.loads(line)
     except json.JSONDecodeError:
-        return
+        return None
     if not isinstance(parsed, dict):
-        return
+        return None
 
     event = _redact_event(_repair_event(parsed))
     if isinstance(event, dict) and metadata:
@@ -28,6 +28,7 @@ def append_raw_codex_event(
     event.setdefault("recorded_at", timestamp_now())
     with raw_events_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+    return event if isinstance(event, dict) else None
 
 
 def write_structured_codex_artifacts(

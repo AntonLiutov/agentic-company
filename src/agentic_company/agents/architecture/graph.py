@@ -144,7 +144,7 @@ def _prepare_context(state: ArchitectAgentGraphState) -> ArchitectAgentGraphStat
     request_path.parent.mkdir(parents=True, exist_ok=True)
     request_path.write_text(json.dumps(request, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     write_event(
-        run_dir / "events.jsonl",
+        run_dir,
         delivery_state["run_id"],
         ARCHITECT_AGENT_ID,
         "architecture_started",
@@ -220,7 +220,7 @@ def _apply_result(state: ArchitectAgentGraphState) -> ArchitectAgentGraphState:
         else "architecture_blocked"
     )
     write_event(
-        Path(updated["run_dir"]) / "events.jsonl",
+        Path(updated["run_dir"]),
         updated["run_id"],
         ARCHITECT_AGENT_ID,
         completed_event,

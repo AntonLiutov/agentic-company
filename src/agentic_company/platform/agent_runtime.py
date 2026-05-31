@@ -213,6 +213,37 @@ class LangChainSpecialistAgentExecutor:
             """Run the specialist Codex worker for this assigned task."""
 
             nonlocal tool_call_count, tool_result
+            if tool_result is not None and _agent_run_result_successful(tool_result):
+                record_run_event(
+                    request.run_dir,
+                    run_id=str(request.delivery_state.get("run_id") or request.run_dir.name),
+                    agent_id=request.agent_id,
+                    event_type="duplicate_execution_suppressed",
+                    status="suppressed",
+                    message=(
+                        "Duplicate codex_exec call suppressed after a successful specialist "
+                        "result; returning cached evidence."
+                    ),
+                    work_item_id=str(request.delivery_state.get("active_feature_id") or "")
+                    or None,
+                    data={
+                        "stage": request.stage,
+                        "execution_id": tool_result.execution_id,
+                        "codex_thread_id": tool_result.codex_thread_id,
+                        "codex_tool_call": tool_call_count,
+                        "reason": reason,
+                        "message": message,
+                    },
+                )
+                return _codex_exec_tool_response(
+                    request=request,
+                    result=tool_result,
+                    reason=reason,
+                    message=message,
+                    tool_call_count=tool_call_count,
+                    duration_ms=0,
+                    cached=True,
+                )
             if tool_call_count >= request.max_codex_tool_calls:
                 return json.dumps(
                     {
@@ -501,6 +532,19 @@ def _repair_guidance(result: AgentRunResult, request: SpecialistAgentRequest) ->
     )
 
 
+def _agent_run_result_successful(result: AgentRunResult) -> bool:
+    status = result.status.strip().lower()
+    if not status:
+        return False
+    if any(value in status for value in ("failed", "blocked", "precondition", "limit")):
+        return False
+    return (
+        status.endswith("_completed")
+        or any(value in status for value in ("passed", "ready", "implemented", "deployed"))
+        or status in {"completed", "done", "success", "succeeded"}
+    )
+
+
 def _codex_exec_tool_response(
     *,
     request: SpecialistAgentRequest,
@@ -509,6 +553,7 @@ def _codex_exec_tool_response(
     message: str,
     tool_call_count: int,
     duration_ms: int | None = None,
+    cached: bool = False,
 ) -> str:
     """Return a structured codex_exec response while preserving legacy fields."""
 
@@ -554,6 +599,7 @@ def _codex_exec_tool_response(
             "fix_request_artifacts": result.fix_request_artifacts,
             "reason": reason,
             "message": message,
+            "cached_successful_result": cached,
         },
         output_artifacts=output_artifacts,
         failure_mode=failure_mode,
@@ -577,6 +623,7 @@ def _codex_exec_tool_response(
         "message": message,
         "codex_tool_call": tool_call_count,
         "remaining_codex_tool_calls": remaining,
+        "cached_successful_result": cached,
         "repair_guidance": _repair_guidance(result, request),
     }
     artifact_ids = [ref.artifact_id for ref in output_artifacts if getattr(ref, "artifact_id", "")]
@@ -593,6 +640,7 @@ def _codex_exec_tool_response(
             "stage": request.stage,
             "agent_name": request.agent_name,
             "selected_skills": selected_skill_trace_data(request.selected_skills),
+            "cached_successful_result": cached,
         },
         output_summary=tool_result.to_dict(),
         artifact_ids=artifact_ids,
@@ -927,13 +975,10 @@ def _default_create_agent_factory(
 
 def _run_env_candidate_paths(delivery_state: DeliveryState) -> list[Path]:
     paths: list[Path] = []
-    target_dir = delivery_state.get("target_project_dir")
-    if target_dir:
-        paths.append(Path(str(target_dir)) / ".env")
     run_dir = delivery_state.get("run_dir")
     if run_dir:
         run_path = Path(str(run_dir))
-        paths.append(run_path / "generated-project" / ".env")
+        paths.append(run_path / "delivery" / "agent-runtime.env")
     return _unique_existing_or_candidate_paths(paths)
 
 

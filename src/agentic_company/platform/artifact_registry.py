@@ -51,7 +51,7 @@ class ArtifactRecord:
 
 
 def artifact_id_for(run_id: int | str, relative_path: str) -> str:
-    """Return a deterministic artifact id for a run-local path."""
+    """Return a stable artifact id for a run-local path."""
 
     normalized_path = normalize_artifact_path(relative_path)
     digest = hashlib.sha1(f"{run_id}:{normalized_path}".encode()).hexdigest()[:16]
@@ -298,10 +298,6 @@ def infer_artifact_type(path: str, *, legacy_kind: str = "") -> str:
         return "execution_summary"
     if filename.startswith("08-qa-report") or "qa-report" in filename:
         return "qa_report"
-    if filename == "quality-gate-plan.json":
-        return "quality_gate_plan"
-    if filename == "quality-gate-report.json":
-        return "quality_gate_report"
     if filename.startswith("10-fix-request"):
         return "repair_request"
     if filename.startswith("13-deployment-summary") or "deployment-summary" in filename:

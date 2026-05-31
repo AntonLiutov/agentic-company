@@ -31,6 +31,37 @@ from agentic_company.orchestration.graphs import (
     CONSOLE_DEPLOYMENT_NODE_ORDER,
     CONSOLE_EXECUTION_NODE_ORDER,
 )
+from agentic_company.platform.run_trace import record_run_event
+from agentic_company.platform.state import DELIVERY_STATE_SNAPSHOT
+
+
+def write_delivery_state_fixture(run_dir: Path, payload: dict[str, object]) -> Path:
+    state_path = delivery_state_path(run_dir)
+    state_path.write_text(json.dumps(payload), encoding="utf-8")
+    return state_path
+
+
+def delivery_state_path(run_dir: Path) -> Path:
+    state_path = run_dir / DELIVERY_STATE_SNAPSHOT
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    return state_path
+
+
+def write_run_events_fixture(run_dir: Path, events: list[dict[str, object]]) -> None:
+    for index, event in enumerate(events):
+        data = event.get("data", {})
+        if not isinstance(data, dict):
+            data = {}
+        record_run_event(
+            run_dir,
+            run_id=str(event.get("run_id") or "run"),
+            agent_id=str(event.get("agent_id") or ""),
+            event_type=str(event.get("event") or ""),
+            status=str(data.get("status") or event.get("status") or ""),
+            message=str(event.get("message") or event.get("event") or ""),
+            data=data,
+            created_at=str(event.get("timestamp") or f"2026-05-11T01:00:{index:02d}Z"),
+        )
 
 
 def test_console_run_writes_requirements_artifact_without_legacy_planning(tmp_path):
@@ -120,7 +151,7 @@ def test_artifact_groups_for_run_group_state_artifacts_by_agent(tmp_path):
         path = run_dir / artifact["path"]
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{}" if path.suffix == ".json" else "artifact", encoding="utf-8")
-    (run_dir / ".delivery-state.json").write_text(
+    delivery_state_path(run_dir).write_text(
         json.dumps({"artifacts": artifacts}),
         encoding="utf-8",
     )
@@ -174,7 +205,7 @@ def test_delivery_overview_scales_feature_queue_and_deployment_targets(tmp_path)
         }
         for index in range(1, 8)
     ]
-    (run_dir / ".delivery-state.json").write_text(
+    delivery_state_path(run_dir).write_text(
         json.dumps(
             {
                 "run_id": "run",
@@ -282,7 +313,7 @@ def test_delivery_overview_marks_deployment_board_item_done_when_deployed(tmp_pa
         json.dumps({"status": "deployed"}),
         encoding="utf-8",
     )
-    (run_dir / ".delivery-state.json").write_text(
+    delivery_state_path(run_dir).write_text(
         json.dumps(
             {
                 "run_id": "run",
@@ -331,7 +362,7 @@ def test_delivery_overview_tolerates_temporarily_locked_state_file(
 ):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    state_path = run_dir / ".delivery-state.json"
+    state_path = delivery_state_path(run_dir)
     state_path.write_text(json.dumps({"run_id": "run", "stage": "qa"}), encoding="utf-8")
     original_read_text = Path.read_text
 
@@ -352,7 +383,7 @@ def test_delivery_overview_tolerates_temporarily_locked_state_file(
 def test_delivery_overview_stage_prefers_active_worker_event(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    (run_dir / ".delivery-state.json").write_text(
+    delivery_state_path(run_dir).write_text(
         json.dumps(
             {
                 "run_id": "run",
@@ -364,31 +395,24 @@ def test_delivery_overview_stage_prefers_active_worker_event(tmp_path):
         ),
         encoding="utf-8",
     )
-    (run_dir / "events.jsonl").write_text(
-        "\n".join(
-            [
-                json.dumps(
-                    {
-                        "timestamp": "2026-05-11T01:00:00",
-                        "run_id": "run",
-                        "agent_id": "delivery-graph",
-                        "event": "delivery_graph_node_started",
-                        "data": {"node": "head", "stage": "initialized"},
-                    }
-                ),
-                json.dumps(
-                    {
-                        "timestamp": "2026-05-11T01:00:01",
-                        "run_id": "run",
-                        "agent_id": "head-agent",
-                        "event": "head_worker_started",
-                        "data": {"node": "project_management"},
-                    }
-                ),
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
+    write_run_events_fixture(
+        run_dir,
+        [
+            {
+                "timestamp": "2026-05-11T01:00:00Z",
+                "run_id": "run",
+                "agent_id": "delivery-graph",
+                "event": "delivery_graph_node_started",
+                "data": {"node": "head", "stage": "initialized"},
+            },
+            {
+                "timestamp": "2026-05-11T01:00:01Z",
+                "run_id": "run",
+                "agent_id": "head-agent",
+                "event": "head_worker_started",
+                "data": {"node": "project_management"},
+            },
+        ],
     )
 
     overview = delivery_overview_for_run(run_dir)
@@ -399,7 +423,7 @@ def test_delivery_overview_stage_prefers_active_worker_event(tmp_path):
 def test_delivery_overview_stage_falls_back_after_worker_completed(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    (run_dir / ".delivery-state.json").write_text(
+    delivery_state_path(run_dir).write_text(
         json.dumps(
             {
                 "run_id": "run",
@@ -411,31 +435,24 @@ def test_delivery_overview_stage_falls_back_after_worker_completed(tmp_path):
         ),
         encoding="utf-8",
     )
-    (run_dir / "events.jsonl").write_text(
-        "\n".join(
-            [
-                json.dumps(
-                    {
-                        "timestamp": "2026-05-11T01:00:00",
-                        "run_id": "run",
-                        "agent_id": "head-agent",
-                        "event": "head_worker_started",
-                        "data": {"node": "project_management"},
-                    }
-                ),
-                json.dumps(
-                    {
-                        "timestamp": "2026-05-11T01:00:01",
-                        "run_id": "run",
-                        "agent_id": "head-agent",
-                        "event": "head_worker_completed",
-                        "data": {"node": "project_management"},
-                    }
-                ),
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
+    write_run_events_fixture(
+        run_dir,
+        [
+            {
+                "timestamp": "2026-05-11T01:00:00Z",
+                "run_id": "run",
+                "agent_id": "head-agent",
+                "event": "head_worker_started",
+                "data": {"node": "project_management"},
+            },
+            {
+                "timestamp": "2026-05-11T01:00:01Z",
+                "run_id": "run",
+                "agent_id": "head-agent",
+                "event": "head_worker_completed",
+                "data": {"node": "project_management"},
+            },
+        ],
     )
 
     overview = delivery_overview_for_run(run_dir)
@@ -490,7 +507,7 @@ def test_delivery_overview_uses_project_manager_candidate_queue_before_delivery(
 def test_delivery_overview_prefers_runtime_work_board(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    (run_dir / ".delivery-state.json").write_text(
+    delivery_state_path(run_dir).write_text(
         json.dumps(
             {
                 "run_id": "run",
@@ -548,7 +565,7 @@ def test_delivery_overview_corrects_completed_handoff_and_stale_assigned_agents(
         encoding="utf-8",
     )
     stale_assigned = "documentation-handoff-agent"
-    (run_dir / ".delivery-state.json").write_text(
+    delivery_state_path(run_dir).write_text(
         json.dumps(
             {
                 "run_id": "run",
@@ -617,7 +634,7 @@ def test_delivery_overview_closes_stale_review_items_after_successful_final_deli
         "<html>ready</html>",
         encoding="utf-8",
     )
-    (run_dir / ".delivery-state.json").write_text(
+    delivery_state_path(run_dir).write_text(
         json.dumps(
             {
                 "run_id": "run",
@@ -675,7 +692,7 @@ def test_delivery_overview_does_not_count_previous_sprint_handoff_for_current_sp
         "<html>sprint 1 ready</html>",
         encoding="utf-8",
     )
-    (run_dir / ".delivery-state.json").write_text(
+    delivery_state_path(run_dir).write_text(
         json.dumps(
             {
                 "run_id": "run",
@@ -764,53 +781,42 @@ def test_delivery_overview_recovers_team_lead_history_from_events_when_history_i
 ):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    (run_dir / "events.jsonl").write_text(
-        "\n".join(
-            [
-                json.dumps(
-                    {
-                        "agent_id": "team-lead-agent",
-                        "event": "team_lead_decision",
-                        "data": {
-                            "decision": {
-                                "tool": "inspect_sprint_status",
-                                "target": "sprint-01",
-                                "reason": "Inspect first pass.",
-                            }
-                        },
+    write_run_events_fixture(
+        run_dir,
+        [
+            {
+                "agent_id": "team-lead-agent",
+                "event": "team_lead_decision",
+                "data": {
+                    "decision": {
+                        "tool": "inspect_sprint_status",
+                        "target": "sprint-01",
+                        "reason": "Inspect first pass.",
                     }
-                ),
-                json.dumps(
-                    {
-                        "agent_id": "team-lead-agent",
-                        "event": "team_lead_tool_completed",
-                        "data": {"status": "running"},
+                },
+            },
+            {
+                "agent_id": "team-lead-agent",
+                "event": "team_lead_tool_completed",
+                "data": {"status": "running"},
+            },
+            {
+                "agent_id": "team-lead-agent",
+                "event": "team_lead_decision",
+                "data": {
+                    "decision": {
+                        "tool": "run_fullstack",
+                        "target": "US-05",
+                        "reason": "Continue sprint.",
                     }
-                ),
-                json.dumps(
-                    {
-                        "agent_id": "team-lead-agent",
-                        "event": "team_lead_decision",
-                        "data": {
-                            "decision": {
-                                "tool": "run_fullstack",
-                                "target": "US-05",
-                                "reason": "Continue sprint.",
-                            }
-                        },
-                    }
-                ),
-                json.dumps(
-                    {
-                        "agent_id": "team-lead-agent",
-                        "event": "team_lead_tool_completed",
-                        "data": {"status": "fullstack_feature_implemented"},
-                    }
-                ),
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
+                },
+            },
+            {
+                "agent_id": "team-lead-agent",
+                "event": "team_lead_tool_completed",
+                "data": {"status": "fullstack_feature_implemented"},
+            },
+        ],
     )
     team_lead_dir = run_dir / "team-lead"
     team_lead_dir.mkdir()
@@ -845,7 +851,7 @@ def test_delivery_overview_recovers_team_lead_history_from_events_when_history_i
 def test_delivery_overview_current_work_maps_deployment_stage_to_deploy_item(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    (run_dir / ".delivery-state.json").write_text(
+    delivery_state_path(run_dir).write_text(
         json.dumps(
             {
                 "run_id": "run",
@@ -871,24 +877,20 @@ def test_delivery_overview_current_work_maps_deployment_stage_to_deploy_item(tmp
         ),
         encoding="utf-8",
     )
-    (run_dir / "events.jsonl").write_text(
-        json.dumps(
+    write_run_events_fixture(
+        run_dir,
+        [
             {
                 "agent_id": "team-lead-agent",
                 "event": "team_lead_worker_started",
                 "data": {"node": "deployment", "active_feature_id": None},
-            }
-        )
-        + "\n"
-        + json.dumps(
+            },
             {
                 "agent_id": "deployment-agent",
                 "event": "deployment_started",
                 "data": {"release_strategy": "release_batch"},
-            }
-        )
-        + "\n",
-        encoding="utf-8",
+            },
+        ],
     )
 
     overview = delivery_overview_for_run(run_dir)
@@ -1063,7 +1065,7 @@ def test_execution_completed_accepts_feature_scoped_summaries_and_state(tmp_path
 
     assert not execution_completed(run_dir)
 
-    (run_dir / ".delivery-state.json").write_text(
+    delivery_state_path(run_dir).write_text(
         json.dumps({"status": "feature_queue_qa_completed_downstream_paused"}),
         encoding="utf-8",
     )
@@ -1126,7 +1128,8 @@ def test_console_support_writes_run_local_env_file(tmp_path):
     env_text = env_path.read_text(encoding="utf-8")
 
     assert required == []
-    assert env_path == run_dir / "generated-project" / ".env"
+    assert env_path == run_dir / "delivery" / "agent-runtime.env"
+    assert not (run_dir / "generated-project" / ".env").exists()
     assert "OPENAI_API_KEY=sk-test" in env_text
     assert "AGENT_LLM_MODEL=gpt-next" in env_text
     assert saved_env_keys(run_dir) == ["AGENT_LLM_MODEL", "OPENAI_API_KEY"]
@@ -1140,7 +1143,7 @@ def test_console_support_requires_non_default_credentials_before_execution(tmp_p
 
     env_path = ensure_required_env_defaults(run_dir)
 
-    assert env_path == run_dir / "generated-project" / ".env"
+    assert env_path == run_dir / "delivery" / "agent-runtime.env"
     assert not env_path.exists()
     assert missing_required_env_keys(run_dir) == []
 
@@ -1199,7 +1202,7 @@ def test_codex_execution_running_stays_true_until_graph_reaches_terminal_state(t
     assert review_completed(run_dir)
     assert codex_execution_running(run_dir)
 
-    (run_dir / ".delivery-state.json").write_text(
+    delivery_state_path(run_dir).write_text(
         json.dumps({"status": "feature_queue_qa_completed_downstream_paused"}),
         encoding="utf-8",
     )
@@ -1211,7 +1214,7 @@ def test_codex_execution_running_continues_after_business_analysis_until_pm(tmp_
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / ".codex-execution.status").write_text("running\n", encoding="utf-8")
-    (run_dir / ".delivery-state.json").write_text(
+    delivery_state_path(run_dir).write_text(
         json.dumps({"status": "business_analysis_completed"}),
         encoding="utf-8",
     )
@@ -1223,7 +1226,7 @@ def test_codex_execution_running_continues_after_architecture_until_pm(tmp_path)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / ".codex-execution.status").write_text("running\n", encoding="utf-8")
-    (run_dir / ".delivery-state.json").write_text(
+    delivery_state_path(run_dir).write_text(
         json.dumps({"status": "architecture_completed"}),
         encoding="utf-8",
     )
@@ -1235,7 +1238,7 @@ def test_codex_execution_running_continues_after_project_management_until_team_l
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / ".codex-execution.status").write_text("running\n", encoding="utf-8")
-    (run_dir / ".delivery-state.json").write_text(
+    delivery_state_path(run_dir).write_text(
         json.dumps({"status": "project_management_completed"}),
         encoding="utf-8",
     )
@@ -1249,14 +1252,14 @@ def test_codex_execution_running_continues_after_team_lead_handoff_until_head_te
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / ".codex-execution.status").write_text("running\n", encoding="utf-8")
-    (run_dir / ".delivery-state.json").write_text(
+    delivery_state_path(run_dir).write_text(
         json.dumps({"status": "team_lead_sprint_handoff_ready"}),
         encoding="utf-8",
     )
 
     assert codex_execution_running(run_dir)
 
-    (run_dir / ".delivery-state.json").write_text(
+    delivery_state_path(run_dir).write_text(
         json.dumps({"status": "head_delivery_completed"}),
         encoding="utf-8",
     )
@@ -1267,21 +1270,20 @@ def test_codex_execution_running_continues_after_team_lead_handoff_until_head_te
 def test_workflow_refresh_continues_after_team_lead_until_head_completes(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    (run_dir / "events.jsonl").write_text(
-        "\n".join(
-            [
-                json.dumps({"event": "execution_started"}),
-                json.dumps({"event": "handoff_completed"}),
-                json.dumps({"event": "team_lead_sprint_completed"}),
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
+    write_run_events_fixture(
+        run_dir,
+        [
+            {"event": "execution_started", "agent_id": "delivery-graph"},
+            {"event": "handoff_completed", "agent_id": "documentation-handoff-agent"},
+            {"event": "team_lead_sprint_completed", "agent_id": "team-lead-agent"},
+        ],
     )
 
     assert workflow_should_refresh(run_dir, execution_is_running=False)
 
-    with (run_dir / "events.jsonl").open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps({"event": "head_agent_completed"}) + "\n")
+    write_run_events_fixture(
+        run_dir,
+        [{"event": "head_agent_completed", "agent_id": "head-agent"}],
+    )
 
     assert not workflow_should_refresh(run_dir, execution_is_running=False)

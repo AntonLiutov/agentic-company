@@ -48,6 +48,7 @@ from agentic_company.platform.run_trace import record_tool_call_event
 from agentic_company.platform.sprints import (
     TeamLeadResult,
     features_for_sprint,
+    load_sprint_plan,
     set_work_item_status,
     sync_work_board,
 )
@@ -328,6 +329,29 @@ class TeamLeadToolbox:
                 result_status="team_lead_handoff_contract_invalid",
             )
             return self._tool_response(f"Handoff not run: {exc}")
+
+        if handoff_scope == FINAL_PROJECT_REPORT_SCOPE and not _final_project_report_allowed(
+            self.delivery_state,
+            self.sprint_id,
+        ):
+            self._record(
+                "run_handoff",
+                FINAL_PROJECT_REPORT_SCOPE,
+                reason or "Final project report requested before final sprint readiness.",
+                message,
+                result_status="team_lead_final_handoff_not_ready",
+            )
+            return self._tool_response(
+                "Final project report not run because planned later sprints are still pending. "
+                "Run a sprint handoff for the current sprint instead.",
+                status_override="team_lead_final_handoff_not_ready",
+                input_summary={
+                    "handoff_scope": handoff_scope,
+                    "sprint_id": sprint_id or self.sprint_id,
+                    "reason": reason,
+                    "message": message,
+                },
+            )
 
         target = sprint_id if handoff_scope == SPRINT_HANDOFF_SCOPE else FINAL_PROJECT_REPORT_SCOPE
         updated = {**self.delivery_state}
@@ -616,12 +640,13 @@ class TeamLeadToolbox:
         if limit_response := self._limit_response(message):
             return limit_response
         started = time.perf_counter()
+        target_work_item_id = _target_work_item_id(target, self.sprint_id)
         updated = {**self.delivery_state}
-        if target != self.sprint_id:
+        if target_work_item_id:
             if tool == "run_fullstack":
                 updated = set_work_item_status(
                     cast(DeliveryState, updated),
-                    target,
+                    target_work_item_id,
                     "in_progress",
                     active=True,
                     sprint_id=self.sprint_id,
@@ -629,7 +654,7 @@ class TeamLeadToolbox:
             elif tool == "run_qa":
                 updated = set_work_item_status(
                     cast(DeliveryState, updated),
-                    target,
+                    target_work_item_id,
                     "in_qa",
                     active=True,
                     sprint_id=self.sprint_id,
@@ -659,6 +684,8 @@ class TeamLeadToolbox:
             payload={
                 "sprint_id": self.sprint_id,
                 "active_feature_id": self.delivery_state.get("active_feature_id"),
+                "target_work_item_id": target_work_item_id,
+                "work_item_id": target_work_item_id,
                 "message": message,
                 "message_id": outbound.message_id,
                 "message_intent": outbound.intent,
@@ -672,6 +699,8 @@ class TeamLeadToolbox:
             {
                 "node": node_name,
                 "active_feature_id": self.delivery_state.get("active_feature_id"),
+                "target_work_item_id": target_work_item_id,
+                "work_item_id": target_work_item_id,
                 "reason": reason,
                 "execution_id": execution_id,
             },
@@ -683,7 +712,7 @@ class TeamLeadToolbox:
         ):
             self.delivery_state = set_work_item_status(
                 self.delivery_state,
-                target,
+                target_work_item_id or target,
                 "implemented",
                 active=True,
                 sprint_id=self.sprint_id,
@@ -703,16 +732,21 @@ class TeamLeadToolbox:
                 "stage": self.delivery_state["stage"],
                 "status": self.delivery_state["status"],
                 "execution_id": execution_id,
+                "target_work_item_id": target_work_item_id,
+                "work_item_id": target_work_item_id,
             },
         )
-        self._record(tool, target, reason, message)
+        self._record(tool, target, reason, message, work_item_id=target_work_item_id)
         duration_ms = int((time.perf_counter() - started) * 1000)
         return self._tool_response(
             f"{tool} completed with status {self.delivery_state.get('status')}.",
             downstream_response=downstream_response,
             duration_ms=duration_ms,
+            work_item_id=target_work_item_id,
             input_summary={
                 "target": target,
+                "work_item_id": target_work_item_id,
+                "target_work_item_id": target_work_item_id,
                 "reason": reason,
                 "message": message,
                 "sprint_id": self.sprint_id,
@@ -728,6 +762,7 @@ class TeamLeadToolbox:
         message: str,
         *,
         result_status: str | None = None,
+        work_item_id: str | None = None,
     ) -> None:
         step = len(self.history or []) + 1
         decision = TeamLeadDecision(tool, reason or "No reason provided.", target, message)
@@ -744,6 +779,7 @@ class TeamLeadToolbox:
                 "step": step,
                 "tool": tool,
                 "target": target,
+                "work_item_id": work_item_id,
                 "reason": reason,
                 "message": message,
                 "result_status": status,
@@ -760,7 +796,7 @@ class TeamLeadToolbox:
         write_team_lead_event(
             self.delivery_state,
             "team_lead_tool_completed",
-            {"tool": tool, "status": status},
+            {"tool": tool, "target": target, "work_item_id": work_item_id, "status": status},
         )
         self.delivery_state = sync_work_board(self.delivery_state, sprint_id=self.sprint_id)
         checkpoint_delivery_state(self.delivery_state)
@@ -789,8 +825,11 @@ class TeamLeadToolbox:
         artifact_refs: list[str] | None = None,
         duration_ms: int | None = None,
         input_summary: dict[str, Any] | None = None,
+        work_item_id: str | None = None,
+        status_override: str | None = None,
     ) -> str:
-        status = str(self.delivery_state.get("status") or "")
+        status = str(status_override or self.delivery_state.get("status") or "")
+        target_work_item_id = work_item_id or _input_work_item_id(input_summary)
         output_artifacts = _response_artifact_refs(
             artifact_refs=artifact_refs,
             downstream_response=downstream_response,
@@ -806,6 +845,7 @@ class TeamLeadToolbox:
             developer_diagnostics={
                 "stage": self.delivery_state.get("stage"),
                 "active_feature_id": self.delivery_state.get("active_feature_id"),
+                "target_work_item_id": target_work_item_id,
                 "qa_status": self.delivery_state.get("qa_status"),
                 "deployment_status": self.delivery_state.get("deployment_status"),
                 "post_deploy_qa_status": self.delivery_state.get("post_deploy_qa_status"),
@@ -826,8 +866,9 @@ class TeamLeadToolbox:
         snapshot = {
             **structured.to_dict(),
             "message": message,
-            "status": self.delivery_state.get("status"),
+            "status": status,
             "active_feature_id": self.delivery_state.get("active_feature_id"),
+            "target_work_item_id": target_work_item_id,
             "completed_feature_ids": self.delivery_state.get("completed_feature_ids", []),
             "feature_statuses": self.delivery_state.get("feature_statuses", {}),
             "work_board": self.delivery_state.get("work_board", {}),
@@ -846,7 +887,9 @@ class TeamLeadToolbox:
             agent_id=TEAM_LEAD_AGENT_ID,
             tool_name=tool_name,
             tool_call_id=structured.tool_call_id,
-            work_item_id=str(self.delivery_state.get("active_feature_id") or "") or None,
+            work_item_id=target_work_item_id
+            or str(self.delivery_state.get("active_feature_id") or "")
+            or None,
             input_summary=input_summary
             or {
                 "sprint_id": self.sprint_id,
@@ -863,6 +906,87 @@ class TeamLeadToolbox:
             duration_ms=duration_ms,
         )
         return json.dumps(snapshot, sort_keys=True)
+
+
+def _target_work_item_id(target: str, sprint_id: str) -> str | None:
+    normalized = str(target or "").strip()
+    if not normalized or normalized in {sprint_id, FINAL_PROJECT_REPORT_SCOPE}:
+        return None
+    return normalized
+
+
+def _input_work_item_id(input_summary: dict[str, Any] | None) -> str | None:
+    if not isinstance(input_summary, dict):
+        return None
+    for key in ("work_item_id", "target_work_item_id", "feature_id"):
+        value = str(input_summary.get(key) or "").strip()
+        if value:
+            return value
+    target = str(input_summary.get("target") or "").strip()
+    return target or None
+
+
+def _final_project_report_allowed(state: DeliveryState, sprint_id: str) -> bool:
+    if _current_sprint_marked_final(state, sprint_id):
+        return True
+    return _all_planned_work_complete_or_blocked(state)
+
+
+def _current_sprint_marked_final(state: DeliveryState, sprint_id: str) -> bool:
+    release_plan = _release_plan(state)
+    for sprint in _planned_sprints(release_plan):
+        planned_id = str(sprint.get("sprint_id") or sprint.get("id") or "")
+        if planned_id == sprint_id:
+            return bool(sprint.get("is_final") or sprint.get("is_final_sprint"))
+    sprint_plan = load_sprint_plan(state.get("run_dir"), sprint_id)
+    return bool(sprint_plan.get("is_final") or sprint_plan.get("is_final_sprint"))
+
+
+def _all_planned_work_complete_or_blocked(state: DeliveryState) -> bool:
+    planned_features = state.get("feature_queue") or state.get("candidate_feature_queue") or []
+    features = [
+        feature
+        for feature in list(planned_features)
+        if isinstance(feature, dict)
+    ]
+    if not features:
+        return False
+    completed = {str(feature_id) for feature_id in state.get("completed_feature_ids", [])}
+    statuses = {
+        str(key): str(value)
+        for key, value in dict(state.get("feature_statuses", {})).items()
+    }
+    terminal = {"qa_passed", "done", "deployed", "handoff_ready", "blocked"}
+    for feature in features:
+        feature_id = str(feature.get("id") or feature.get("feature_id") or "")
+        if not feature_id:
+            continue
+        if feature_id in completed:
+            continue
+        if statuses.get(feature_id) not in terminal:
+            return False
+    return True
+
+
+def _release_plan(state: DeliveryState) -> dict[str, Any]:
+    run_dir = state.get("run_dir")
+    if not run_dir:
+        return {}
+    path = Path(str(run_dir)) / "upstream-planning" / "project-management" / "release-plan.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _planned_sprints(release_plan: dict[str, Any]) -> list[dict[str, Any]]:
+    value = release_plan.get("sprints")
+    if not isinstance(value, list):
+        value = release_plan.get("planned_sprints")
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
 
 
 def apply_team_lead_result(state: DeliveryState, sprint_id: str) -> DeliveryState:
@@ -1562,7 +1686,7 @@ def write_json_artifact(state: DeliveryState, relative_path: str, payload: dict[
 
 def write_team_lead_event(state: DeliveryState, event: str, data: dict[str, Any]) -> None:
     write_event(
-        Path(state["run_dir"]) / "events.jsonl",
+        Path(state["run_dir"]),
         state["run_id"],
         TEAM_LEAD_AGENT_ID,
         event,

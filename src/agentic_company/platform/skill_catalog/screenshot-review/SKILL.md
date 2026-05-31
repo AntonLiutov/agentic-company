@@ -19,12 +19,14 @@ Catch visual defects that source-code checks miss, especially broken layouts aft
 
 - Screenshot evidence artifacts.
 - Requirements, design expectations, QA report, and deployed/local URLs.
+- Local/build screenshots when available for deployment parity comparison.
 - Viewport or device context when available.
 
 ## Workflow
 
 1. Inspect screenshots for overlap, clipping, unreadable text, horizontal overflow, broken spacing, and missing content.
-2. Compare the screen against the expected product flow.
+2. Compare the screen against the expected product flow and, for deployed URLs,
+   check for CSS/static asset failures or deployment-only style regressions.
 3. Identify whether the defect blocks the demo or is minor polish.
 4. Produce concrete repair requests with viewport and location notes.
 5. Return screenshot evidence and review status.

@@ -21,7 +21,12 @@ from agentic_company.platform.codex_review import (
     CodexReviewResult,
 )
 from agentic_company.platform.messages import AgentMessageStore
-from agentic_company.platform.state import DeliveryState, initial_delivery_state
+from agentic_company.platform.run_trace import load_tool_call_events
+from agentic_company.platform.state import (
+    DELIVERY_STATE_SNAPSHOT,
+    DeliveryState,
+    initial_delivery_state,
+)
 from agentic_company.platform.status_inspector import (
     StatusInspectionRequest,
     StatusInspectionResult,
@@ -292,6 +297,91 @@ def test_team_lead_status_context_keeps_pending_feature_pending_before_fullstack
     assert context["tasks"][0]["status"] == "pending"
     assert context["tasks"][0]["owner_agent"] == "fullstack-agent"
     assert context["tasks"][0]["evidence_refs"] == []
+
+
+def test_team_lead_run_qa_tool_event_keeps_original_target_after_active_advances(tmp_path):
+    def qa(state: DeliveryState) -> DeliveryState:
+        statuses = dict(state.get("feature_statuses", {}))
+        statuses["US-rooms"] = "qa_passed"
+        return {
+            **state,
+            "stage": "quality",
+            "status": "qa_feature_passed_next_feature_ready",
+            "qa_status": "passed",
+            "active_feature_id": "US-contacts-friends",
+            "completed_feature_ids": ["US-rooms"],
+            "feature_statuses": statuses,
+        }
+
+    state = initial_delivery_state(run_id="qa-target", run_dir=tmp_path)
+    state["feature_queue"] = [
+        {"id": "US-rooms", "title": "Rooms", "sprint_id": "sprint-02", "delivery_order": 1},
+        {
+            "id": "US-contacts-friends",
+            "title": "Contacts",
+            "sprint_id": "sprint-02",
+            "delivery_order": 2,
+        },
+    ]
+    state["team_lead_sprint_id"] = "sprint-02"
+    toolbox = TeamLeadToolbox(
+        delivery_state=state,
+        sprint={"sprint_id": "sprint-02"},
+        workers=TeamLeadWorkers(
+            fullstack=lambda state: state,
+            qa=qa,
+            deployment=lambda state: state,
+            handoff=lambda state: state,
+        ),
+        max_steps=6,
+    )
+
+    toolbox.run_qa(target="US-rooms", reason="Validate rooms.")
+
+    events = load_tool_call_events(tmp_path)
+    qa_event = [event for event in events if event.tool_name == "run_qa"][-1]
+    assert qa_event.work_item_id == "US-rooms"
+    assert qa_event.input_summary["work_item_id"] == "US-rooms"
+    assert toolbox.delivery_state["active_feature_id"] == "US-contacts-friends"
+
+
+def test_team_lead_blocks_final_project_report_for_non_final_sprint(tmp_path):
+    called = False
+    plan_dir = tmp_path / "upstream-planning" / "project-management"
+    plan_dir.mkdir(parents=True)
+    (plan_dir / "release-plan.json").write_text(
+        '{"sprints":[{"sprint_id":"sprint-01","is_final":false},'
+        '{"sprint_id":"sprint-02","is_final":true}]}',
+        encoding="utf-8",
+    )
+
+    def handoff(state: DeliveryState) -> DeliveryState:
+        nonlocal called
+        called = True
+        return state
+
+    state = initial_delivery_state(run_id="handoff-gate", run_dir=tmp_path)
+    state["feature_queue"] = [
+        {"id": "F1", "title": "Feature one", "sprint_id": "sprint-01", "delivery_order": 1},
+        {"id": "F2", "title": "Feature two", "sprint_id": "sprint-02", "delivery_order": 2},
+    ]
+    state["team_lead_sprint_id"] = "sprint-01"
+    toolbox = TeamLeadToolbox(
+        delivery_state=state,
+        sprint={"sprint_id": "sprint-01"},
+        workers=TeamLeadWorkers(
+            fullstack=lambda state: state,
+            qa=lambda state: state,
+            deployment=lambda state: state,
+            handoff=handoff,
+        ),
+        max_steps=6,
+    )
+
+    response = toolbox.run_handoff("final_project_report", reason="Create final report.")
+
+    assert called is False
+    assert "team_lead_final_handoff_not_ready" in response
 
 
 def test_team_lead_agent_executor_calls_tools_selected_by_executor(tmp_path):
@@ -872,7 +962,7 @@ def test_team_lead_checkpoints_in_qa_before_long_qa_worker_runs(tmp_path):
     seen: dict[str, object] = {}
 
     def qa(worker_state: DeliveryState) -> DeliveryState:
-        saved = json.loads((tmp_path / ".delivery-state.json").read_text(encoding="utf-8"))
+        saved = json.loads((tmp_path / DELIVERY_STATE_SNAPSHOT).read_text(encoding="utf-8"))
         seen["status"] = saved["work_board"]["items"][0]["status"]
         seen["lane"] = saved["work_board"]["items"][0]["lane"]
         seen["assigned_agent"] = saved["work_board"]["items"][0]["assigned_agent"]
@@ -937,7 +1027,7 @@ def test_work_board_can_move_from_review_back_to_doing(tmp_path):
     visited: list[str] = []
 
     def fullstack(worker_state: DeliveryState) -> DeliveryState:
-        saved = json.loads((tmp_path / ".delivery-state.json").read_text(encoding="utf-8"))
+        saved = json.loads((tmp_path / DELIVERY_STATE_SNAPSHOT).read_text(encoding="utf-8"))
         visited.append(saved["work_board"]["items"][0]["status"])
         return {**worker_state, "stage": "fullstack", "status": "fullstack_feature_implemented"}
 

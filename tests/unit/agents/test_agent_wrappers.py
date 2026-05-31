@@ -17,6 +17,7 @@ from agentic_company.platform.agent_contracts import append_downstream_response
 from agentic_company.platform.agent_runtime import DirectSpecialistAgentExecutor
 from agentic_company.platform.messages import AgentMessage, AgentMessageStore
 from agentic_company.platform.models import AgentRunResult
+from agentic_company.platform.run_trace import load_run_events
 from agentic_company.platform.state import initial_delivery_state
 
 
@@ -419,6 +420,13 @@ def test_project_manager_agent_maps_planning_result_to_delivery_state(tmp_path):
     assert result["status"] == "project_management_completed"
     assert result["completed_nodes"] == ["project_management"]
     assert result["candidate_feature_queue"][0]["id"] == "F1"
+    assert result["work_items"][0]["id"] == "F1"
+    assert result["work_board"]["items"][0]["item_id"] == "F1"
+    assert result["work_board"]["items"][0]["lane"] == "todo"
+    planned_events = [
+        event for event in load_run_events(run_dir) if event.event_type == "work_item_planned"
+    ]
+    assert planned_events[0].work_item_id == "F1"
     assert [artifact["path"] for artifact in result["artifacts"]] == [
         "upstream-planning/project-management/release-plan.md",
         "upstream-planning/project-management/release-plan.json",

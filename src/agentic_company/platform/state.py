@@ -10,6 +10,8 @@ from uuid import uuid4
 
 from agentic_company.platform.artifacts import ArtifactRef
 
+DELIVERY_STATE_SNAPSHOT = Path("delivery") / "run-state.json"
+
 
 class DeliveryState(TypedDict):
     """Serializable state passed between company delivery graph nodes."""
@@ -131,9 +133,11 @@ def record_codex_thread(state: DeliveryState, agent_id: str, thread_id: str) -> 
 
 
 def write_delivery_state(state: DeliveryState, path: str | Path | None = None) -> Path:
-    """Persist delivery state atomically so live UI readers never see partial JSON."""
+    """Persist the internal graph state snapshot outside legacy root artifacts."""
 
-    state_path = Path(path) if path is not None else Path(state["run_dir"]) / ".delivery-state.json"
+    state_path = (
+        Path(path) if path is not None else Path(state["run_dir"]) / DELIVERY_STATE_SNAPSHOT
+    )
     state_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = state_path.with_name(f"{state_path.name}.{uuid4().hex}.tmp")
     payload = json.dumps(state, indent=2, sort_keys=True) + "\n"

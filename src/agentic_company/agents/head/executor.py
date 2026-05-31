@@ -63,7 +63,7 @@ class LangChainHeadExecutor:
         except MissingAgentRuntimeConfig:
             toolbox.block_planning(
                 reason="OPENAI_API_KEY is required for Head Agent decisions.",
-                message="Set OPENAI_API_KEY in the repo .env or generated-project/.env.",
+                message="Set OPENAI_API_KEY in Settings or the run-level agent runtime env.",
             )
             return toolbox.result()
         except LangChainAgentRuntimeError as exc:

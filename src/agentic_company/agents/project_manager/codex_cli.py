@@ -102,7 +102,7 @@ class ProjectManagerCodexRunner:
             encoding="utf-8",
         )
         write_event(
-            run_dir / "events.jsonl",
+            run_dir,
             str(request["run_id"]),
             PROJECT_MANAGER_AGENT_ID,
             "project_management_codex_started",
@@ -115,6 +115,10 @@ class ProjectManagerCodexRunner:
                 log_path,
                 raw_events_path,
                 codex_execution_id=codex_execution_id,
+                run_dir=run_dir,
+                run_id=str(request["run_id"]),
+                agent_id=PROJECT_MANAGER_AGENT_ID,
+                work_item_id="PLAN-03",
             )
         except FileNotFoundError:
             LOGGER.exception("Project Manager Codex CLI missing run_id=%s", request["run_id"])
@@ -157,7 +161,7 @@ class ProjectManagerCodexRunner:
             *structured_artifacts,
         ]
         write_event(
-            run_dir / "events.jsonl",
+            run_dir,
             str(request["run_id"]),
             PROJECT_MANAGER_AGENT_ID,
             "project_management_codex_completed",
@@ -191,6 +195,10 @@ class ProjectManagerCodexRunner:
         raw_events_path: Path,
         *,
         codex_execution_id: str,
+        run_dir: Path,
+        run_id: int | str,
+        agent_id: str,
+        work_item_id: str | None,
     ) -> subprocess.CompletedProcess[str]:
         if self.command_executor:
             return self.command_executor(
@@ -207,6 +215,10 @@ class ProjectManagerCodexRunner:
             log_path,
             raw_events_path,
             codex_execution_id=codex_execution_id,
+            trace_run_dir=run_dir,
+            trace_run_id=run_id,
+            trace_agent_id=agent_id,
+            trace_work_item_id=work_item_id,
         )
 
 

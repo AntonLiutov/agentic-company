@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha1
@@ -32,6 +33,7 @@ SECRET_KEY_NAMES = {
 }
 SECRET_KEY_SUFFIXES = ("_api_key", "_secret", "_token", "_password")
 ARTIFACT_ID_PREFIX = "art_"
+RUNTIME_LOGGER = logging.getLogger("agentic_company.runtime")
 
 TraceEventKind = Literal["run", "tool", "model"]
 
@@ -215,7 +217,9 @@ def record_run_event(
         data=safe_data,
         created_at=created,
     )
-    return TraceStore(run_dir).append_run_event(event)
+    stored = TraceStore(run_dir).append_run_event(event)
+    _log_run_event(stored)
+    return stored
 
 
 def record_tool_call_event(
@@ -238,6 +242,7 @@ def record_tool_call_event(
     created = created_at or utc_now()
     safe_input = sanitize_trace_data(input_summary or {})
     safe_output = sanitize_trace_data(output_summary or {})
+    safe_failure_mode = None if _looks_successful(status) else failure_mode
     ids = sorted(
         {
             *(artifact_ids or []),
@@ -265,11 +270,13 @@ def record_tool_call_event(
         output_summary=safe_output,
         artifact_ids=ids,
         status=status,
-        failure_mode=failure_mode,
+        failure_mode=safe_failure_mode,
         duration_ms=duration_ms,
         created_at=created,
     )
-    return TraceStore(run_dir).append_tool_call_event(event)
+    stored = TraceStore(run_dir).append_tool_call_event(event)
+    _log_tool_call_event(stored)
+    return stored
 
 
 def record_model_call_event(
@@ -479,6 +486,106 @@ def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
         handle.write(json.dumps(sanitize_trace_data(payload), sort_keys=True) + "\n")
 
 
+def _log_run_event(event: RunEvent) -> None:
+    if not _is_operator_run_event(event):
+        return
+    message = _truncate_operator_text(event.message or event.event_type)
+    RUNTIME_LOGGER.info(
+        "RUN %s | %s | %s | %s -> %s | %s",
+        event.run_id,
+        event.work_item_id or "-",
+        _operator_agent_label(event.agent_id),
+        event.event_type,
+        event.status or "-",
+        message,
+    )
+
+
+def _log_tool_call_event(event: ToolCallEvent) -> None:
+    update = _dict(event.output_summary.get("dashboard_update"))
+    summary = _first_text(
+        update.get("comment"),
+        update.get("summary"),
+        event.output_summary.get("business_summary"),
+        event.output_summary.get("summary"),
+        event.output_summary.get("message"),
+    )
+    duration = _duration_label(event.duration_ms)
+    status = event.failure_mode or event.status or "-"
+    RUNTIME_LOGGER.info(
+        "RUN %s | %s | %s | %s -> %s | %s | %s",
+        event.run_id,
+        event.work_item_id or "-",
+        _operator_agent_label(event.agent_id),
+        event.tool_name,
+        status,
+        duration,
+        _truncate_operator_text(summary),
+    )
+
+
+def _is_operator_run_event(event: RunEvent) -> bool:
+    event_type = event.event_type.lower()
+    return any(
+        token in event_type
+        for token in (
+            "delivery_graph",
+            "worker_started",
+            "worker_completed",
+            "tool_completed",
+            "blocked",
+            "artifact_written",
+        )
+    )
+
+
+def _operator_agent_label(agent_id: str) -> str:
+    aliases = {
+        "head-agent": "Coordinator",
+        "team-lead-agent": "Delivery Lead",
+        "business-analyst-agent": "Business Analyst",
+        "architect-agent": "Solution Architect",
+        "project-manager-agent": "Delivery Planner",
+        "fullstack-agent": "Builder",
+        "qa-agent": "Quality Reviewer",
+        "qa-codex-agent": "Quality Reviewer",
+        "deployment-agent": "Publisher",
+        "deployment-codex-agent": "Publisher",
+        "handoff-agent": "Release Reporter",
+        "handoff-codex-agent": "Release Reporter",
+    }
+    return aliases.get(agent_id, agent_id or "runtime")
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _truncate_operator_text(value: str, *, limit: int = 180) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "..."
+
+
+def _duration_label(duration_ms: int | None) -> str:
+    if duration_ms is None:
+        return "-"
+    seconds = max(0, int(duration_ms / 1000))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    remainder = minutes % 60
+    return f"{hours}h {remainder}m" if remainder else f"{hours}h"
+
+
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -556,6 +663,16 @@ def _count_by(values: list[str]) -> dict[str, int]:
 def _looks_failed(value: str) -> bool:
     normalized = value.strip().lower()
     return any(marker in normalized for marker in ("failed", "blocked", "error"))
+
+
+def _looks_successful(value: str) -> bool:
+    normalized = value.strip().lower()
+    if _looks_failed(normalized):
+        return False
+    return any(
+        marker in normalized
+        for marker in ("ready", "done", "completed", "deployed", "passed", "implemented")
+    )
 
 
 def _dict(value: Any) -> dict[str, Any]:

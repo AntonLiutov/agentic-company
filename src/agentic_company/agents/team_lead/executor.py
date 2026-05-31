@@ -74,7 +74,7 @@ class LangChainTeamLeadExecutor:
         except MissingAgentRuntimeConfig:
             toolbox.block_sprint(
                 reason="OPENAI_API_KEY is required for Team Lead AgentExecutor decisions.",
-                message="Set OPENAI_API_KEY in the repo .env or generated-project/.env.",
+                message="Set OPENAI_API_KEY in Settings or the run-level agent runtime env.",
             )
             return toolbox.result()
         except LangChainAgentRuntimeError as exc:
@@ -334,6 +334,9 @@ Operate like a real team lead:
 - inspect PM roadmap, sprint policy, and actual delivery state before choosing
   the release gate;
 - deploy and run post-deploy QA when the current sprint/release calls for it;
+- post-deploy QA must validate the deployed URL itself, including behavior,
+  CSS/static asset loading, and obvious layout/style regressions; HTTP 200 alone
+  is not enough for handoff;
 - for the final planned sprint of an app/site/API/service, assume the normal
   target is a deployed working product URL unless PM/source artifacts explicitly
   say local-only/no-deployment. If PM provides release_gates, roadmap deployment

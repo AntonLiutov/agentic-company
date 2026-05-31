@@ -137,7 +137,7 @@ def _prepare_context(state: BusinessAnalystAgentGraphState) -> BusinessAnalystAg
     request_path.parent.mkdir(parents=True, exist_ok=True)
     request_path.write_text(json.dumps(request, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     write_event(
-        run_dir / "events.jsonl",
+        run_dir,
         delivery_state["run_id"],
         BUSINESS_ANALYST_AGENT_ID,
         "business_analysis_started",
@@ -207,7 +207,7 @@ def _apply_result(state: BusinessAnalystAgentGraphState) -> BusinessAnalystAgent
     if result.status != "business_analysis_completed":
         updated["blockers"] = [*updated.get("blockers", []), result.summary]
     write_event(
-        Path(updated["run_dir"]) / "events.jsonl",
+        Path(updated["run_dir"]),
         updated["run_id"],
         BUSINESS_ANALYST_AGENT_ID,
         (
