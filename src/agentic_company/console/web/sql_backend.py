@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 from collections.abc import Iterable, Iterator, Sequence
@@ -9,6 +10,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+_POSTGRES_POOLS: dict[str, Any] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,23 +61,60 @@ def connect_database(settings: DatabaseSettings) -> Iterator[Any]:
 @contextmanager
 def _connect_postgres(url: str) -> Iterator[_PostgresConnection]:
     try:
-        import psycopg
         from psycopg.rows import dict_row
+        from psycopg_pool import ConnectionPool
     except ImportError as exc:  # pragma: no cover - exercised only without app extra
         raise RuntimeError(
-            "PostgreSQL DATABASE_URL requires installing the app extra with psycopg."
+            "PostgreSQL DATABASE_URL requires installing the app extra with psycopg pool support."
         ) from exc
 
-    conn = psycopg.connect(url, row_factory=dict_row)
-    wrapper = _PostgresConnection(conn)
+    pool = _postgres_pool(url, ConnectionPool, dict_row)
+    with pool.connection() as conn:
+        wrapper = _PostgresConnection(conn)
+        try:
+            yield wrapper
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def _postgres_pool(url: str, pool_factory: Any, row_factory: Any) -> Any:
+    pool = _POSTGRES_POOLS.get(url)
+    if pool is not None:
+        return pool
+    min_size, max_size = postgres_pool_bounds()
+    pool = pool_factory(
+        conninfo=url,
+        min_size=min_size,
+        max_size=max_size,
+        kwargs={"row_factory": row_factory},
+        open=False,
+    )
+    pool.open()
+    _POSTGRES_POOLS[url] = pool
+    return pool
+
+
+def postgres_pool_bounds() -> tuple[int, int]:
+    min_size = _int_env("AGENTIC_POSTGRES_POOL_MIN", default=1, minimum=0)
+    max_size = _int_env("AGENTIC_POSTGRES_POOL_MAX", default=10, minimum=1)
+    if max_size < min_size:
+        raise ValueError("AGENTIC_POSTGRES_POOL_MAX must be greater than or equal to min size")
+    return min_size, max_size
+
+
+def _int_env(name: str, *, default: int, minimum: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
     try:
-        yield wrapper
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if value < minimum:
+        raise ValueError(f"{name} must be at least {minimum}")
+    return value
 
 
 class _StaticCursor:
@@ -187,4 +227,5 @@ def _replace_sqlite_placeholders(sql: str) -> str:
 __all__ = [
     "DatabaseSettings",
     "connect_database",
+    "postgres_pool_bounds",
 ]
