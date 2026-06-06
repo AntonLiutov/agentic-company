@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 
 class RuntimeCache(Protocol):
@@ -39,6 +39,7 @@ class NoopRuntimeCache:
 @dataclass(slots=True)
 class RedisRuntimeCache:
     url: str
+    _client: Any = None
 
     def __post_init__(self) -> None:
         try:

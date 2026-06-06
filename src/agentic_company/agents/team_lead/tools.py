@@ -35,6 +35,7 @@ from agentic_company.platform.run_trace import record_tool_call_event
 from agentic_company.platform.runtime_db import (
     artifact_links_for_paths,
     artifact_paths_by_type,
+    claim_work_item_for_execution,
     completed_work_item_ids,
     count_tool_call_events,
     get_work_item,
@@ -461,6 +462,7 @@ class TeamLeadToolbox:
             stage="team_lead",
             status="team_lead_sprint_handoff_ready",
         )
+        self.delivery_state["blockers"] = []
         write_team_lead_event(
             self.delivery_state,
             "team_lead_complete_sprint_requested",
@@ -571,7 +573,23 @@ class TeamLeadToolbox:
         started = time.perf_counter()
         item = get_work_item(str(self.delivery_state["run_id"]), item_id)
         target_agent = target_agent_id(node_name)
-        self._transition(item.work_item_id, tool, target_agent, "in_progress", reason or message)
+        tool_call_id = _new_tool_call_id(self.delivery_state, tool)
+        claim = self._claim_worker_start(
+            item.work_item_id,
+            tool,
+            target_agent,
+            reason or message or f"{tool} started {item.work_item_id}.",
+            tool_call_id=tool_call_id,
+        )
+        if not claim.claimed:
+            return self._contract_error_response(
+                tool,
+                item.work_item_id,
+                claim.reason or "Work item execution precondition failed.",
+                message or reason,
+                status="work_item_precondition_failed",
+                tool_call_id=tool_call_id,
+            )
         outbound = append_agent_call_message(
             self.delivery_state,
             node_name=node_name,
@@ -602,19 +620,28 @@ class TeamLeadToolbox:
         )
         checked = worker(self.delivery_state)
         self.delivery_state = checked
+        downstream_response = latest_downstream_response(
+            self.delivery_state,
+            from_agent=target_agent,
+            correlation_id=item.work_item_id,
+        )
         status = str(checked.get("status") or checked.get("stage") or "")
-        final_status = _status_for_tool_result(tool, status)
+        if downstream_response is None:
+            status = "worker_contract_error"
+            final_status = "blocked"
+            activity_message = (
+                f"{tool} did not return a correlated response for {item.work_item_id}."
+            )
+        else:
+            final_status = _status_for_tool_result(tool, status)
+            activity_message = _worker_activity_message(tool, item.work_item_id, final_status)
         self._transition(
             item.work_item_id,
             tool,
             target_agent,
             final_status,
-            _worker_activity_message(tool, item.work_item_id, final_status),
-        )
-        downstream_response = latest_downstream_response(
-            self.delivery_state,
-            from_agent=target_agent,
-            correlation_id=item.work_item_id,
+            activity_message,
+            tool_call_id=tool_call_id,
         )
         self._record(tool, item.work_item_id, reason, message, result_status=status)
         write_team_lead_event(
@@ -635,6 +662,7 @@ class TeamLeadToolbox:
             },
             status_override=status or final_status,
             work_item_id=item.work_item_id,
+            tool_call_id=tool_call_id,
         )
 
     def _contract_error(
@@ -665,6 +693,7 @@ class TeamLeadToolbox:
         message: str,
         *,
         status: str = "contract_error",
+        tool_call_id: str = "",
     ) -> str:
         self._record(tool, work_item_id, reason, message, result_status=status)
         return self._tool_response(
@@ -672,6 +701,7 @@ class TeamLeadToolbox:
             f"{tool} contract error: {reason}",
             status_override=status,
             work_item_id=work_item_id,
+            tool_call_id=tool_call_id,
         )
 
     def _limit_response(self, tool: str, work_item_id: str, message: str) -> str | None:
@@ -726,6 +756,8 @@ class TeamLeadToolbox:
         owner_agent: str,
         status: str,
         message: str,
+        *,
+        tool_call_id: str = "",
     ) -> None:
         item = get_work_item(str(self.delivery_state["run_id"]), work_item_id)
         record = ToolExecutionRecord(
@@ -734,12 +766,36 @@ class TeamLeadToolbox:
             sprint_id=item.sprint_id,
             owner_agent=owner_agent,
             tool_name=tool,
-            tool_call_id=_tool_call_id(self.delivery_state, tool, len(self.history or []) + 1),
+            tool_call_id=tool_call_id
+            or _tool_call_id(self.delivery_state, tool, len(self.history or []) + 1),
             attempt_id="1",
             status=status,
             activity_message=message or f"{tool} updated {item.work_item_id}.",
         )
         record_work_item_transition(record)
+
+    def _claim_worker_start(
+        self,
+        work_item_id: str,
+        tool: str,
+        owner_agent: str,
+        message: str,
+        *,
+        tool_call_id: str,
+    ):
+        item = get_work_item(str(self.delivery_state["run_id"]), work_item_id)
+        record = ToolExecutionRecord(
+            run_id=str(self.delivery_state["run_id"]),
+            work_item_id=item.work_item_id,
+            sprint_id=item.sprint_id,
+            owner_agent=owner_agent,
+            tool_name=tool,
+            tool_call_id=tool_call_id,
+            attempt_id="1",
+            status="in_progress",
+            activity_message=message or f"{tool} started {item.work_item_id}.",
+        )
+        return claim_work_item_for_execution(record)
 
     def _tool_response(
         self,
@@ -752,6 +808,7 @@ class TeamLeadToolbox:
         input_summary: dict[str, Any] | None = None,
         status_override: str | None = None,
         work_item_id: str = "",
+        tool_call_id: str = "",
     ) -> str:
         status = status_override or str(self.delivery_state.get("status") or "running")
         refs = _response_artifact_refs(
@@ -760,11 +817,8 @@ class TeamLeadToolbox:
         )
         result = ToolCallResult(
             tool_name=tool_name,
-            tool_call_id=_tool_call_id(
-                self.delivery_state,
-                tool_name,
-                len(self.history or []),
-            ),
+            tool_call_id=tool_call_id
+            or _tool_call_id(self.delivery_state, tool_name, len(self.history or [])),
             status=status,
             business_summary=business_summary,
             developer_diagnostics={
@@ -805,14 +859,18 @@ def apply_team_lead_result(state: DeliveryState, sprint_id: str) -> DeliveryStat
     """Persist the Team Lead sprint result from DB-backed state."""
 
     status = str(state.get("status") or "")
-    blocked = "blocked" in status.lower() or bool(state.get("blockers"))
+    completion = sprint_completion_state(str(state["run_id"]), sprint_id)
+    state_blockers = list(state.get("blockers", []))
+    if completion.is_complete and status == "team_lead_sprint_handoff_ready":
+        state_blockers = []
+    blocked = "blocked" in status.lower() or bool(state_blockers)
     if not status:
         status = "team_lead_sprint_blocked" if blocked else "team_lead_sprint_handoff_ready"
     result = {
         "sprint_id": sprint_id,
         "status": status,
         "completed_work_item_ids": completed_work_item_ids(str(state["run_id"]), sprint_id),
-        "blockers": list(state.get("blockers", [])),
+        "blockers": state_blockers,
         "handoff_status": state.get("handoff_status"),
         "deployment_status": state.get("deployment_status"),
         "artifact_refs": _team_lead_completion_artifact_refs(state, sprint_id),
@@ -1196,6 +1254,11 @@ def _tool_artifact_refs(state: DeliveryState, paths: list[str]) -> tuple[Any, ..
 def _tool_call_id(state: DeliveryState, tool_name: str, step: int) -> str:
     run_id = str(state.get("run_id") or "run")
     return f"{run_id}:team-lead-agent:{tool_name}:{step}"
+
+
+def _new_tool_call_id(state: DeliveryState, tool_name: str) -> str:
+    run_id = str(state.get("run_id") or "run")
+    return f"{run_id}:team-lead-agent:{tool_name}:{uuid4().hex[:12]}"
 
 
 def _recommended_next_action(status: str, failure_mode: str | None) -> str:

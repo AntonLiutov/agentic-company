@@ -78,6 +78,16 @@ class SprintCompletionState:
         return asdict(self)
 
 
+@dataclass(frozen=True, slots=True)
+class WorkItemClaimResult:
+    """Result of attempting to claim a sprint work item for execution."""
+
+    claimed: bool
+    work_item_id: str
+    blocking_work_item_id: str = ""
+    reason: str = ""
+
+
 def materialize_planning_items(run_id: str) -> None:
     repo, db_run_id = _repo_and_run(run_id)
     with repo.connect() as conn:
@@ -344,98 +354,82 @@ def record_work_item_transition(record: ToolExecutionRecord) -> None:
     record.validate()
     repo, db_run_id = _repo_and_run(record.run_id)
     now = _now()
-    event_id = f"work:{record.tool_call_id}:{record.attempt_id}:{uuid4().hex}"
     with repo.connect() as conn:
-        row = conn.execute(
-            "SELECT status, owner_agent FROM work_items WHERE run_id = ? AND work_item_id = ?",
-            (db_run_id, record.work_item_id),
-        ).fetchone()
-        if row is None:
-            raise ValueError(f"Unknown work_item_id for run {record.run_id}: {record.work_item_id}")
-        from_status = str(row["status"])
-        from_owner = str(row["owner_agent"])
-        requested_status = _normalize_status(record.status)
-        effective_status = _effective_transition_status(
-            current_status=from_status,
-            requested_status=requested_status,
-            tool_name=record.tool_name,
-        )
-        lane = _lane_for_status(effective_status)
-        effective_owner = (
-            from_owner
-            if from_status == "done" and effective_status == "done"
-            else record.owner_agent
-        )
-        conn.execute(
+        _record_work_item_transition_conn(conn, db_run_id, record, now)
+
+
+def claim_work_item_for_execution(record: ToolExecutionRecord) -> WorkItemClaimResult:
+    """Claim a sprint work item before running an expensive specialist worker.
+
+    The Team Lead may receive several tool calls in a single model turn. This DB
+    precondition is the runtime gate: only one non-planning work item per sprint
+    can be active at a time, and a second queued tool call must fail before it
+    writes a request or starts Codex.
+    """
+
+    record.validate()
+    repo, db_run_id = _repo_and_run(record.run_id)
+    now = _now()
+    with repo.connect() as conn:
+        target = conn.execute(
             """
-            UPDATE work_items
-            SET status = ?,
-                lane = ?,
-                owner_agent = ?,
-                assigned_agent = ?,
-                active = ?,
-                blocker = ?,
-                updated_at = ?
+            SELECT work_item_id, sprint_id, status, active
+            FROM work_items
             WHERE run_id = ? AND work_item_id = ?
             """,
-            (
-                effective_status,
-                lane,
-                effective_owner,
-                effective_owner,
-                1 if lane in {"in_progress", "qa"} else 0,
-                record.activity_message if lane == "blocked" else "",
-                now,
-                db_run_id,
-                record.work_item_id,
-            ),
-        )
+            (db_run_id, record.work_item_id),
+        ).fetchone()
+        if target is None:
+            raise ValueError(f"Unknown work_item_id for run {record.run_id}: {record.work_item_id}")
+        if str(target["sprint_id"]) != record.sprint_id:
+            return WorkItemClaimResult(
+                claimed=False,
+                work_item_id=record.work_item_id,
+                reason=(
+                    f"work_item_id {record.work_item_id} belongs to sprint "
+                    f"{target['sprint_id']}, not {record.sprint_id}."
+                ),
+            )
+        if str(target["status"]) == "done":
+            return WorkItemClaimResult(
+                claimed=False,
+                work_item_id=record.work_item_id,
+                reason=f"Cannot start {record.work_item_id}; it is already done.",
+            )
         conn.execute(
             """
-            INSERT INTO work_item_events (
-                run_id, event_id, work_item_id, event_type, from_status, to_status,
-                from_owner, to_owner, agent_id, tool_name, tool_call_id, message,
-                visibility, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user', ?)
+            UPDATE sprints
+            SET updated_at = ?
+            WHERE run_id = ? AND sprint_id = ?
             """,
-            (
-                db_run_id,
-                event_id,
-                record.work_item_id,
-                record.tool_name,
-                from_status,
-                effective_status,
-                from_owner,
-                effective_owner,
-                effective_owner,
-                record.tool_name,
-                record.tool_call_id,
-                record.activity_message,
-                now,
-            ),
+            (now, db_run_id, record.sprint_id),
         )
-        conn.execute(
+        blocking = conn.execute(
             """
-            INSERT INTO activity_events (
-                run_id, event_id, work_item_id, owner_agent, agent_id, tool_name,
-                message, status, artifact_ids, visibility, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'user', ?)
+            SELECT work_item_id
+            FROM work_items
+            WHERE run_id = ?
+              AND sprint_id = ?
+              AND work_item_id <> ?
+              AND (active = 1 OR status IN ('in_progress', 'review'))
+            ORDER BY delivery_order, work_item_id
+            LIMIT 1
             """,
-            (
-                db_run_id,
-                event_id,
-                record.work_item_id,
-                effective_owner,
-                effective_owner,
-                record.tool_name,
-                record.activity_message,
-                effective_status,
-                json.dumps(list(record.artifact_ids), sort_keys=True),
-                now,
-            ),
-        )
+            (db_run_id, record.sprint_id, record.work_item_id),
+        ).fetchone()
+        if blocking is not None:
+            blocking_id = str(blocking["work_item_id"])
+            return WorkItemClaimResult(
+                claimed=False,
+                work_item_id=record.work_item_id,
+                blocking_work_item_id=blocking_id,
+                reason=(
+                    f"Cannot start {record.work_item_id}; {blocking_id} is already active "
+                    f"in {record.sprint_id}."
+                ),
+            )
+        _record_work_item_transition_conn(conn, db_run_id, record, now)
+    return WorkItemClaimResult(claimed=True, work_item_id=record.work_item_id)
 
 
 def record_run_lifecycle(
@@ -621,6 +615,105 @@ def _repo_and_run(run_id: str):
     repo.init_schema()
     row = _run_row(repo, run_id)
     return repo, int(row["id"])
+
+
+def _record_work_item_transition_conn(
+    conn: Any,
+    db_run_id: int,
+    record: ToolExecutionRecord,
+    now: str,
+) -> None:
+    event_id = f"work:{record.tool_call_id}:{record.attempt_id}:{uuid4().hex}"
+    row = conn.execute(
+        "SELECT status, owner_agent FROM work_items WHERE run_id = ? AND work_item_id = ?",
+        (db_run_id, record.work_item_id),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown work_item_id for run {record.run_id}: {record.work_item_id}")
+    from_status = str(row["status"])
+    from_owner = str(row["owner_agent"])
+    requested_status = _normalize_status(record.status)
+    effective_status = _effective_transition_status(
+        current_status=from_status,
+        requested_status=requested_status,
+        tool_name=record.tool_name,
+    )
+    lane = _lane_for_status(effective_status)
+    effective_owner = (
+        from_owner
+        if from_status == "done" and effective_status == "done"
+        else record.owner_agent
+    )
+    conn.execute(
+        """
+        UPDATE work_items
+        SET status = ?,
+            lane = ?,
+            owner_agent = ?,
+            assigned_agent = ?,
+            active = ?,
+            blocker = ?,
+            updated_at = ?
+        WHERE run_id = ? AND work_item_id = ?
+        """,
+        (
+            effective_status,
+            lane,
+            effective_owner,
+            effective_owner,
+            1 if lane in {"in_progress", "qa"} else 0,
+            record.activity_message if lane == "blocked" else "",
+            now,
+            db_run_id,
+            record.work_item_id,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO work_item_events (
+            run_id, event_id, work_item_id, event_type, from_status, to_status,
+            from_owner, to_owner, agent_id, tool_name, tool_call_id, message,
+            visibility, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user', ?)
+        """,
+        (
+            db_run_id,
+            event_id,
+            record.work_item_id,
+            record.tool_name,
+            from_status,
+            effective_status,
+            from_owner,
+            effective_owner,
+            effective_owner,
+            record.tool_name,
+            record.tool_call_id,
+            record.activity_message,
+            now,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO activity_events (
+            run_id, event_id, work_item_id, owner_agent, agent_id, tool_name,
+            message, status, artifact_ids, visibility, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'user', ?)
+        """,
+        (
+            db_run_id,
+            event_id,
+            record.work_item_id,
+            effective_owner,
+            effective_owner,
+            record.tool_name,
+            record.activity_message,
+            effective_status,
+            json.dumps(list(record.artifact_ids), sort_keys=True),
+            now,
+        ),
+    )
 
 
 def _update_sprint_status(run_id: str, sprint_id: str, status: str) -> None:

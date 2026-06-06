@@ -8,6 +8,7 @@ from agentic_company.agents.team_lead.tools import (
     TeamLeadExecutorResult,
     TeamLeadToolbox,
     TeamLeadWorkers,
+    apply_team_lead_result,
 )
 from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.platform.runtime_db import (
@@ -61,6 +62,45 @@ def test_team_lead_executor_does_not_block_after_successful_complete_sprint(tmp_
     assert result.delivery_state["status"] == "team_lead_sprint_handoff_ready"
     assert result.delivery_state.get("blockers", []) == []
     assert sprint_completion_state("run", "sprint-01").status == "done"
+
+
+def test_complete_sprint_clears_resolved_stale_blockers(tmp_path, monkeypatch):
+    _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
+    _mark_work_item_done("US-1")
+    toolbox = TeamLeadToolbox(
+        delivery_state={
+            **state,
+            "blockers": ["Fullstack work item US-1 did not complete successfully."],
+        },
+        sprint={"sprint_id": "sprint-01"},
+        workers=_team_lead_workers(),
+        max_steps=5,
+        history=[],
+    )
+
+    payload = json.loads(toolbox.complete_sprint("PLAN-04", reason="Sprint handoff accepted."))
+
+    assert payload["status"] == "team_lead_sprint_handoff_ready"
+    assert toolbox.delivery_state["blockers"] == []
+
+
+def test_apply_team_lead_result_omits_resolved_stale_blockers(tmp_path, monkeypatch):
+    _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
+    _mark_work_item_done("US-1")
+    mark_sprint_done("run", "sprint-01")
+    stale_state = {
+        **state,
+        "status": "team_lead_sprint_handoff_ready",
+        "blockers": ["Fullstack work item US-1 did not complete successfully."],
+    }
+
+    apply_team_lead_result(stale_state, "sprint-01")
+
+    result_path = tmp_path / "run" / "team-lead" / "sprint-01-result.json"
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert result["status"] == "team_lead_sprint_handoff_ready"
+    assert result["blockers"] == []
+    assert result["completed_work_item_ids"] == ["US-1"]
 
 
 def test_team_lead_executor_blocks_if_runtime_stops_after_contract_error(tmp_path, monkeypatch):
@@ -209,6 +249,58 @@ def test_complete_sprint_rejects_pending_db_work_items(tmp_path, monkeypatch):
     assert sprint_completion_state("run", "sprint-01").status == "running"
 
 
+def test_team_lead_rejects_second_active_sprint_work_item_before_request(
+    tmp_path, monkeypatch
+):
+    repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
+    _add_work_item(repo, "US-1B", sprint_id="sprint-01", delivery_order=2)
+    record_work_item_transition(
+        ToolExecutionRecord(
+            run_id="run",
+            work_item_id="US-1",
+            sprint_id="sprint-01",
+            owner_agent="fullstack-agent",
+            tool_name="run_fullstack",
+            tool_call_id="run:fullstack:us-1",
+            attempt_id="1",
+            status="in_progress",
+            activity_message="Fullstack started US-1.",
+        )
+    )
+    toolbox = TeamLeadToolbox(
+        delivery_state=state,
+        sprint={"sprint_id": "sprint-01"},
+        workers=_team_lead_workers(),
+        max_steps=5,
+        history=[],
+    )
+
+    payload = json.loads(toolbox.run_fullstack("US-1B", reason="Start second item."))
+
+    assert payload["status"] == "work_item_precondition_failed"
+    assert "US-1 is already active" in payload["business_summary"]
+    assert get_work_item("run", "US-1B").status == "todo"
+    assert not (tmp_path / "run" / "team-lead" / "requests").exists()
+
+
+def test_team_lead_worker_without_correlated_response_blocks_work_item(
+    tmp_path, monkeypatch
+):
+    _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
+    toolbox = TeamLeadToolbox(
+        delivery_state=state,
+        sprint={"sprint_id": "sprint-01"},
+        workers=_team_lead_workers(),
+        max_steps=5,
+        history=[],
+    )
+
+    payload = json.loads(toolbox.run_fullstack("US-1", reason="Implement item."))
+
+    assert payload["status"] == "worker_contract_error"
+    assert get_work_item("run", "US-1").status == "blocked"
+
+
 class _CompletingRuntime:
     def invoke(self, request):
         for tool in request.tools:
@@ -319,6 +411,8 @@ def _setup_runtime(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
+    monkeypatch.delenv("AGENTIC_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     repo = ConsoleRepository(db_path)
     repo.init_schema()
     user = repo.create_user(
@@ -368,6 +462,24 @@ def _mark_work_item_done(work_item_id):
             activity_message=f"QA passed {work_item_id}.",
         )
     )
+
+
+def _add_work_item(repo, work_item_id, *, sprint_id, delivery_order):
+    with repo.connect() as conn:
+        row = conn.execute("SELECT id FROM runs WHERE run_uid = ?", ("run",)).fetchone()
+        conn.execute(
+            """
+            INSERT INTO work_items (
+                run_id, work_item_id, title, sprint_id, delivery_order, status,
+                lane, owner_agent, assigned_agent, active, source_refs, artifact_ids,
+                blocker, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'todo', 'todo', 'fullstack-agent',
+                'fullstack-agent', 0, '[]', '[]', '', '2026-01-01T00:00:00Z',
+                '2026-01-01T00:00:00Z')
+            """,
+            (int(row["id"]), work_item_id, work_item_id, sprint_id, delivery_order),
+        )
 
 
 def _team_lead_workers():

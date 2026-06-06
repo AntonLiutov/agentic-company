@@ -5,6 +5,14 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolate_unit_database_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep unit tests off the developer/runtime database by default."""
+
+    monkeypatch.delenv("AGENTIC_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+
 @pytest.fixture
 def sample_web_app_requirements() -> str:
     return """# Web App MVP Requirements
