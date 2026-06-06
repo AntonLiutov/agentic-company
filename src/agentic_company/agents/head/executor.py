@@ -381,35 +381,39 @@ def langchain_tools(toolbox: HeadToolbox) -> list[Callable[..., str]]:
     def run_business_analyst(
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         """Delegate raw requirements analysis to the Business Analyst Agent."""
-        return toolbox.run_business_analyst(reason, message, external_reference)
+        return toolbox.run_business_analyst(reason, message, artifact_refs, external_reference)
 
     def run_architect(
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         """Delegate solution architecture to the Architect Agent after BA completes."""
-        return toolbox.run_architect(reason, message, external_reference)
+        return toolbox.run_architect(reason, message, artifact_refs, external_reference)
 
     def run_project_manager(
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         """Delegate release and sprint planning to the Project Manager Agent after Architect."""
-        return toolbox.run_project_manager(reason, message, external_reference)
+        return toolbox.run_project_manager(reason, message, artifact_refs, external_reference)
 
     def run_team_lead(
         sprint_id: str,
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         """Delegate one PM-planned sprint to Team Lead with an explicit sprint_id."""
-        return toolbox.run_team_lead(sprint_id, reason, message, external_reference)
+        return toolbox.run_team_lead(sprint_id, reason, message, artifact_refs, external_reference)
 
     def codex_review(
         target_agent: str = "",
@@ -436,18 +440,24 @@ def langchain_tools(toolbox: HeadToolbox) -> list[Callable[..., str]]:
     def inspect_delivery_status(
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
     ) -> str:
         """Run Codex status inspection and read back the delivery status JSON."""
-        return toolbox.inspect_delivery_status(reason, message)
+        return toolbox.inspect_delivery_status(reason, message, artifact_refs)
 
-    def complete_delivery(reason: str = "", message: str = "") -> str:
+    def complete_delivery(
+        reason: str = "",
+        message: str = "",
+        artifact_refs: str = "",
+    ) -> str:
         """Mark the company delivery run complete after inspector confirms readiness."""
-        return toolbox.complete_delivery(reason, message)
+        return toolbox.complete_delivery(reason, message, artifact_refs)
 
     def block_planning(
         reason: str,
         correlation_id: str = "upstream-planning",
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         """Block planning when bounded Repair cannot continue."""
@@ -455,6 +465,7 @@ def langchain_tools(toolbox: HeadToolbox) -> list[Callable[..., str]]:
             reason=reason,
             correlation_id=correlation_id,
             message=message,
+            artifact_refs=artifact_refs,
             external_reference=external_reference,
         )
 

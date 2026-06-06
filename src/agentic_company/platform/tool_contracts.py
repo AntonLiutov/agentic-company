@@ -367,6 +367,13 @@ def render_tool_docstring(contract: ToolContract) -> str:
     artifact_inputs = ", ".join(contract.artifact_inputs) or "none"
     artifact_outputs = ", ".join(contract.artifact_outputs) or "none"
     example = json.dumps(contract.examples[0] if contract.examples else {}, sort_keys=True)
+    external_reference_note = (
+        "External dashboard support: pass external_reference when mirroring this work "
+        "to GitHub, Jira, Azure DevOps, or the internal board.\n"
+        if "external_reference" in contract.required_parameters
+        or "external_reference" in contract.optional_parameters
+        else ""
+    )
     return (
         f"{contract.purpose}\n\n"
         f"Business use: {contract.business_description}\n"
@@ -378,8 +385,7 @@ def render_tool_docstring(contract: ToolContract) -> str:
         f"Failure modes: {failures}.\n"
         f"Retry policy: {contract.retry_policy}\n"
         f"Idempotency: {contract.idempotency}\n"
-        "External dashboard support: pass external_reference when mirroring this work "
-        "to GitHub, Jira, Azure DevOps, or the internal board.\n"
+        f"{external_reference_note}"
         f"Dashboard status mapping: {contract.dashboard_status}.\n"
         f"Example call: {example}."
     )

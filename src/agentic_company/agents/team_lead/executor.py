@@ -430,37 +430,55 @@ def langchain_tools(toolbox: TeamLeadToolbox) -> list[Callable[..., str]]:
         work_item_id: str,
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         """Delegate feature implementation, or repair after QA returns findings, to Fullstack."""
-        return toolbox.run_fullstack(work_item_id, reason, message, external_reference)
+        return toolbox.run_fullstack(
+            work_item_id,
+            reason,
+            message,
+            artifact_refs,
+            external_reference,
+        )
 
     def run_qa(
         work_item_id: str,
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         """Delegate QA/review for the explicit sprint work item to the QA Agent."""
-        return toolbox.run_qa(work_item_id, reason, message, external_reference)
+        return toolbox.run_qa(work_item_id, reason, message, artifact_refs, external_reference)
 
     def run_deployment(
         work_item_id: str,
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         """Delegate sprint deployment to the Deployment Agent."""
-        return toolbox.run_deployment(work_item_id, reason, message, external_reference)
+        return toolbox.run_deployment(
+            work_item_id,
+            reason,
+            message,
+            artifact_refs,
+            external_reference,
+        )
 
     def run_post_deploy_qa(
         work_item_id: str,
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         """Delegate post-deployment release QA to the QA Agent."""
-        return toolbox.run_post_deploy_qa(work_item_id, reason, message, external_reference)
+        return toolbox.run_post_deploy_qa(
+            work_item_id, reason, message, artifact_refs, external_reference
+        )
 
     def run_handoff(
         work_item_id: str,
@@ -468,6 +486,7 @@ def langchain_tools(toolbox: TeamLeadToolbox) -> list[Callable[..., str]]:
         sprint_id: str = "",
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         """Delegate handoff packaging using an explicit scope contract.
@@ -477,7 +496,13 @@ def langchain_tools(toolbox: TeamLeadToolbox) -> list[Callable[..., str]]:
         final project report.
         """
         return toolbox.run_handoff(
-            work_item_id, handoff_scope, sprint_id, reason, message, external_reference
+            work_item_id,
+            handoff_scope,
+            sprint_id,
+            reason,
+            message,
+            artifact_refs,
+            external_reference,
         )
 
     def codex_review(
@@ -510,22 +535,39 @@ def langchain_tools(toolbox: TeamLeadToolbox) -> list[Callable[..., str]]:
         work_item_id: str,
         reason: str = "",
         message: str = "",
+        sprint_id: str = "",
+        artifact_refs: str = "",
     ) -> str:
         """Run Codex status inspection and read back the sprint status JSON."""
-        return toolbox.inspect_sprint_status(work_item_id, reason, message)
+        return toolbox.inspect_sprint_status(
+            work_item_id, reason, message, sprint_id, artifact_refs
+        )
 
-    def complete_sprint(work_item_id: str, reason: str = "", message: str = "") -> str:
+    def complete_sprint(
+        work_item_id: str,
+        reason: str = "",
+        message: str = "",
+        sprint_id: str = "",
+        artifact_refs: str = "",
+    ) -> str:
         """Mark the sprint complete after inspector confirms readiness."""
-        return toolbox.complete_sprint(work_item_id, reason, message)
+        return toolbox.complete_sprint(work_item_id, reason, message, sprint_id, artifact_refs)
 
     def block_sprint(
         reason: str,
         work_item_id: str,
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         """Block the sprint when progress is impossible or unsafe."""
-        return toolbox.block_sprint(reason, work_item_id, message, external_reference)
+        return toolbox.block_sprint(
+            reason,
+            work_item_id,
+            message,
+            artifact_refs,
+            external_reference,
+        )
 
     tools = [
         run_fullstack,

@@ -115,6 +115,7 @@ class HeadToolbox:
         self,
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         return self._run_worker(
@@ -123,6 +124,7 @@ class HeadToolbox:
             correlation_id="PLAN-01",
             reason=reason,
             message=message,
+            artifact_refs=artifact_refs,
             external_reference=external_reference,
             worker=self.workers.business_analyst,
         )
@@ -131,6 +133,7 @@ class HeadToolbox:
         self,
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         return self._run_worker(
@@ -139,6 +142,7 @@ class HeadToolbox:
             correlation_id="PLAN-02",
             reason=reason,
             message=message,
+            artifact_refs=artifact_refs,
             external_reference=external_reference,
             worker=self.workers.architect,
         )
@@ -147,6 +151,7 @@ class HeadToolbox:
         self,
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         return self._run_worker(
@@ -155,6 +160,7 @@ class HeadToolbox:
             correlation_id="PLAN-03",
             reason=reason,
             message=message,
+            artifact_refs=artifact_refs,
             external_reference=external_reference,
             worker=self.workers.project_manager,
         )
@@ -164,6 +170,7 @@ class HeadToolbox:
         sprint_id: str,
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         sprint_id = str(sprint_id or "").strip()
@@ -228,6 +235,7 @@ class HeadToolbox:
             correlation_id=sprint_id,
             reason=reason,
             message=message,
+            artifact_refs=artifact_refs,
             external_reference=external_reference,
             worker=self.workers.team_lead,
         )
@@ -236,8 +244,25 @@ class HeadToolbox:
         self,
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
     ) -> str:
         started = time.perf_counter()
+        try:
+            explicit_refs = _validated_artifact_refs(
+                str(self.delivery_state["run_id"]),
+                artifact_refs,
+            )
+        except ValueError as exc:
+            self.current_tool_name = "complete_delivery"
+            return self._tool_response(
+                "complete_delivery contract error: " + str(exc),
+                input_summary={
+                    "correlation_id": "company-delivery",
+                    "work_item_id": "PLAN-04",
+                    "reason": reason,
+                    "message": message,
+                },
+            )
         if limit_response := self._limit_response(message):
             return limit_response
         self.delivery_state = mark_node_completed(
@@ -254,12 +279,14 @@ class HeadToolbox:
         self._record("complete_delivery", "PLAN-04", reason, message)
         return self._tool_response(
             "Head Agent completed BA -> Architect -> PM -> Team Lead.",
+            artifact_refs=explicit_refs,
             duration_ms=_duration_ms(started),
             input_summary={
                 "correlation_id": "company-delivery",
                 "work_item_id": "PLAN-04",
                 "reason": reason,
                 "message": message,
+                "artifact_refs": explicit_refs,
             },
         )
 
@@ -267,11 +294,28 @@ class HeadToolbox:
         self,
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
     ) -> str:
         started = time.perf_counter()
+        try:
+            explicit_refs = _validated_artifact_refs(
+                str(self.delivery_state["run_id"]),
+                artifact_refs,
+            )
+        except ValueError as exc:
+            self.current_tool_name = "inspect_delivery_status"
+            return self._tool_response(
+                "inspect_delivery_status contract error: " + str(exc),
+                input_summary={
+                    "correlation_id": "company-delivery",
+                    "work_item_id": "PLAN-04",
+                    "reason": reason,
+                    "message": message,
+                },
+            )
         if limit_response := self._limit_response(message):
             return limit_response
-        refs = _delivery_status_artifact_refs(self.delivery_state)
+        refs = _unique_paths([*_delivery_status_artifact_refs(self.delivery_state), *explicit_refs])
         inspection_request = StatusInspectionRequest(
             run_id=self.delivery_state["run_id"],
             run_dir=Path(self.delivery_state["run_dir"]),
@@ -354,7 +398,7 @@ class HeadToolbox:
                 "work_item_id": "PLAN-04",
                 "reason": reason,
                 "message": message,
-                "artifact_refs": refs,
+                "artifact_refs": explicit_refs,
                 "execution_id": result.execution_id,
             },
         )
@@ -479,9 +523,25 @@ class HeadToolbox:
         reason: str,
         correlation_id: str = "upstream-planning",
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         started = time.perf_counter()
+        try:
+            explicit_refs = _validated_artifact_refs(
+                str(self.delivery_state["run_id"]),
+                artifact_refs,
+            )
+        except ValueError as exc:
+            self.current_tool_name = "block_planning"
+            return self._tool_response(
+                "block_planning contract error: " + str(exc),
+                input_summary={
+                    "correlation_id": correlation_id,
+                    "reason": reason,
+                    "message": message,
+                },
+            )
         try:
             external_ref = normalize_external_reference(external_reference)
         except ValueError as exc:
@@ -509,11 +569,13 @@ class HeadToolbox:
         self._record("block_planning", correlation_id, reason, message)
         return self._tool_response(
             "Planning blocked: " + reason,
+            artifact_refs=explicit_refs,
             duration_ms=_duration_ms(started),
             input_summary={
                 "correlation_id": correlation_id,
                 "reason": reason,
                 "message": message,
+                "artifact_refs": explicit_refs,
                 **({"external_reference": external_ref} if external_ref else {}),
             },
         )
@@ -579,6 +641,7 @@ class HeadToolbox:
         reason: str,
         message: str,
         worker: HeadWorker,
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         started = time.perf_counter()
@@ -598,6 +661,23 @@ class HeadToolbox:
             )
         if limit_response := self._limit_response(message):
             return limit_response
+        try:
+            explicit_refs = _validated_artifact_refs(
+                str(self.delivery_state["run_id"]),
+                artifact_refs,
+            )
+        except ValueError as exc:
+            self.current_tool_name = tool
+            return self._tool_response(
+                f"{tool} contract error: {exc}",
+                input_summary={
+                    "tool": tool,
+                    "node_name": node_name,
+                    "correlation_id": correlation_id,
+                    "reason": reason,
+                    "message": message,
+                },
+            )
         updated = {**self.delivery_state}
         if node_name == "team_lead":
             updated["team_lead_sprint_id"] = correlation_id
@@ -608,6 +688,7 @@ class HeadToolbox:
             correlation_id=correlation_id,
             reason=reason,
             message=message,
+            artifact_refs=explicit_refs,
         )
         execution_id = outbound.execution_id or ""
         updated["agent_execution_id"] = execution_id
@@ -704,6 +785,7 @@ class HeadToolbox:
                 "work_item_id": item_id,
                 "reason": reason,
                 "message": message,
+                "artifact_refs": explicit_refs,
                 "execution_id": execution_id,
                 "target_agent": outbound.to_agent,
                 **({"external_reference": external_ref} if external_ref else {}),
@@ -860,6 +942,7 @@ def append_agent_call_message(
     correlation_id: str,
     reason: str,
     message: str,
+    artifact_refs: list[str] | None = None,
 ) -> AgentMessage:
     target_agent = target_agent_id(node_name)
     intent = agent_message_intent(node_name)
@@ -878,7 +961,9 @@ def append_agent_call_message(
             to_agent=target_agent,
             intent=intent,
             content=content,
-            artifact_refs=_agent_call_artifacts(node_name, state),
+            artifact_refs=_unique_paths(
+                [*_agent_call_artifacts(node_name, state), *(artifact_refs or [])]
+            ),
             message_id=message_id,
             correlation_id=correlation_id,
             execution_id=execution_id,
@@ -1072,6 +1157,13 @@ def _split_artifact_refs(value: str) -> list[str]:
         item = raw.strip()
         if item and item not in refs:
             refs.append(item)
+    return refs
+
+
+def _validated_artifact_refs(run_id: str, artifact_refs: str) -> list[str]:
+    refs = _split_artifact_refs(artifact_refs)
+    if refs:
+        artifact_links_for_paths(run_id, refs)
     return refs
 
 

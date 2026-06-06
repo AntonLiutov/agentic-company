@@ -134,6 +134,7 @@ class TeamLeadToolbox:
         work_item_id: str,
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         return self._run_worker(
@@ -142,6 +143,7 @@ class TeamLeadToolbox:
             work_item_id=work_item_id,
             reason=reason,
             message=message,
+            artifact_refs=artifact_refs,
             external_reference=external_reference,
             worker=self.workers.fullstack,
         )
@@ -151,6 +153,7 @@ class TeamLeadToolbox:
         work_item_id: str,
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         return self._run_worker(
@@ -159,6 +162,7 @@ class TeamLeadToolbox:
             work_item_id=work_item_id,
             reason=reason,
             message=message,
+            artifact_refs=artifact_refs,
             external_reference=external_reference,
             worker=self.workers.qa,
         )
@@ -168,6 +172,7 @@ class TeamLeadToolbox:
         work_item_id: str,
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         return self._run_worker(
@@ -176,6 +181,7 @@ class TeamLeadToolbox:
             work_item_id=work_item_id,
             reason=reason,
             message=message,
+            artifact_refs=artifact_refs,
             external_reference=external_reference,
             worker=self.workers.deployment,
         )
@@ -185,6 +191,7 @@ class TeamLeadToolbox:
         work_item_id: str,
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         return self._run_worker(
@@ -193,6 +200,7 @@ class TeamLeadToolbox:
             work_item_id=work_item_id,
             reason=reason,
             message=message,
+            artifact_refs=artifact_refs,
             external_reference=external_reference,
             worker=self.workers.qa,
         )
@@ -204,6 +212,7 @@ class TeamLeadToolbox:
         sprint_id: str = "",
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         item_id = _clean_work_item_id(work_item_id)
@@ -237,6 +246,7 @@ class TeamLeadToolbox:
             work_item_id=item_id,
             reason=reason,
             message=message,
+            artifact_refs=artifact_refs,
             external_reference=external_reference,
             worker=self.workers.handoff,
         )
@@ -361,15 +371,38 @@ class TeamLeadToolbox:
         work_item_id: str,
         reason: str = "",
         message: str = "",
+        sprint_id: str = "",
+        artifact_refs: str = "",
     ) -> str:
         item_id = _clean_work_item_id(work_item_id)
         if error := self._contract_error("inspect_sprint_status", item_id, reason, message):
             return error
+        if sprint_id and sprint_id != self.sprint_id:
+            return self._contract_error_response(
+                "inspect_sprint_status",
+                item_id,
+                f"inspect_sprint_status sprint_id must be {self.sprint_id}.",
+                message or reason,
+            )
+        try:
+            explicit_refs = _validated_artifact_refs(
+                str(self.delivery_state["run_id"]),
+                artifact_refs,
+            )
+        except ValueError as exc:
+            return self._contract_error_response(
+                "inspect_sprint_status",
+                item_id,
+                str(exc),
+                message or reason,
+            )
         if limit_response := self._limit_response("inspect_sprint_status", item_id, message):
             return limit_response
         started = time.perf_counter()
         item = get_work_item(str(self.delivery_state["run_id"]), item_id)
-        refs = _sprint_status_artifact_refs(self.delivery_state, self.sprint_id)
+        refs = _unique_paths(
+            [*_sprint_status_artifact_refs(self.delivery_state, self.sprint_id), *explicit_refs]
+        )
         request = StatusInspectionRequest(
             run_id=self.delivery_state["run_id"],
             run_dir=Path(self.delivery_state["run_dir"]),
@@ -459,12 +492,40 @@ class TeamLeadToolbox:
             },
             duration_ms=int((time.perf_counter() - started) * 1000),
             work_item_id=item.work_item_id,
+            input_summary={
+                "work_item_id": item.work_item_id,
+                "sprint_id": self.sprint_id,
+                "reason": reason,
+                "message": message,
+                "artifact_refs": explicit_refs,
+            },
         )
 
-    def complete_sprint(self, work_item_id: str, reason: str = "", message: str = "") -> str:
+    def complete_sprint(
+        self,
+        work_item_id: str,
+        reason: str = "",
+        message: str = "",
+        sprint_id: str = "",
+        artifact_refs: str = "",
+    ) -> str:
         item_id = _clean_work_item_id(work_item_id)
         if error := self._contract_error("complete_sprint", item_id, reason, message):
             return error
+        if sprint_id and sprint_id != self.sprint_id:
+            return self._contract_error_response(
+                "complete_sprint",
+                item_id,
+                f"complete_sprint sprint_id must be {self.sprint_id}.",
+                message or reason,
+            )
+        try:
+            explicit_refs = _validated_artifact_refs(
+                str(self.delivery_state["run_id"]),
+                artifact_refs,
+            )
+        except ValueError as exc:
+            return self._contract_error_response("complete_sprint", item_id, str(exc), message)
         completion = sprint_completion_state(str(self.delivery_state["run_id"]), self.sprint_id)
         if not completion.has_items:
             return self._contract_error_response(
@@ -511,8 +572,20 @@ class TeamLeadToolbox:
         return self._tool_response(
             "complete_sprint",
             "Sprint completed.",
-            artifact_refs=_team_lead_completion_artifact_refs(self.delivery_state, self.sprint_id),
+            artifact_refs=_unique_paths(
+                [
+                    *_team_lead_completion_artifact_refs(self.delivery_state, self.sprint_id),
+                    *explicit_refs,
+                ]
+            ),
             work_item_id=item_id,
+            input_summary={
+                "work_item_id": item_id,
+                "sprint_id": self.sprint_id,
+                "reason": reason,
+                "message": message,
+                "artifact_refs": explicit_refs,
+            },
         )
 
     def block_sprint(
@@ -520,11 +593,19 @@ class TeamLeadToolbox:
         reason: str,
         work_item_id: str,
         message: str = "",
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         item_id = _clean_work_item_id(work_item_id)
         if error := self._contract_error("block_sprint", item_id, reason, message):
             return error
+        try:
+            explicit_refs = _validated_artifact_refs(
+                str(self.delivery_state["run_id"]),
+                artifact_refs,
+            )
+        except ValueError as exc:
+            return self._contract_error_response("block_sprint", item_id, str(exc), message)
         try:
             external_ref = normalize_external_reference(external_reference)
         except ValueError as exc:
@@ -549,6 +630,7 @@ class TeamLeadToolbox:
         return self._tool_response(
             "block_sprint",
             f"Sprint blocked: {reason}",
+            artifact_refs=explicit_refs,
             status_override="blocked",
             work_item_id=item_id,
             input_summary=_input_summary(
@@ -556,6 +638,7 @@ class TeamLeadToolbox:
                 sprint_id=self.sprint_id,
                 reason=reason,
                 message=message,
+                artifact_refs=explicit_refs,
                 external_reference=external_ref,
             ),
         )
@@ -607,6 +690,7 @@ class TeamLeadToolbox:
         reason: str,
         message: str,
         worker: TeamLeadWorker,
+        artifact_refs: str = "",
         external_reference: str = "",
     ) -> str:
         item_id = _clean_work_item_id(work_item_id)
@@ -614,6 +698,13 @@ class TeamLeadToolbox:
             return error
         try:
             external_ref = normalize_external_reference(external_reference)
+        except ValueError as exc:
+            return self._contract_error_response(tool, item_id, str(exc), message)
+        try:
+            explicit_refs = _validated_artifact_refs(
+                str(self.delivery_state["run_id"]),
+                artifact_refs,
+            )
         except ValueError as exc:
             return self._contract_error_response(tool, item_id, str(exc), message)
         if limit_response := self._limit_response(tool, item_id, message):
@@ -644,6 +735,7 @@ class TeamLeadToolbox:
             work_item_id=item.work_item_id,
             reason=reason,
             message=message,
+            artifact_refs=explicit_refs,
         )
         write_request(
             self.delivery_state,
@@ -708,6 +800,7 @@ class TeamLeadToolbox:
                 sprint_id=item.sprint_id,
                 reason=reason,
                 message=message,
+                artifact_refs=explicit_refs,
                 external_reference=external_ref,
             ),
             status_override=status or final_status,
@@ -1062,6 +1155,7 @@ def append_agent_call_message(
     work_item_id: str,
     reason: str,
     message: str,
+    artifact_refs: list[str] | None = None,
 ) -> AgentMessage:
     target_agent = target_agent_id(node_name)
     intent = agent_message_intent(node_name)
@@ -1086,7 +1180,9 @@ def append_agent_call_message(
             to_agent=target_agent,
             intent=intent,
             content=content,
-            artifact_refs=_agent_call_artifacts(node_name, state),
+            artifact_refs=_unique_paths(
+                [*_agent_call_artifacts(node_name, state), *(artifact_refs or [])]
+            ),
             message_id=message_id,
             correlation_id=work_item_id,
             execution_id=execution_id,
@@ -1159,6 +1255,7 @@ def _input_summary(
     sprint_id: str,
     reason: str,
     message: str,
+    artifact_refs: list[str] | None = None,
     external_reference: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     summary: dict[str, Any] = {
@@ -1167,9 +1264,18 @@ def _input_summary(
         "reason": reason,
         "message": message,
     }
+    if artifact_refs:
+        summary["artifact_refs"] = artifact_refs
     if external_reference:
         summary["external_reference"] = external_reference
     return summary
+
+
+def _validated_artifact_refs(run_id: str, artifact_refs: str) -> list[str]:
+    refs = _split_artifact_refs(artifact_refs)
+    if refs:
+        artifact_links_for_paths(run_id, refs)
+    return refs
 
 
 def _status_for_tool_result(tool: str, runtime_status: str) -> str:
