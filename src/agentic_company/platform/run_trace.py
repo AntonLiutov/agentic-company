@@ -413,7 +413,7 @@ def _persist_run_event_to_db(event: RunEvent) -> None:
         repo.init_schema()
         with repo.connect() as conn:
             repo._upsert_run_event_conn(conn, run_id, event)
-            _insert_card_log_from_run_event(conn, run_id, event)
+        _record_card_log_from_run_event(event)
     except Exception:
         RUNTIME_LOGGER.debug("Skipping DB run trace persistence", exc_info=True)
 
@@ -531,40 +531,28 @@ def _load_model_call_events_from_db(run_dir: Path) -> list[ModelCallEvent] | Non
         return None
 
 
-def _insert_card_log_from_run_event(conn: Any, run_id: int, event: RunEvent) -> None:
+def _record_card_log_from_run_event(event: RunEvent) -> None:
     if not _is_card_log_run_event(event):
         return
-    conn.execute(
-        """
-        INSERT INTO activity_events (
-            run_id, event_id, work_item_id, owner_agent, agent_id, tool_name,
-            message, status, artifact_ids, visibility, created_at
+    try:
+        from agentic_company.platform.runtime_db import record_activity_event
+        from agentic_company.platform.tool_contracts import ActivityEventRecord
+
+        record_activity_event(
+            ActivityEventRecord(
+                run_id=str(event.run_id),
+                event_id=event.event_id,
+                work_item_id=str(event.work_item_id or ""),
+                owner_agent=event.agent_id,
+                agent_id=event.agent_id,
+                tool_name=event.event_type,
+                status=event.status,
+                message=event.message,
+                artifact_ids=tuple(sanitize_trace_data(event.artifact_ids)),
+            )
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'user', ?)
-        ON CONFLICT(run_id, event_id) DO UPDATE SET
-            work_item_id = excluded.work_item_id,
-            owner_agent = excluded.owner_agent,
-            agent_id = excluded.agent_id,
-            tool_name = excluded.tool_name,
-            message = excluded.message,
-            status = excluded.status,
-            artifact_ids = excluded.artifact_ids,
-            visibility = excluded.visibility,
-            created_at = excluded.created_at
-        """,
-        (
-            run_id,
-            event.event_id,
-            str(event.work_item_id or ""),
-            event.agent_id,
-            event.agent_id,
-            event.event_type,
-            event.message,
-            event.status,
-            json.dumps(sanitize_trace_data(event.artifact_ids), sort_keys=True),
-            event.created_at,
-        ),
-    )
+    except Exception:
+        RUNTIME_LOGGER.debug("Skipping DB card activity persistence", exc_info=True)
 
 
 def _is_card_log_run_event(event: RunEvent) -> bool:

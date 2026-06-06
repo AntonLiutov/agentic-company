@@ -378,21 +378,38 @@ directly with each other unless their tool contract explicitly allows it.
 
 
 def langchain_tools(toolbox: HeadToolbox) -> list[Callable[..., str]]:
-    def run_business_analyst(reason: str = "", message: str = "") -> str:
+    def run_business_analyst(
+        reason: str = "",
+        message: str = "",
+        external_reference: str = "",
+    ) -> str:
         """Delegate raw requirements analysis to the Business Analyst Agent."""
-        return toolbox.run_business_analyst(reason, message)
+        return toolbox.run_business_analyst(reason, message, external_reference)
 
-    def run_architect(reason: str = "", message: str = "") -> str:
+    def run_architect(
+        reason: str = "",
+        message: str = "",
+        external_reference: str = "",
+    ) -> str:
         """Delegate solution architecture to the Architect Agent after BA completes."""
-        return toolbox.run_architect(reason, message)
+        return toolbox.run_architect(reason, message, external_reference)
 
-    def run_project_manager(reason: str = "", message: str = "") -> str:
+    def run_project_manager(
+        reason: str = "",
+        message: str = "",
+        external_reference: str = "",
+    ) -> str:
         """Delegate release and sprint planning to the Project Manager Agent after Architect."""
-        return toolbox.run_project_manager(reason, message)
+        return toolbox.run_project_manager(reason, message, external_reference)
 
-    def run_team_lead(sprint_id: str, reason: str = "", message: str = "") -> str:
+    def run_team_lead(
+        sprint_id: str,
+        reason: str = "",
+        message: str = "",
+        external_reference: str = "",
+    ) -> str:
         """Delegate one PM-planned sprint to Team Lead with an explicit sprint_id."""
-        return toolbox.run_team_lead(sprint_id, reason, message)
+        return toolbox.run_team_lead(sprint_id, reason, message, external_reference)
 
     def codex_review(
         target_agent: str = "",
@@ -431,12 +448,14 @@ def langchain_tools(toolbox: HeadToolbox) -> list[Callable[..., str]]:
         reason: str,
         correlation_id: str = "upstream-planning",
         message: str = "",
+        external_reference: str = "",
     ) -> str:
         """Block planning when bounded Repair cannot continue."""
         return toolbox.block_planning(
             reason=reason,
             correlation_id=correlation_id,
             message=message,
+            external_reference=external_reference,
         )
 
     tools = [

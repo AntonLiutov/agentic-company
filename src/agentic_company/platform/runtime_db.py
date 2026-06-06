@@ -15,6 +15,7 @@ from agentic_company.platform.artifact_registry import (
     register_artifact,
 )
 from agentic_company.platform.tool_contracts import (
+    ActivityEventRecord,
     ArtifactRegistrationRequest,
     ToolExecutionRecord,
     WorkItemExecutionPacket,
@@ -526,8 +527,52 @@ def latest_delivery_state_snapshot(run_id: str) -> dict[str, Any] | None:
     return repo.latest_delivery_state_snapshot(db_run_id)
 
 
-def record_activity_event(record: ToolExecutionRecord) -> None:
-    record_work_item_transition(record)
+def record_activity_event(record: ActivityEventRecord) -> None:
+    """Persist user-facing task activity without mutating work-item state."""
+
+    record.validate()
+    repo, db_run_id = _repo_and_run(record.run_id)
+    now = _now()
+    with repo.connect() as conn:
+        row = conn.execute(
+            "SELECT work_item_id FROM work_items WHERE run_id = ? AND work_item_id = ?",
+            (db_run_id, record.work_item_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError(
+                f"Unknown work_item_id for run {record.run_id}: {record.work_item_id}"
+            )
+        conn.execute(
+            """
+            INSERT INTO activity_events (
+                run_id, event_id, work_item_id, owner_agent, agent_id, tool_name,
+                message, status, artifact_ids, visibility, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'user', ?)
+            ON CONFLICT(run_id, event_id) DO UPDATE SET
+                work_item_id = excluded.work_item_id,
+                owner_agent = excluded.owner_agent,
+                agent_id = excluded.agent_id,
+                tool_name = excluded.tool_name,
+                message = excluded.message,
+                status = excluded.status,
+                artifact_ids = excluded.artifact_ids,
+                visibility = excluded.visibility,
+                created_at = excluded.created_at
+            """,
+            (
+                db_run_id,
+                record.event_id,
+                record.work_item_id,
+                record.owner_agent,
+                record.agent_id,
+                record.tool_name,
+                record.message,
+                record.status,
+                json.dumps(list(record.artifact_ids), sort_keys=True),
+                now,
+            ),
+        )
 
 
 def record_artifact_link(

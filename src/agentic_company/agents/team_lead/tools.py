@@ -68,6 +68,7 @@ from agentic_company.platform.tool_contracts import (
     ToolExecutionRecord,
     dashboard_status_from_runtime_status,
     failure_mode_from_status,
+    normalize_external_reference,
 )
 
 TEAM_LEAD_AGENT_ID = "team-lead-agent"
@@ -128,33 +129,54 @@ class TeamLeadToolbox:
     def sprint_id(self) -> str:
         return str(self.sprint.get("sprint_id") or self.sprint.get("id") or "sprint-01")
 
-    def run_fullstack(self, work_item_id: str, reason: str = "", message: str = "") -> str:
+    def run_fullstack(
+        self,
+        work_item_id: str,
+        reason: str = "",
+        message: str = "",
+        external_reference: str = "",
+    ) -> str:
         return self._run_worker(
             tool="run_fullstack",
             node_name="fullstack",
             work_item_id=work_item_id,
             reason=reason,
             message=message,
+            external_reference=external_reference,
             worker=self.workers.fullstack,
         )
 
-    def run_qa(self, work_item_id: str, reason: str = "", message: str = "") -> str:
+    def run_qa(
+        self,
+        work_item_id: str,
+        reason: str = "",
+        message: str = "",
+        external_reference: str = "",
+    ) -> str:
         return self._run_worker(
             tool="run_qa",
             node_name="qa",
             work_item_id=work_item_id,
             reason=reason,
             message=message,
+            external_reference=external_reference,
             worker=self.workers.qa,
         )
 
-    def run_deployment(self, work_item_id: str, reason: str = "", message: str = "") -> str:
+    def run_deployment(
+        self,
+        work_item_id: str,
+        reason: str = "",
+        message: str = "",
+        external_reference: str = "",
+    ) -> str:
         return self._run_worker(
             tool="run_deployment",
             node_name="deployment",
             work_item_id=work_item_id,
             reason=reason,
             message=message,
+            external_reference=external_reference,
             worker=self.workers.deployment,
         )
 
@@ -163,6 +185,7 @@ class TeamLeadToolbox:
         work_item_id: str,
         reason: str = "",
         message: str = "",
+        external_reference: str = "",
     ) -> str:
         return self._run_worker(
             tool="run_post_deploy_qa",
@@ -170,6 +193,7 @@ class TeamLeadToolbox:
             work_item_id=work_item_id,
             reason=reason,
             message=message,
+            external_reference=external_reference,
             worker=self.workers.qa,
         )
 
@@ -180,6 +204,7 @@ class TeamLeadToolbox:
         sprint_id: str = "",
         reason: str = "",
         message: str = "",
+        external_reference: str = "",
     ) -> str:
         item_id = _clean_work_item_id(work_item_id)
         if error := self._contract_error("run_handoff", item_id, reason, message):
@@ -212,6 +237,7 @@ class TeamLeadToolbox:
             work_item_id=item_id,
             reason=reason,
             message=message,
+            external_reference=external_reference,
             worker=self.workers.handoff,
         )
 
@@ -489,10 +515,20 @@ class TeamLeadToolbox:
             work_item_id=item_id,
         )
 
-    def block_sprint(self, reason: str, work_item_id: str, message: str = "") -> str:
+    def block_sprint(
+        self,
+        reason: str,
+        work_item_id: str,
+        message: str = "",
+        external_reference: str = "",
+    ) -> str:
         item_id = _clean_work_item_id(work_item_id)
         if error := self._contract_error("block_sprint", item_id, reason, message):
             return error
+        try:
+            external_ref = normalize_external_reference(external_reference)
+        except ValueError as exc:
+            return self._contract_error_response("block_sprint", item_id, str(exc), message)
         blockers = [*self.delivery_state.get("blockers", []), reason]
         self.delivery_state = cast(
             DeliveryState,
@@ -515,6 +551,13 @@ class TeamLeadToolbox:
             f"Sprint blocked: {reason}",
             status_override="blocked",
             work_item_id=item_id,
+            input_summary=_input_summary(
+                work_item_id=item_id,
+                sprint_id=self.sprint_id,
+                reason=reason,
+                message=message,
+                external_reference=external_ref,
+            ),
         )
 
     def result(self) -> TeamLeadExecutorResult:
@@ -564,10 +607,15 @@ class TeamLeadToolbox:
         reason: str,
         message: str,
         worker: TeamLeadWorker,
+        external_reference: str = "",
     ) -> str:
         item_id = _clean_work_item_id(work_item_id)
         if error := self._contract_error(tool, item_id, reason, message):
             return error
+        try:
+            external_ref = normalize_external_reference(external_reference)
+        except ValueError as exc:
+            return self._contract_error_response(tool, item_id, str(exc), message)
         if limit_response := self._limit_response(tool, item_id, message):
             return limit_response
         started = time.perf_counter()
@@ -611,6 +659,7 @@ class TeamLeadToolbox:
                 "message_id": outbound.message_id,
                 "message_intent": outbound.intent,
                 "artifact_refs": outbound.artifact_refs,
+                "external_reference": external_ref,
             },
         )
         write_team_lead_event(
@@ -654,12 +703,13 @@ class TeamLeadToolbox:
             f"{tool} completed with status {status or final_status}.",
             downstream_response=downstream_response,
             duration_ms=int((time.perf_counter() - started) * 1000),
-            input_summary={
-                "work_item_id": item.work_item_id,
-                "sprint_id": item.sprint_id,
-                "reason": reason,
-                "message": message,
-            },
+            input_summary=_input_summary(
+                work_item_id=item.work_item_id,
+                sprint_id=item.sprint_id,
+                reason=reason,
+                message=message,
+                external_reference=external_ref,
+            ),
             status_override=status or final_status,
             work_item_id=item.work_item_id,
             tool_call_id=tool_call_id,
@@ -1101,6 +1151,25 @@ def agent_message_intent(node_name: str) -> str:
 
 def _clean_work_item_id(work_item_id: str | None) -> str:
     return str(work_item_id or "").strip()
+
+
+def _input_summary(
+    *,
+    work_item_id: str,
+    sprint_id: str,
+    reason: str,
+    message: str,
+    external_reference: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "work_item_id": work_item_id,
+        "sprint_id": sprint_id,
+        "reason": reason,
+        "message": message,
+    }
+    if external_reference:
+        summary["external_reference"] = external_reference
+    return summary
 
 
 def _status_for_tool_result(tool: str, runtime_status: str) -> str:

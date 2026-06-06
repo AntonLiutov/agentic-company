@@ -18,6 +18,7 @@ from agentic_company.platform.run_trace import (
     sanitize_trace_data,
     trace_summary,
 )
+from agentic_company.platform.runtime_db import materialize_planning_items
 from agentic_company.platform.status_inspector import StatusInspectionRequest, StatusInspectorRunner
 
 
@@ -171,6 +172,7 @@ def test_codex_agent_message_run_events_are_card_logs(tmp_path: Path, monkeypatc
         mode="internal_tool",
         reasoning="medium",
     )
+    materialize_planning_items("run-card-log")
 
     write_event(
         tmp_path,
@@ -199,6 +201,45 @@ def test_codex_agent_message_run_events_are_card_logs(tmp_path: Path, monkeypatc
 
     assert [event.message for event in events] == ["I am preparing the requirements brief."]
     assert events[0].tool_name == "codex_agent_message"
+
+
+def test_codex_agent_message_does_not_create_unknown_card_log(tmp_path: Path, monkeypatch):
+    repo = _db_repo(tmp_path, monkeypatch)
+    user = repo.create_user(
+        email="cardlog-missing@example.test",
+        username="cardlog-missing",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Card log missing",
+        request_text="Build",
+        mode="internal_tool",
+        complexity="simple",
+        status="running",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="run-card-log-missing",
+        run_dir=tmp_path,
+        status="running",
+        mode="internal_tool",
+        reasoning="medium",
+    )
+
+    write_event(
+        tmp_path,
+        "run-card-log-missing",
+        "business-analyst-agent",
+        "codex_agent_message",
+        {
+            "status": "in_progress",
+            "message": "I should not create an implicit card.",
+            "work_item_id": "NOT-IN-DB",
+        },
+    )
+
+    assert repo.list_activity_events(run.id, work_item_id="NOT-IN-DB") == []
 
 
 def test_trace_sanitizer_redacts_secret_like_fields():

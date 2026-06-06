@@ -381,6 +381,54 @@ def test_team_lead_worker_without_correlated_response_blocks_work_item(
     assert get_work_item("run", "US-1").status == "blocked"
 
 
+def test_team_lead_worker_records_external_reference_in_tool_call(
+    tmp_path, monkeypatch
+):
+    repo, run, state = _setup_runtime(tmp_path, monkeypatch)
+    toolbox = TeamLeadToolbox(
+        delivery_state=state,
+        sprint={"sprint_id": "sprint-01"},
+        workers=_team_lead_workers(),
+        max_steps=5,
+        history=[],
+    )
+
+    payload = json.loads(
+        toolbox.run_fullstack(
+            "US-1",
+            reason="Implement item.",
+            external_reference='{"system":"github","type":"issue","id":"123"}',
+        )
+    )
+
+    event = repo.list_tool_call_events(run.id, agent_id="team-lead-agent")[0]
+    assert payload["status"] == "worker_contract_error"
+    assert event.input_summary["external_reference"] == {
+        "system": "github",
+        "type": "issue",
+        "id": "123",
+    }
+
+
+def test_team_lead_rejects_malformed_external_reference(tmp_path, monkeypatch):
+    _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
+    toolbox = TeamLeadToolbox(
+        delivery_state=state,
+        sprint={"sprint_id": "sprint-01"},
+        workers=_team_lead_workers(),
+        max_steps=5,
+        history=[],
+    )
+
+    payload = json.loads(
+        toolbox.run_fullstack("US-1", reason="Implement item.", external_reference="issue-123")
+    )
+
+    assert payload["status"] == "contract_error"
+    assert "external_reference must be a JSON object string" in payload["business_summary"]
+    assert get_work_item("run", "US-1").status == "todo"
+
+
 class _CompletingRuntime:
     def invoke(self, request):
         for tool in request.tools:

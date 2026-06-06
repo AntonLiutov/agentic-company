@@ -56,6 +56,7 @@ from agentic_company.platform.tool_contracts import (
     ToolExecutionRecord,
     dashboard_status_from_runtime_status,
     failure_mode_from_status,
+    normalize_external_reference,
 )
 from agentic_company.platform.work_item_contracts import HEAD_WORK_ITEM_BY_NODE
 
@@ -114,6 +115,7 @@ class HeadToolbox:
         self,
         reason: str = "",
         message: str = "",
+        external_reference: str = "",
     ) -> str:
         return self._run_worker(
             tool="run_business_analyst",
@@ -121,6 +123,7 @@ class HeadToolbox:
             correlation_id="PLAN-01",
             reason=reason,
             message=message,
+            external_reference=external_reference,
             worker=self.workers.business_analyst,
         )
 
@@ -128,6 +131,7 @@ class HeadToolbox:
         self,
         reason: str = "",
         message: str = "",
+        external_reference: str = "",
     ) -> str:
         return self._run_worker(
             tool="run_architect",
@@ -135,6 +139,7 @@ class HeadToolbox:
             correlation_id="PLAN-02",
             reason=reason,
             message=message,
+            external_reference=external_reference,
             worker=self.workers.architect,
         )
 
@@ -142,6 +147,7 @@ class HeadToolbox:
         self,
         reason: str = "",
         message: str = "",
+        external_reference: str = "",
     ) -> str:
         return self._run_worker(
             tool="run_project_manager",
@@ -149,6 +155,7 @@ class HeadToolbox:
             correlation_id="PLAN-03",
             reason=reason,
             message=message,
+            external_reference=external_reference,
             worker=self.workers.project_manager,
         )
 
@@ -157,6 +164,7 @@ class HeadToolbox:
         sprint_id: str,
         reason: str = "",
         message: str = "",
+        external_reference: str = "",
     ) -> str:
         sprint_id = str(sprint_id or "").strip()
         if not sprint_id:
@@ -220,6 +228,7 @@ class HeadToolbox:
             correlation_id=sprint_id,
             reason=reason,
             message=message,
+            external_reference=external_reference,
             worker=self.workers.team_lead,
         )
 
@@ -470,8 +479,21 @@ class HeadToolbox:
         reason: str,
         correlation_id: str = "upstream-planning",
         message: str = "",
+        external_reference: str = "",
     ) -> str:
         started = time.perf_counter()
+        try:
+            external_ref = normalize_external_reference(external_reference)
+        except ValueError as exc:
+            self.current_tool_name = "block_planning"
+            return self._tool_response(
+                "block_planning contract error: " + str(exc),
+                input_summary={
+                    "correlation_id": correlation_id,
+                    "reason": reason,
+                    "message": message,
+                },
+            )
         self.delivery_state = mark_node_completed(
             self.delivery_state,
             node_name="head",
@@ -492,6 +514,7 @@ class HeadToolbox:
                 "correlation_id": correlation_id,
                 "reason": reason,
                 "message": message,
+                **({"external_reference": external_ref} if external_ref else {}),
             },
         )
 
@@ -556,8 +579,23 @@ class HeadToolbox:
         reason: str,
         message: str,
         worker: HeadWorker,
+        external_reference: str = "",
     ) -> str:
         started = time.perf_counter()
+        try:
+            external_ref = normalize_external_reference(external_reference)
+        except ValueError as exc:
+            self.current_tool_name = tool
+            return self._tool_response(
+                f"{tool} contract error: {exc}",
+                input_summary={
+                    "tool": tool,
+                    "node_name": node_name,
+                    "correlation_id": correlation_id,
+                    "reason": reason,
+                    "message": message,
+                },
+            )
         if limit_response := self._limit_response(message):
             return limit_response
         updated = {**self.delivery_state}
@@ -601,6 +639,7 @@ class HeadToolbox:
                 "message_intent": outbound.intent,
                 "execution_id": execution_id,
                 "artifact_refs": outbound.artifact_refs,
+                "external_reference": external_ref,
             },
         )
         write_head_event(
@@ -667,6 +706,7 @@ class HeadToolbox:
                 "message": message,
                 "execution_id": execution_id,
                 "target_agent": outbound.to_agent,
+                **({"external_reference": external_ref} if external_ref else {}),
             },
         )
 

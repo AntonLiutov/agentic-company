@@ -426,21 +426,41 @@ until the sprint is completed or truly blocked.
 
 
 def langchain_tools(toolbox: TeamLeadToolbox) -> list[Callable[..., str]]:
-    def run_fullstack(work_item_id: str, reason: str = "", message: str = "") -> str:
+    def run_fullstack(
+        work_item_id: str,
+        reason: str = "",
+        message: str = "",
+        external_reference: str = "",
+    ) -> str:
         """Delegate feature implementation, or repair after QA returns findings, to Fullstack."""
-        return toolbox.run_fullstack(work_item_id, reason, message)
+        return toolbox.run_fullstack(work_item_id, reason, message, external_reference)
 
-    def run_qa(work_item_id: str, reason: str = "", message: str = "") -> str:
+    def run_qa(
+        work_item_id: str,
+        reason: str = "",
+        message: str = "",
+        external_reference: str = "",
+    ) -> str:
         """Delegate QA/review for the explicit sprint work item to the QA Agent."""
-        return toolbox.run_qa(work_item_id, reason, message)
+        return toolbox.run_qa(work_item_id, reason, message, external_reference)
 
-    def run_deployment(work_item_id: str, reason: str = "", message: str = "") -> str:
+    def run_deployment(
+        work_item_id: str,
+        reason: str = "",
+        message: str = "",
+        external_reference: str = "",
+    ) -> str:
         """Delegate sprint deployment to the Deployment Agent."""
-        return toolbox.run_deployment(work_item_id, reason, message)
+        return toolbox.run_deployment(work_item_id, reason, message, external_reference)
 
-    def run_post_deploy_qa(work_item_id: str, reason: str = "", message: str = "") -> str:
+    def run_post_deploy_qa(
+        work_item_id: str,
+        reason: str = "",
+        message: str = "",
+        external_reference: str = "",
+    ) -> str:
         """Delegate post-deployment release QA to the QA Agent."""
-        return toolbox.run_post_deploy_qa(work_item_id, reason, message)
+        return toolbox.run_post_deploy_qa(work_item_id, reason, message, external_reference)
 
     def run_handoff(
         work_item_id: str,
@@ -448,6 +468,7 @@ def langchain_tools(toolbox: TeamLeadToolbox) -> list[Callable[..., str]]:
         sprint_id: str = "",
         reason: str = "",
         message: str = "",
+        external_reference: str = "",
     ) -> str:
         """Delegate handoff packaging using an explicit scope contract.
 
@@ -455,7 +476,9 @@ def langchain_tools(toolbox: TeamLeadToolbox) -> list[Callable[..., str]]:
         Use handoff_scope="final_project_report" with empty sprint_id for the
         final project report.
         """
-        return toolbox.run_handoff(work_item_id, handoff_scope, sprint_id, reason, message)
+        return toolbox.run_handoff(
+            work_item_id, handoff_scope, sprint_id, reason, message, external_reference
+        )
 
     def codex_review(
         target_agent: str = "",
@@ -495,9 +518,14 @@ def langchain_tools(toolbox: TeamLeadToolbox) -> list[Callable[..., str]]:
         """Mark the sprint complete after inspector confirms readiness."""
         return toolbox.complete_sprint(work_item_id, reason, message)
 
-    def block_sprint(reason: str, work_item_id: str, message: str = "") -> str:
+    def block_sprint(
+        reason: str,
+        work_item_id: str,
+        message: str = "",
+        external_reference: str = "",
+    ) -> str:
         """Block the sprint when progress is impossible or unsafe."""
-        return toolbox.block_sprint(reason, work_item_id, message)
+        return toolbox.block_sprint(reason, work_item_id, message, external_reference)
 
     tools = [
         run_fullstack,

@@ -68,6 +68,43 @@ class ToolExternalReference:
         return _drop_empty(asdict(self))
 
 
+def normalize_external_reference(value: Any) -> dict[str, Any]:
+    """Normalize an optional external board reference from tool input."""
+
+    if value is None or value == "":
+        return {}
+    if isinstance(value, ToolExternalReference):
+        reference = value
+    else:
+        payload: Any = value
+        if isinstance(value, str):
+            try:
+                payload = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise ValueError("external_reference must be a JSON object string.") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("external_reference must be a JSON object.")
+        allowed = {"system", "type", "id", "url"}
+        unknown = sorted(set(payload) - allowed)
+        if unknown:
+            raise ValueError(
+                "external_reference contains unsupported fields: " + ", ".join(unknown)
+            )
+        reference = ToolExternalReference(
+            system=str(payload.get("system") or "internal"),  # type: ignore[arg-type]
+            type=str(payload.get("type") or "work_item"),  # type: ignore[arg-type]
+            id=str(payload.get("id") or ""),
+            url=str(payload.get("url") or ""),
+        )
+    if reference.system not in {"github", "jira", "azure_devops", "internal"}:
+        raise ValueError(f"external_reference has unsupported system: {reference.system}")
+    if reference.type not in {"issue", "pull_request", "board_card", "work_item"}:
+        raise ValueError(f"external_reference has unsupported type: {reference.type}")
+    if not reference.id.strip() and not reference.url.strip():
+        raise ValueError("external_reference requires id or url.")
+    return reference.to_dict()
+
+
 @dataclass(frozen=True, slots=True)
 class WorkItemExecutionPacket:
     """Strict specialist tool input shape for DB-backed work-item execution."""
@@ -131,6 +168,42 @@ class ToolExecutionRecord:
                 "attempt_id",
                 "status",
                 "activity_message",
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        data = asdict(self)
+        data["artifact_ids"] = list(self.artifact_ids)
+        return _drop_empty(data)
+
+
+@dataclass(frozen=True, slots=True)
+class ActivityEventRecord:
+    """Strict DB write contract for user-facing task activity."""
+
+    run_id: str
+    event_id: str
+    work_item_id: str
+    owner_agent: str
+    agent_id: str
+    tool_name: str
+    status: str
+    message: str
+    artifact_ids: tuple[str, ...] = ()
+
+    def validate(self) -> None:
+        _require_contract_fields(
+            self,
+            (
+                "run_id",
+                "event_id",
+                "work_item_id",
+                "owner_agent",
+                "agent_id",
+                "tool_name",
+                "status",
+                "message",
             ),
         )
 

@@ -1598,18 +1598,7 @@ class ConsoleRepository:
         to_status = _normalize_work_item_status(status)
         to_owner = owner_agent or from_owner
         if row is None:
-            self._upsert_work_item_conn(
-                conn,
-                run_id=run_id,
-                work_item_id=item_id,
-                title=item_id,
-                sprint_id="planning" if item_id.startswith("PLAN-") else "",
-                delivery_order=0,
-                status=to_status,
-                owner_agent=to_owner,
-                source_refs=[],
-                created_at=created_at or utc_now(),
-            )
+            raise ValueError(f"Unknown work_item_id for DB transition: {item_id}")
         blocker = message if to_status == "blocked" else ""
         conn.execute(
             """
