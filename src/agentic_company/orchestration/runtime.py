@@ -17,7 +17,11 @@ from agentic_company.orchestration.graphs import (
 )
 from agentic_company.platform.events import write_event
 from agentic_company.platform.runtime_cache import runtime_cache_from_env
-from agentic_company.platform.runtime_db import record_run_lifecycle, run_target_project_dir
+from agentic_company.platform.runtime_db import (
+    latest_delivery_state_snapshot,
+    record_run_lifecycle,
+    run_target_project_dir,
+)
 from agentic_company.platform.runtime_db import stop_requested as db_stop_requested
 from agentic_company.platform.state import (
     DELIVERY_STATE_SNAPSHOT,
@@ -148,6 +152,9 @@ class DeliveryGraphRuntime:
     def load_state(self, run_dir: Path) -> DeliveryState | None:
         """Read the persisted delivery state if one exists."""
 
+        db_state = latest_delivery_state_snapshot(run_dir.name)
+        if db_state is not None:
+            return cast(DeliveryState, db_state)
         state_path = self.state_path(run_dir)
         if not state_path.exists():
             return None

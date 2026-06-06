@@ -1254,6 +1254,23 @@ class ConsoleRepository:
                 ),
             )
 
+    def latest_delivery_state_snapshot(self, run_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT state_payload
+                FROM delivery_state_snapshots
+                WHERE run_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        payload = _json_column(row["state_payload"], default={})
+        return payload if isinstance(payload, dict) else {}
+
     def list_artifact_records(
         self,
         run_id: int,

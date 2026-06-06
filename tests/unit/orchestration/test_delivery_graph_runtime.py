@@ -80,6 +80,24 @@ def test_delivery_graph_runtime_loads_existing_state_before_running(tmp_path, mo
     assert result["completed_nodes"] == ["head"]
 
 
+def test_delivery_graph_runtime_loads_state_from_db_without_file(tmp_path, monkeypatch):
+    run_dir = tmp_path / "runs" / "db-state"
+    _create_run(tmp_path, monkeypatch, run_dir)
+    starting_state = initial_delivery_state(run_id="db-state", run_dir=run_dir)
+    starting_state["stage"] = "team_lead"
+    starting_state["status"] = "running"
+    runtime = DeliveryGraphRuntime(node_order=("head",), nodes=DeliveryGraphNodes())
+    state_path = runtime.save_state(run_dir, starting_state)
+    state_path.unlink()
+
+    loaded = runtime.load_state(run_dir)
+
+    assert loaded is not None
+    assert loaded["run_id"] == "db-state"
+    assert loaded["stage"] == "team_lead"
+    assert loaded["status"] == "running"
+
+
 def test_delivery_graph_runtime_writes_graph_events(tmp_path, monkeypatch):
     run_dir = tmp_path / "runs" / "graph-events"
     _create_run(tmp_path, monkeypatch, run_dir)

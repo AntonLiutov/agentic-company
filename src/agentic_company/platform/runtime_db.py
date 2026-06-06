@@ -500,6 +500,16 @@ def record_delivery_state_snapshot(state: dict[str, Any]) -> None:
     )
 
 
+def latest_delivery_state_snapshot(run_id: str) -> dict[str, Any] | None:
+    """Load the latest graph state snapshot from canonical DB storage."""
+
+    try:
+        repo, db_run_id = _repo_and_run(run_id)
+    except ValueError:
+        return None
+    return repo.latest_delivery_state_snapshot(db_run_id)
+
+
 def record_activity_event(record: ToolExecutionRecord) -> None:
     record_work_item_transition(record)
 
