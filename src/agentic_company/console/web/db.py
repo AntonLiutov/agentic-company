@@ -435,6 +435,33 @@ class ConsoleRepository:
                     created_at TEXT NOT NULL,
                     UNIQUE(run_id, agent_id, tool_call_id, seq)
                 );
+
+                CREATE INDEX IF NOT EXISTS idx_runs_project_created
+                    ON runs(project_id, created_at DESC, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_projects_owner_updated
+                    ON projects(owner_user_id, visibility, updated_at DESC, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_work_items_run_sprint_order
+                    ON work_items(run_id, sprint_id, delivery_order, work_item_id);
+                CREATE INDEX IF NOT EXISTS idx_work_items_run_status
+                    ON work_items(run_id, status, active);
+                CREATE INDEX IF NOT EXISTS idx_sprints_run_order
+                    ON sprints(run_id, delivery_order, sprint_id);
+                CREATE INDEX IF NOT EXISTS idx_work_item_events_run_item_created
+                    ON work_item_events(run_id, work_item_id, created_at, id);
+                CREATE INDEX IF NOT EXISTS idx_activity_events_run_item_created
+                    ON activity_events(run_id, work_item_id, visibility, created_at, id);
+                CREATE INDEX IF NOT EXISTS idx_artifact_metadata_run_item_visibility
+                    ON artifact_metadata(run_id, work_item_id, visibility, created_at);
+                CREATE INDEX IF NOT EXISTS idx_tool_call_events_run_item_created
+                    ON tool_call_events(run_id, work_item_id, created_at, id);
+                CREATE INDEX IF NOT EXISTS idx_run_events_run_item_created
+                    ON run_events(run_id, work_item_id, created_at, id);
+                CREATE INDEX IF NOT EXISTS idx_model_call_events_run_agent_created
+                    ON model_call_events(run_id, agent_id, created_at, id);
+                CREATE INDEX IF NOT EXISTS idx_raw_log_events_run_item_seq
+                    ON raw_log_events(run_id, work_item_id, id);
+                CREATE INDEX IF NOT EXISTS idx_raw_log_events_run_agent_seq
+                    ON raw_log_events(run_id, agent_id, id);
                 """
             )
             self._ensure_artifact_metadata_columns(conn)

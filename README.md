@@ -35,12 +35,24 @@ CODEX_BINARY=path-to-codex
 ADMIN_SUPPORT_EMAIL=you@example.com
 AGENTIC_WEB_PORT=8503
 AGENTIC_CONSOLE_DB_PATH=data/console.db
+# Optional Postgres/Redis local compose settings:
+# AGENTIC_DATABASE_URL=postgresql://agentic:agentic_dev_password@127.0.0.1:54329/agentic_company
+# AGENTIC_REDIS_URL=redis://127.0.0.1:63799/0
 PUBLIC_DEMO_RUN_DIR=runs/path-to-showcase-run
 PUBLIC_DEMO_PROJECT_NAME=Showcase Project
 ```
 
 Secrets and generated runs are local only. Do not commit `.env`, `data/`, or
 `runs/`.
+
+For a local Postgres/Redis run:
+
+```powershell
+docker compose -f docker-compose.dev.yml up -d postgres redis
+$env:AGENTIC_DATABASE_URL="postgresql://agentic:agentic_dev_password@127.0.0.1:54329/agentic_company"
+$env:AGENTIC_REDIS_URL="redis://127.0.0.1:63799/0"
+uv run --extra app agentic-web-console
+```
 
 ## Checks
 
