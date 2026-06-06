@@ -374,12 +374,18 @@ def record_raw_log_event(
 
 
 def load_run_events(run_dir: Path) -> list[RunEvent]:
+    db_events = _load_run_events_from_db(run_dir)
+    if db_events is not None:
+        return db_events
     return [
         run_event_from_mapping(item) for item in _read_jsonl(trace_dir(run_dir) / RUN_EVENTS_FILE)
     ]
 
 
 def load_tool_call_events(run_dir: Path) -> list[ToolCallEvent]:
+    db_events = _load_tool_call_events_from_db(run_dir)
+    if db_events is not None:
+        return db_events
     return [
         tool_call_event_from_mapping(item)
         for item in _read_jsonl(trace_dir(run_dir) / TOOL_CALL_EVENTS_FILE)
@@ -387,6 +393,9 @@ def load_tool_call_events(run_dir: Path) -> list[ToolCallEvent]:
 
 
 def load_model_call_events(run_dir: Path) -> list[ModelCallEvent]:
+    db_events = _load_model_call_events_from_db(run_dir)
+    if db_events is not None:
+        return db_events
     return [
         model_call_event_from_mapping(item)
         for item in _read_jsonl(trace_dir(run_dir) / MODEL_CALL_EVENTS_FILE)
@@ -458,6 +467,68 @@ def _console_run_db_id(runtime_run_id: int | str) -> int | None:
     except Exception:
         RUNTIME_LOGGER.debug("Skipping DB trace lookup", exc_info=True)
     return None
+
+
+def _console_run_db_id_for_run_dir(run_dir: Path) -> int | None:
+    try:
+        from agentic_company.console.web.db import ConsoleRepository
+
+        repo = ConsoleRepository()
+        repo.init_schema()
+        with repo.connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM runs WHERE run_dir = ? OR run_uid = ?",
+                (str(run_dir), run_dir.name),
+            ).fetchone()
+        return int(row["id"]) if row else None
+    except Exception:
+        RUNTIME_LOGGER.debug("Skipping DB trace run_dir lookup", exc_info=True)
+    return None
+
+
+def _load_run_events_from_db(run_dir: Path) -> list[RunEvent] | None:
+    db_run_id = _console_run_db_id_for_run_dir(run_dir)
+    if db_run_id is None:
+        return None
+    try:
+        from agentic_company.console.web.db import ConsoleRepository
+
+        repo = ConsoleRepository()
+        repo.init_schema()
+        return repo.list_run_events(db_run_id)
+    except Exception:
+        RUNTIME_LOGGER.debug("Skipping DB run trace load", exc_info=True)
+        return None
+
+
+def _load_tool_call_events_from_db(run_dir: Path) -> list[ToolCallEvent] | None:
+    db_run_id = _console_run_db_id_for_run_dir(run_dir)
+    if db_run_id is None:
+        return None
+    try:
+        from agentic_company.console.web.db import ConsoleRepository
+
+        repo = ConsoleRepository()
+        repo.init_schema()
+        return repo.list_tool_call_events(db_run_id)
+    except Exception:
+        RUNTIME_LOGGER.debug("Skipping DB tool trace load", exc_info=True)
+        return None
+
+
+def _load_model_call_events_from_db(run_dir: Path) -> list[ModelCallEvent] | None:
+    db_run_id = _console_run_db_id_for_run_dir(run_dir)
+    if db_run_id is None:
+        return None
+    try:
+        from agentic_company.console.web.db import ConsoleRepository
+
+        repo = ConsoleRepository()
+        repo.init_schema()
+        return repo.list_model_call_events(db_run_id)
+    except Exception:
+        RUNTIME_LOGGER.debug("Skipping DB model trace load", exc_info=True)
+        return None
 
 
 def _insert_card_log_from_run_event(conn: Any, run_id: int, event: RunEvent) -> None:

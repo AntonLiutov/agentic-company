@@ -140,6 +140,13 @@ def test_trace_events_are_persisted_to_console_db(tmp_path: Path, monkeypatch):
     assert repo.list_tool_call_events(run.id)[0].artifact_ids == ["art_qa"]
     assert repo.list_model_call_events(run.id)[0].model == "gpt-5.5"
 
+    for filename in (RUN_EVENTS_FILE, TOOL_CALL_EVENTS_FILE, MODEL_CALL_EVENTS_FILE):
+        (tmp_path / RUN_TRACE_DIR / filename).unlink()
+
+    assert load_run_events(tmp_path)[0].event_type == "delivery_graph_started"
+    assert load_tool_call_events(tmp_path)[0].work_item_id == "US-accounts"
+    assert load_model_call_events(tmp_path)[0].model == "gpt-5.5"
+
 
 def test_codex_agent_message_run_events_are_card_logs(tmp_path: Path, monkeypatch):
     repo = _db_repo(tmp_path, monkeypatch)
