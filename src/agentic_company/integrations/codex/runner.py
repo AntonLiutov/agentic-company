@@ -16,7 +16,7 @@ from agentic_company.integrations.codex.cli import (
 )
 from agentic_company.integrations.codex.events import append_raw_codex_event
 from agentic_company.integrations.commands import StreamedCommand, stream_command
-from agentic_company.platform.run_trace import record_run_event
+from agentic_company.platform.run_trace import record_raw_log_event, record_run_event
 
 CODEX_SANDBOX_ENV = "AGENTIC_CODEX_SANDBOX"
 CODEX_INHERIT_ENV_ENV = "AGENTIC_CODEX_INHERIT_ENV"
@@ -134,7 +134,11 @@ def stream_codex_exec_to_log(
                 stderr="duplicate_execution_lock_timeout",
             )
 
+    raw_log_seq = 0
+
     def on_stdout_line(line: str) -> None:
+        nonlocal raw_log_seq
+        raw_log_seq += 1
         event = append_raw_codex_event(
             raw_events_path,
             line,
@@ -143,6 +147,14 @@ def stream_codex_exec_to_log(
                 "agent_id": trace_agent_id,
                 "work_item_id": trace_work_item_id or "",
             },
+        )
+        _record_raw_codex_log_line(
+            event if event is not None else line,
+            seq=raw_log_seq,
+            trace_run_id=trace_run_id,
+            trace_agent_id=trace_agent_id,
+            trace_work_item_id=trace_work_item_id,
+            codex_execution_id=codex_execution_id,
         )
         if event:
             _record_codex_progress_event(
@@ -173,6 +185,41 @@ def stream_codex_exec_to_log(
                 lock_path.unlink()
             except OSError:
                 pass
+
+
+def _record_raw_codex_log_line(
+    payload: dict[str, object] | str,
+    *,
+    seq: int,
+    trace_run_id: int | str,
+    trace_agent_id: str,
+    trace_work_item_id: str | None,
+    codex_execution_id: str,
+) -> None:
+    if not trace_run_id or not trace_agent_id:
+        return
+    if isinstance(payload, dict):
+        message = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        created_at = str(payload.get("recorded_at") or "")
+        stream = "codex-json"
+    else:
+        message = payload.rstrip()
+        created_at = ""
+        stream = "stdout"
+    if not message:
+        return
+    record_raw_log_event(
+        run_id=trace_run_id,
+        agent_id=trace_agent_id,
+        work_item_id=trace_work_item_id,
+        tool_name="codex_exec",
+        tool_call_id=codex_execution_id,
+        seq=seq,
+        level="info",
+        stream=stream,
+        message=message,
+        created_at=created_at or None,
+    )
 
 
 def _codex_execution_lock_path(

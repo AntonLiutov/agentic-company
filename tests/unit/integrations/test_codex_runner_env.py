@@ -5,6 +5,7 @@ import threading
 import time
 from pathlib import Path
 
+from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.integrations.codex.runner import (
     _codex_subprocess_env,
     _repo_local_node_bin_dir,
@@ -208,6 +209,64 @@ def test_stream_codex_exec_mirrors_live_agent_messages_to_run_trace(tmp_path: Pa
     assert trace_events[0].agent_id == "project-manager-agent"
 
 
+def test_stream_codex_exec_mirrors_raw_lines_to_db(tmp_path: Path, monkeypatch):
+    repo = _db_repo(tmp_path, monkeypatch)
+    user = repo.create_user(
+        email="raw-codex@example.test",
+        username="raw-codex",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Raw Codex",
+        request_text="Build",
+        mode="internal_tool",
+        complexity="simple",
+        status="running",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="run-raw-codex",
+        run_dir=tmp_path / "run",
+        status="running",
+        mode="internal_tool",
+        reasoning="medium",
+    )
+    run_dir = Path(run.run_dir)
+    log_path = run_dir / "codex" / "execution.log"
+    raw_events_path = run_dir / "codex" / "events.jsonl"
+    script = (
+        "import json\n"
+        "print(json.dumps({'type':'item.completed',"
+        "'item':{'id':'item_0','type':'agent_message','text':'Reading requirements.'}}),"
+        "flush=True)\n"
+        "print('plain progress line', flush=True)\n"
+    )
+
+    stream_codex_exec_to_log(
+        [sys.executable, "-c", script],
+        "",
+        10,
+        log_path,
+        raw_events_path,
+        env=dict(os.environ),
+        codex_execution_id="codex-raw-1",
+        trace_run_dir=run_dir,
+        trace_run_id="run-raw-codex",
+        trace_agent_id="business-analyst-agent",
+        trace_work_item_id="PLAN-01",
+    )
+
+    raw_logs = repo.list_raw_log_events(run.id, work_item_id="PLAN-01")
+
+    assert [event.seq for event in raw_logs] == [1, 2]
+    assert [event.stream for event in raw_logs] == ["codex-json", "stdout"]
+    assert all(event.tool_name == "codex_exec" for event in raw_logs)
+    assert all(event.tool_call_id == "codex-raw-1" for event in raw_logs)
+    assert "Reading requirements." in raw_logs[0].message
+    assert raw_logs[1].message == "plain progress line"
+
+
 def test_codex_stream_suppresses_duplicate_active_execution_lock(tmp_path: Path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -346,3 +405,11 @@ def test_codex_exec_command_can_resume_existing_session(tmp_path: Path):
     assert command[resume_index : resume_index + 3] == ["resume", "thread-existing", "-"]
     assert command.index("--output-last-message") < resume_index
     assert command[-3:] == ["resume", "thread-existing", "-"]
+
+
+def _db_repo(tmp_path: Path, monkeypatch) -> ConsoleRepository:
+    db_path = tmp_path / "console.db"
+    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
+    repo = ConsoleRepository(db_path)
+    repo.init_schema()
+    return repo

@@ -10,6 +10,8 @@ from hashlib import sha1
 from pathlib import Path
 from typing import Any, Literal
 
+from agentic_company.platform.security import redact_sensitive_output
+
 RUN_TRACE_DIR = "delivery"
 RUN_EVENTS_FILE = "run-events.jsonl"
 TOOL_CALL_EVENTS_FILE = "tool-call-events.jsonl"
@@ -328,6 +330,47 @@ def record_model_call_event(
     stored = TraceStore(run_dir).append_model_call_event(event)
     _persist_model_call_event_to_db(stored)
     return stored
+
+
+def record_raw_log_event(
+    *,
+    run_id: int | str,
+    agent_id: str,
+    seq: int,
+    message: str,
+    work_item_id: str | None = None,
+    sprint_id: str = "",
+    tool_name: str = "",
+    tool_call_id: str = "",
+    level: str = "info",
+    stream: str = "stdout",
+    created_at: str | None = None,
+) -> None:
+    """Mirror developer/raw execution log lines into canonical DB storage."""
+
+    db_run_id = _console_run_db_id(run_id)
+    if db_run_id is None:
+        return
+    try:
+        from agentic_company.console.web.db import ConsoleRepository
+
+        repo = ConsoleRepository()
+        repo.init_schema()
+        repo.append_raw_log_event(
+            db_run_id,
+            agent_id=agent_id,
+            work_item_id=work_item_id or "",
+            sprint_id=sprint_id,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            seq=seq,
+            level=level,
+            stream=stream,
+            message=redact_sensitive_output(message.rstrip()),
+            created_at=created_at or utc_now(),
+        )
+    except Exception:
+        RUNTIME_LOGGER.debug("Skipping DB raw log persistence", exc_info=True)
 
 
 def load_run_events(run_dir: Path) -> list[RunEvent]:
