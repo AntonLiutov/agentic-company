@@ -225,7 +225,7 @@ TEAM_LEAD_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         business_description=(
             "Read-only reviewer checks referenced artifacts and gives concise advice."
         ),
-        required_parameters=("purpose", "question", "artifact_refs"),
+        required_parameters=("work_item_id", "purpose", "question", "artifact_refs"),
         optional_parameters=("target_agent", "intent", "reason", "message"),
         artifact_inputs=("referenced_artifacts",),
         artifact_outputs=("review_summary", "review_prompt", "review_log", "agent_response"),
@@ -236,6 +236,7 @@ TEAM_LEAD_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         dashboard_status="review",
         examples=(
             {
+                "work_item_id": "PLAN-04",
                 "purpose": "Review handoff readiness.",
                 "question": "Does the report match the completed sprint evidence?",
                 "artifact_refs": "handoff/sprints/sprint-01/release-report.html",

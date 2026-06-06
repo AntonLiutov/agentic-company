@@ -1,10 +1,13 @@
 from pathlib import Path
 
+from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.platform.artifact_registry import (
     artifact_id_for,
     artifact_record_from_mapping,
     register_artifact,
 )
+from agentic_company.platform.runtime_db import materialize_planning_items, record_artifact_link
+from agentic_company.platform.tool_contracts import ArtifactRegistrationRequest
 
 
 def test_artifact_id_is_stable():
@@ -54,3 +57,59 @@ def test_artifact_record_from_mapping_requires_explicit_metadata():
         assert "artifact_type" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("missing artifact_type must fail")
+
+
+def test_db_artifact_registration_requires_existing_run_file(tmp_path: Path, monkeypatch):
+    db_path = tmp_path / "console.db"
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
+    monkeypatch.delenv("AGENTIC_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    repo = ConsoleRepository(db_path)
+    repo.init_schema()
+    user = repo.create_user(
+        email="artifact@example.test",
+        username="artifact-user",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Artifacts",
+        request_text="Artifacts",
+        mode="internal_tool",
+        complexity="simple",
+        status="running",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="run",
+        run_dir=run_dir,
+        status="running",
+        mode="internal_tool",
+        reasoning="medium",
+    )
+    materialize_planning_items("run")
+
+    try:
+        record_artifact_link(
+            run_dir,
+            ArtifactRegistrationRequest(
+                artifact_id=artifact_id_for("run", "missing-report.md"),
+                artifact_type="execution_summary",
+                visibility="business",
+                owner_agent="business-analyst-agent",
+                source_tool="codex_exec",
+                label="Missing report",
+                relative_path="missing-report.md",
+                run_id="run",
+                work_item_id="PLAN-01",
+                task_scoped=True,
+            ),
+        )
+    except ValueError as exc:
+        assert "existing run-local file" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("missing artifact file must fail DB registration")
+
+    assert repo.list_artifact_records(run.id) == []

@@ -454,6 +454,7 @@ class HeadToolbox:
             input_summary={
                 "target_agent": target_agent,
                 "correlation_id": correlation_id,
+                "work_item_id": _head_review_work_item_id(correlation_id),
                 "purpose": purpose,
                 "question": question,
                 "artifact_refs": refs,
@@ -1065,6 +1066,11 @@ def _head_work_item_for_tool(tool: str) -> str:
     }.get(tool, "PLAN-04")
 
 
+def _head_review_work_item_id(correlation_id: str) -> str:
+    normalized = str(correlation_id or "").strip()
+    return normalized if normalized in {"PLAN-01", "PLAN-02", "PLAN-03", "PLAN-04"} else "PLAN-04"
+
+
 def write_request(
     state: DeliveryState,
     *,
@@ -1219,7 +1225,10 @@ def _register_head_tool_artifacts(
     source_tool: str,
     work_item_id: str,
 ) -> None:
+    run_dir = Path(state["run_dir"])
     for relative_path in _unique_paths([path for path in relative_paths if path]):
+        if not (run_dir / relative_path).is_file():
+            continue
         _register_head_artifact(
             state,
             relative_path,

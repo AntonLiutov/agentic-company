@@ -276,12 +276,16 @@ def _apply_result(state: ProjectManagerAgentGraphState) -> ProjectManagerAgentGr
     )
     append_downstream_response(updated, from_agent=PROJECT_MANAGER_AGENT_ID, result=result)
     if result.status == "project_management_completed":
-        materialize_pm_work_items(str(updated["run_id"]), Path(updated["run_dir"]))
+        try:
+            materialize_pm_work_items(str(updated["run_id"]), Path(updated["run_dir"]))
+        except ValueError as exc:
+            updated["status"] = "project_management_blocked"
+            updated["blockers"] = [*updated.get("blockers", []), str(exc)]
     else:
         updated["blockers"] = [*updated.get("blockers", []), result.summary]
     completed_event = (
         "project_management_completed"
-        if result.status == "project_management_completed"
+        if str(updated.get("status") or "") == "project_management_completed"
         else "project_management_blocked"
     )
     write_event(

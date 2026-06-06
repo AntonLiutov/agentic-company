@@ -2221,7 +2221,18 @@ def _normalize_work_item_status(status: str) -> str:
     token = str(status or "").strip().lower()
     if token in {"", "pending", "planned", "backlog"}:
         return "todo"
-    if "needs_repair" in token or "failed" in token or "blocked" in token:
+    if any(
+        value in token
+        for value in (
+            "needs_repair",
+            "failed",
+            "blocked",
+            "provider_limit",
+            "usage_limit",
+            "quota",
+            "rate_limit",
+        )
+    ):
         return "blocked"
     if "qa" in token or "review" in token or "implemented" in token or "inspect" in token:
         if "passed" in token or "completed" in token or "ready" in token:

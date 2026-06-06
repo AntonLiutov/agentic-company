@@ -248,6 +248,8 @@ def _register_review_artifacts(
     artifacts: list[tuple[str, str]],
 ) -> None:
     for relative_path, artifact_type in artifacts:
+        if not (request.run_dir / relative_path).is_file():
+            continue
         record_artifact_link(
             request.run_dir,
             ArtifactRegistrationRequest(

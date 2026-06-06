@@ -535,6 +535,12 @@ def record_artifact_link(
     request: ArtifactRegistrationRequest,
 ) -> ArtifactRecord:
     request.validate()
+    artifact_path = run_dir / normalize_artifact_path(request.relative_path)
+    if not artifact_path.is_file():
+        raise ValueError(
+            "Artifact registration requires an existing run-local file: "
+            f"{request.relative_path}"
+        )
     record = register_artifact(
         run_dir,
         artifact_id=request.artifact_id,

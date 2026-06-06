@@ -1326,7 +1326,10 @@ def _register_team_lead_tool_artifacts(
     source_tool: str,
     work_item_id: str,
 ) -> None:
+    run_dir = Path(state["run_dir"])
     for relative_path in _unique_paths([path for path in relative_paths if path]):
+        if not (run_dir / relative_path).is_file():
+            continue
         _register_team_lead_artifact(
             state,
             relative_path,

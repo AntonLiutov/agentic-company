@@ -2,6 +2,7 @@ import json
 
 from agentic_company.agents.head.executor import LangChainHeadExecutor
 from agentic_company.agents.head.tools import HeadToolbox, HeadWorkers, write_head_result
+from agentic_company.agents.team_lead.contracts import TEAM_LEAD_TOOL_CONTRACT_REGISTRY
 from agentic_company.agents.team_lead.executor import LangChainTeamLeadExecutor
 from agentic_company.agents.team_lead.graph import run_team_lead_agent_graph
 from agentic_company.agents.team_lead.tools import (
@@ -11,6 +12,7 @@ from agentic_company.agents.team_lead.tools import (
     apply_team_lead_result,
 )
 from agentic_company.console.web.db import ConsoleRepository
+from agentic_company.platform.codex_review import CodexReviewResult
 from agentic_company.platform.runtime_db import (
     get_work_item,
     mark_sprint_done,
@@ -154,6 +156,12 @@ def test_contract_error_without_work_item_id_does_not_write_runtime_tool_event(
     assert toolbox.history == []
 
 
+def test_team_lead_codex_review_contract_is_task_scoped():
+    contract = TEAM_LEAD_TOOL_CONTRACT_REGISTRY.get("codex_review")
+
+    assert "work_item_id" in contract.required_parameters
+
+
 def test_head_result_recomputes_blockers_from_db_not_stale_state(tmp_path, monkeypatch):
     _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
     _mark_work_item_done("US-1")
@@ -271,6 +279,29 @@ def test_head_delivery_status_inspection_is_scoped_to_plan_04(tmp_path, monkeypa
         if record.relative_path == "head/status-inspections/fake/status.json"
     )
     assert status_result.work_item_id == "PLAN-04"
+
+
+def test_head_codex_review_tool_call_is_scoped_to_planning_work_item(tmp_path, monkeypatch):
+    repo, run, state = _setup_runtime(tmp_path, monkeypatch)
+    toolbox = HeadToolbox(
+        delivery_state={**state, "stage": "head", "status": "running"},
+        workers=_head_workers(),
+        max_steps=5,
+        history=[],
+        codex_reviewer=_FakeHeadReviewer(),
+    )
+
+    toolbox.codex_review(
+        purpose="Review architecture.",
+        question="Is this ready?",
+        artifact_refs="",
+        correlation_id="PLAN-02",
+        reason="Review architecture.",
+    )
+
+    tool_calls = repo.list_tool_call_events(run.id, agent_id="head-agent")
+    assert tool_calls[-1].tool_name == "codex_review"
+    assert tool_calls[-1].work_item_id == "PLAN-02"
 
 
 def test_pm_materialization_marks_last_sprint_final_when_pm_omits_final_flag(
@@ -419,6 +450,31 @@ class _FakeStatusInspector:
             raw_events_artifact="head/status-inspections/fake/events.jsonl",
             execution_id="fake-inspection",
             codex_thread_id="thread-fake",
+        )
+
+
+class _FakeHeadReviewer:
+    def run(self, request):
+        root = request.run_dir / "head" / "codex-review" / "fake"
+        root.mkdir(parents=True)
+        files = {
+            "summary.md": "reviewed",
+            "prompt.md": "prompt",
+            "execution.log": "log",
+            "events.jsonl": "",
+        }
+        for name, content in files.items():
+            (root / name).write_text(content + "\n", encoding="utf-8")
+        return CodexReviewResult(
+            status="reviewed",
+            content="reviewed",
+            artifact_refs=[],
+            summary_artifact="head/codex-review/fake/summary.md",
+            prompt_artifact="head/codex-review/fake/prompt.md",
+            log_artifact="head/codex-review/fake/execution.log",
+            raw_events_artifact="head/codex-review/fake/events.jsonl",
+            execution_id="fake-review",
+            codex_thread_id="thread-review",
         )
 
 
