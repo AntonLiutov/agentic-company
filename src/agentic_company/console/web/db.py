@@ -34,6 +34,7 @@ from agentic_company.platform.run_trace import (
 from agentic_company.platform.work_item_contracts import HEAD_PLANNING_ITEMS
 
 SESSION_DAYS = 14
+CONSOLE_SCHEMA_VERSION = "2026-06-06.1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +187,12 @@ class ConsoleRepository:
                     username TEXT NOT NULL UNIQUE,
                     password_hash TEXT NOT NULL,
                     created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS schema_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -500,6 +507,27 @@ class ConsoleRepository:
             )
             self._ensure_artifact_metadata_columns(conn)
             self._ensure_run_columns(conn)
+            self._record_schema_metadata(conn)
+
+    def _record_schema_metadata(self, conn: Any) -> None:
+        now = utc_now()
+        conn.execute(
+            """
+            INSERT INTO schema_metadata (key, value, updated_at)
+            VALUES ('schema_version', ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (CONSOLE_SCHEMA_VERSION, now),
+        )
+
+    def schema_version(self) -> str:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
+            ).fetchone()
+        return str(row["value"]) if row else ""
 
     def _ensure_artifact_metadata_columns(self, conn: Any) -> None:
         existing = {

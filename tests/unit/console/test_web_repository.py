@@ -1,6 +1,13 @@
-from agentic_company.console.web.db import ConsoleRepository
+from agentic_company.console.web.db import CONSOLE_SCHEMA_VERSION, ConsoleRepository
 from agentic_company.platform.artifact_registry import artifact_id_for, register_artifact
 from agentic_company.platform.run_trace import ModelCallEvent, ToolCallEvent
+
+
+def test_init_schema_records_schema_version(tmp_path):
+    repo = ConsoleRepository(tmp_path / "console.db")
+    repo.init_schema()
+
+    assert repo.schema_version() == CONSOLE_SCHEMA_VERSION
 
 
 def test_sessions_and_private_project_isolation(tmp_path):
