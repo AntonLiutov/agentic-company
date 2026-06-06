@@ -919,7 +919,7 @@ class HeadToolbox:
             work_item_id=_head_work_item_id(self.delivery_state, input_summary),
             input_summary=input_summary
             or {
-                "latest_history_tool": tool_name,
+                "tool": tool_name,
                 "stage": self.delivery_state.get("stage"),
             },
             output_summary=structured.to_dict(),
