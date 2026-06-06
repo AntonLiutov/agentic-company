@@ -462,6 +462,10 @@ class ConsoleRepository:
                     ON raw_log_events(run_id, work_item_id, id);
                 CREATE INDEX IF NOT EXISTS idx_raw_log_events_run_agent_seq
                     ON raw_log_events(run_id, agent_id, id);
+                CREATE INDEX IF NOT EXISTS idx_agent_messages_run_to_created
+                    ON agent_messages(run_id, to_agent, created_at, id);
+                CREATE INDEX IF NOT EXISTS idx_agent_messages_run_correlation
+                    ON agent_messages(run_id, correlation_id, created_at, id);
                 """
             )
             self._ensure_artifact_metadata_columns(conn)

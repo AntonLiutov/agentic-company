@@ -26,8 +26,8 @@ def test_agent_message_round_trips_as_prompt_packet():
     assert payload["artifact_refs"] == ["team-lead/sprint-01-plan.json"]
 
 
-def test_agent_message_store_filters_run_local_messages(tmp_path):
-    store = AgentMessageStore(tmp_path)
+def test_agent_message_store_filters_run_messages_from_db(tmp_path, monkeypatch):
+    store, _repo, _run = _message_store(tmp_path, monkeypatch)
     store.append(
         AgentMessage(
             message_id="msg-1",
@@ -59,8 +59,8 @@ def test_agent_message_store_filters_run_local_messages(tmp_path):
     assert store.read(to_agent="deployment-agent") == []
 
 
-def test_agent_message_store_filters_by_correlation_id(tmp_path):
-    store = AgentMessageStore(tmp_path)
+def test_agent_message_store_filters_by_correlation_id(tmp_path, monkeypatch):
+    store, _repo, _run = _message_store(tmp_path, monkeypatch)
     store.append(
         AgentMessage(
             message_id="msg-1",
@@ -87,8 +87,9 @@ def test_agent_message_store_filters_by_correlation_id(tmp_path):
     assert [message.message_id for message in messages] == ["msg-2"]
 
 
-def test_agent_messages_render_prompt_context_and_response(tmp_path):
-    store = AgentMessageStore(tmp_path)
+def test_agent_messages_render_prompt_context_and_response(tmp_path, monkeypatch):
+    store, _repo, run = _message_store(tmp_path, monkeypatch)
+    run_dir = run.run_dir
     store.append(
         AgentMessage(
             message_id="msg-in",
@@ -101,9 +102,9 @@ def test_agent_messages_render_prompt_context_and_response(tmp_path):
         )
     )
 
-    rendered = render_incoming_messages_for_prompt(tmp_path, to_agent="qa-agent")
+    rendered = render_incoming_messages_for_prompt(run_dir, to_agent="qa-agent")
     response = append_agent_response(
-        tmp_path,
+        run_dir,
         from_agent="qa-agent",
         to_agent="team-lead-agent",
         status="qa_passed",
@@ -120,6 +121,40 @@ def test_agent_messages_render_prompt_context_and_response(tmp_path):
 
 
 def test_agent_message_store_mirrors_run_messages_to_db(tmp_path, monkeypatch):
+    store, repo, run = _message_store(tmp_path, monkeypatch)
+
+    store.append(
+        AgentMessage(
+            message_id="msg-db",
+            from_agent="team-lead-agent",
+            to_agent="qa-agent",
+            intent="request_qa",
+            content="Validate from DB.",
+            correlation_id="US-1",
+            created_at="2026-05-09T00:00:00+00:00",
+        )
+    )
+
+    db_payloads = repo.list_agent_messages(run.id, to_agent="qa-agent", correlation_id="US-1")
+    messages = store.read(to_agent="qa-agent", correlation_id="US-1")
+
+    assert [payload["message_id"] for payload in db_payloads] == ["msg-db"]
+    assert [message.message_id for message in messages] == ["msg-db"]
+
+
+def test_agent_message_store_requires_registered_db_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(tmp_path / "console.db"))
+    store = AgentMessageStore(tmp_path / "missing-run")
+
+    try:
+        store.read()
+    except RuntimeError as exc:
+        assert "No DB run is registered" in str(exc)
+    else:
+        raise AssertionError("Expected unregistered message store reads to fail.")
+
+
+def _message_store(tmp_path, monkeypatch):
     db_path = tmp_path / "console.db"
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -147,21 +182,4 @@ def test_agent_message_store_mirrors_run_messages_to_db(tmp_path, monkeypatch):
         mode="internal_tool",
         reasoning="medium",
     )
-
-    AgentMessageStore(run_dir).append(
-        AgentMessage(
-            message_id="msg-db",
-            from_agent="team-lead-agent",
-            to_agent="qa-agent",
-            intent="request_qa",
-            content="Validate from DB.",
-            correlation_id="US-1",
-            created_at="2026-05-09T00:00:00+00:00",
-        )
-    )
-
-    db_payloads = repo.list_agent_messages(run.id, to_agent="qa-agent", correlation_id="US-1")
-    messages = AgentMessageStore(run_dir).read(to_agent="qa-agent", correlation_id="US-1")
-
-    assert [payload["message_id"] for payload in db_payloads] == ["msg-db"]
-    assert [message.message_id for message in messages] == ["msg-db"]
+    return AgentMessageStore(run_dir), repo, run

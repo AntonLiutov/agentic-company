@@ -20,9 +20,11 @@ from agentic_company.agents.project_manager.graph import (
     PROJECT_MANAGEMENT_ROADMAP_CSV,
     PROJECT_MANAGEMENT_WORK_ITEMS_JSON,
 )
+from agentic_company.console.web.db import ConsoleRepository
 
 
-def test_project_management_prompt_scopes_codex_to_planning_artifacts(tmp_path):
+def test_project_management_prompt_scopes_codex_to_planning_artifacts(tmp_path, monkeypatch):
+    _register_run(tmp_path, monkeypatch)
     _write_inputs(tmp_path)
     request = {
         "run_id": "run",
@@ -142,7 +144,10 @@ def test_project_management_prompt_scopes_codex_to_planning_artifacts(tmp_path):
     assert "give Deployment Agent freedom" in prompt
 
 
-def test_project_manager_codex_runner_maps_valid_contract_to_completed_result(tmp_path):
+def test_project_manager_codex_runner_maps_valid_contract_to_completed_result(
+    tmp_path, monkeypatch
+):
+    _register_run(tmp_path, monkeypatch)
     _write_inputs(tmp_path)
     request_path = tmp_path / PROJECT_MANAGEMENT_REQUEST
     request_path.write_text(
@@ -307,3 +312,31 @@ def _feature() -> dict[str, object]:
         "source_refs": ["F1"],
         "suggested_owner_agent": "fullstack-agent",
     }
+
+
+def _register_run(run_dir: Path, monkeypatch) -> None:
+    db_path = run_dir / "console.db"
+    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
+    repo = ConsoleRepository(db_path)
+    repo.init_schema()
+    user = repo.create_user(
+        email="pm@example.test",
+        username="pm-user",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="PM",
+        request_text="Plan",
+        mode="internal_tool",
+        complexity="simple",
+        status="running",
+    )
+    repo.create_run(
+        project_id=project.id,
+        run_uid="run",
+        run_dir=run_dir,
+        status="running",
+        mode="internal_tool",
+        reasoning="medium",
+    )
