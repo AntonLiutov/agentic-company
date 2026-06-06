@@ -84,6 +84,8 @@ class LangChainHeadExecutor:
                 reason="Head Agent executor completed without calling any tool.",
                 message="The Head Agent must use tools to coordinate planning.",
             )
+        elif not toolbox.reached_terminal_state():
+            toolbox.block_incomplete_execution()
         return toolbox.result()
 
 

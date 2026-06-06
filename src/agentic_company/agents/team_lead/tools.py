@@ -521,6 +521,34 @@ class TeamLeadToolbox:
             > self.initial_tool_call_count
         )
 
+    def reached_terminal_state(self) -> bool:
+        if self.delivery_state.get("blockers"):
+            return True
+        status = str(self.delivery_state.get("status") or "")
+        sprint_state = sprint_completion_state(str(self.delivery_state["run_id"]), self.sprint_id)
+        return status == "team_lead_sprint_handoff_ready" or sprint_state.status in {
+            "done",
+            "blocked",
+        }
+
+    def block_incomplete_execution(self) -> None:
+        sprint_state = sprint_completion_state(str(self.delivery_state["run_id"]), self.sprint_id)
+        next_item = (
+            f" Next DB work item still pending: {sprint_state.next_work_item_id}."
+            if sprint_state.next_work_item_id
+            else ""
+        )
+        status = str(self.delivery_state.get("status") or "")
+        self.block_sprint(
+            reason=(
+                "Team Lead AgentExecutor stopped before reaching a terminal sprint state."
+                + next_item
+                + f" Current status: {status or 'unknown'}."
+            ),
+            work_item_id="PLAN-04",
+            message="Team Lead must continue explicit DB work-item routing or block with evidence.",
+        )
+
     def _run_worker(
         self,
         *,

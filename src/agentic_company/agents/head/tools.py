@@ -503,6 +503,47 @@ class HeadToolbox:
             > self.initial_tool_call_count
         )
 
+    def reached_terminal_state(self) -> bool:
+        if self.delivery_state.get("blockers"):
+            return True
+        status = str(self.delivery_state.get("status") or "")
+        return status in {
+            "head_delivery_completed",
+            "head_planning_blocked",
+        }
+
+    def block_incomplete_execution(self) -> None:
+        run_id = str(self.delivery_state["run_id"])
+        next_sprint_id = next_sprint_to_run(run_id)
+        status = str(self.delivery_state.get("status") or "")
+        reason = (
+            "Head Agent executor stopped before reaching a terminal delivery state."
+            + (f" Next DB sprint still pending: {next_sprint_id}." if next_sprint_id else "")
+            + f" Current status: {status or 'unknown'}."
+        )
+        self.block_planning(
+            reason=reason,
+            correlation_id="PLAN-04",
+            message="Head must continue sprint scheduling or explicitly block with a real reason.",
+        )
+        record_work_item_transition(
+            ToolExecutionRecord(
+                run_id=run_id,
+                work_item_id="PLAN-04",
+                sprint_id="planning",
+                owner_agent=HEAD_AGENT_ID,
+                tool_name="block_planning",
+                tool_call_id=_tool_call_id(
+                    self.delivery_state,
+                    "block_planning",
+                    len(self.history or []),
+                ),
+                attempt_id="incomplete-execution",
+                status="blocked",
+                activity_message=reason,
+            )
+        )
+
     def _run_worker(
         self,
         *,
@@ -571,7 +612,15 @@ class HeadToolbox:
         )
         checkpoint_delivery_state(self.delivery_state)
         self.delivery_state = worker(self.delivery_state)
-        item_status = "blocked" if self.delivery_state.get("blockers") else "done"
+        item_status = self._worker_item_finish_status(
+            node_name=node_name,
+            correlation_id=correlation_id,
+        )
+        finish_message = (
+            f"{outbound.to_agent} completed {item_id}."
+            if item_status == "done"
+            else f"{outbound.to_agent} updated {item_id}."
+        )
         record_work_item_transition(
             ToolExecutionRecord(
                 run_id=str(self.delivery_state["run_id"]),
@@ -582,7 +631,7 @@ class HeadToolbox:
                 tool_call_id=execution_id or _tool_call_id(self.delivery_state, tool, 0),
                 attempt_id="finish",
                 status=item_status,
-                activity_message=f"{outbound.to_agent} completed {item_id}.",
+                activity_message=finish_message,
             )
         )
         downstream_response = latest_downstream_response(
@@ -617,6 +666,18 @@ class HeadToolbox:
                 "target_agent": outbound.to_agent,
             },
         )
+
+    def _worker_item_finish_status(self, *, node_name: str, correlation_id: str) -> str:
+        if self.delivery_state.get("blockers"):
+            return "blocked"
+        if node_name != "team_lead":
+            return "done"
+        sprint_state = sprint_completion_state(str(self.delivery_state["run_id"]), correlation_id)
+        if sprint_state.is_blocked:
+            return "blocked"
+        if sprint_state.is_final and sprint_state.is_complete:
+            return "done"
+        return "in_progress"
 
     def _record(
         self,

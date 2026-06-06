@@ -1,5 +1,6 @@
 import json
 
+from agentic_company.agents.head.executor import LangChainHeadExecutor
 from agentic_company.agents.head.tools import HeadToolbox, HeadWorkers
 from agentic_company.agents.team_lead.executor import LangChainTeamLeadExecutor
 from agentic_company.agents.team_lead.graph import run_team_lead_agent_graph
@@ -12,6 +13,7 @@ from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.platform.runtime_db import (
     get_work_item,
     mark_sprint_done,
+    mark_sprint_started,
     materialize_planning_items,
     materialize_pm_work_items,
     next_sprint_to_run,
@@ -61,6 +63,25 @@ def test_team_lead_executor_does_not_block_after_successful_complete_sprint(tmp_
     assert sprint_completion_state("run", "sprint-01").status == "done"
 
 
+def test_team_lead_executor_blocks_if_runtime_stops_after_contract_error(tmp_path, monkeypatch):
+    repo, run, state = _setup_runtime(tmp_path, monkeypatch)
+    executor = LangChainTeamLeadExecutor(runtime=_ContractErrorRuntime())
+
+    result = executor.run(
+        delivery_state=state,
+        sprint={"sprint_id": "sprint-01"},
+        workers=_team_lead_workers(),
+        max_steps=5,
+    )
+
+    assert result.delivery_state["status"] == "team_lead_sprint_blocked"
+    assert "Next DB work item still pending: US-1" in result.delivery_state["blockers"][-1]
+    assert sprint_completion_state("run", "sprint-01").status == "blocked"
+    assert get_work_item("run", "PLAN-04").status == "blocked"
+    tool_names = [event.tool_name for event in repo.list_tool_call_events(run.id)]
+    assert tool_names[-2:] == ["codex_review", "block_sprint"]
+
+
 def test_team_lead_sprint_plan_artifact_is_registered_to_plan_04(tmp_path, monkeypatch):
     repo, run, state = _setup_runtime(tmp_path, monkeypatch)
 
@@ -94,6 +115,49 @@ def test_head_treats_completed_sprint_as_complete_not_missing_work_items(tmp_pat
     assert "already complete" in payload["message"]
     assert "sprint-02" in payload["message"]
     assert next_sprint_to_run("run") == "sprint-02"
+
+
+def test_head_does_not_finish_plan_04_when_non_final_sprint_only_started(tmp_path, monkeypatch):
+    _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
+
+    def team_lead_started_worker(worker_state):
+        mark_sprint_started("run", "sprint-01")
+        return {**worker_state, "stage": "team_lead", "status": "team_lead_sprint_started"}
+
+    workers = HeadWorkers(
+        business_analyst=lambda worker_state: worker_state,
+        architect=lambda worker_state: worker_state,
+        project_manager=lambda worker_state: worker_state,
+        team_lead=team_lead_started_worker,
+    )
+    toolbox = HeadToolbox(
+        delivery_state={**state, "stage": "head", "status": "running"},
+        workers=workers,
+        max_steps=5,
+        history=[],
+    )
+
+    payload = json.loads(toolbox.run_team_lead("sprint-01", reason="Start first sprint."))
+
+    assert payload["status"] == "team_lead_sprint_started"
+    assert sprint_completion_state("run", "sprint-01").status == "running"
+    assert get_work_item("run", "PLAN-04").status == "in_progress"
+
+
+def test_head_executor_blocks_if_runtime_stops_with_pending_db_sprint(tmp_path, monkeypatch):
+    _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
+    executor = LangChainHeadExecutor(runtime=_StartingTeamLeadRuntime())
+
+    result = executor.run(
+        delivery_state={**state, "stage": "head", "status": "running"},
+        workers=_head_workers_with_started_team_lead(),
+        max_steps=5,
+    )
+
+    assert result.delivery_state["status"] == "head_planning_blocked"
+    assert "Next DB sprint still pending: sprint-01" in result.delivery_state["blockers"][-1]
+    assert sprint_completion_state("run", "sprint-01").status == "running"
+    assert get_work_item("run", "PLAN-04").status == "blocked"
 
 
 def test_head_delivery_status_inspection_is_scoped_to_plan_04(tmp_path, monkeypatch):
@@ -151,6 +215,31 @@ class _CompletingRuntime:
             if tool.__name__ == "complete_sprint":
                 return tool("PLAN-04", "Sprint handoff accepted.", "")
         raise AssertionError("complete_sprint tool was not available")
+
+
+class _ContractErrorRuntime:
+    def invoke(self, request):
+        for tool in request.tools:
+            if tool.__name__ == "codex_review":
+                return tool(
+                    target_agent="",
+                    purpose="Diagnose sprint status inspection failure.",
+                    question="Why did inspection fail?",
+                    artifact_refs="",
+                    intent="review_feedback",
+                    work_item_id="",
+                    reason="Diagnose sprint status inspection failure.",
+                    message="",
+                )
+        raise AssertionError("codex_review tool was not available")
+
+
+class _StartingTeamLeadRuntime:
+    def invoke(self, request):
+        for tool in request.tools:
+            if tool.__name__ == "run_team_lead":
+                return tool("sprint-01", "Start sprint.", "")
+        raise AssertionError("run_team_lead tool was not available")
 
 
 class _NoopTeamLeadExecutor:
@@ -302,4 +391,20 @@ def _head_workers():
         architect=fail_worker,
         project_manager=fail_worker,
         team_lead=fail_worker,
+    )
+
+
+def _head_workers_with_started_team_lead():
+    def planning_worker(state):
+        return state
+
+    def team_lead_started_worker(state):
+        mark_sprint_started("run", "sprint-01")
+        return {**state, "stage": "team_lead", "status": "team_lead_sprint_started"}
+
+    return HeadWorkers(
+        business_analyst=planning_worker,
+        architect=planning_worker,
+        project_manager=planning_worker,
+        team_lead=team_lead_started_worker,
     )

@@ -103,6 +103,8 @@ class LangChainTeamLeadExecutor:
                 work_item_id=TEAM_LEAD_COORDINATION_WORK_ITEM_ID,
                 message="The Team Lead must use tools to coordinate the sprint.",
             )
+        elif not toolbox.reached_terminal_state():
+            toolbox.block_incomplete_execution()
         return toolbox.result()
 
 
