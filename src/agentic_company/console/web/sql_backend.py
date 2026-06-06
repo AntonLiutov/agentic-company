@@ -40,7 +40,8 @@ class DatabaseSettings:
 @contextmanager
 def connect_database(settings: DatabaseSettings) -> Iterator[Any]:
     if settings.is_postgres:
-        yield from _connect_postgres(settings.url)
+        with _connect_postgres(settings.url) as conn:
+            yield conn
         return
     if settings.sqlite_path is None:
         raise ValueError("SQLite database settings require sqlite_path")
