@@ -16,6 +16,8 @@ from agentic_company.agents.handoff.contracts import (
 )
 from agentic_company.agents.registry import route_for_node
 from agentic_company.agents.team_lead.contracts import TeamLeadDecision, TeamLeadToolName
+from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
+from agentic_company.platform.agent_runtime import agent_env_value
 from agentic_company.platform.artifact_registry import artifact_id_for
 from agentic_company.platform.codex_review import (
     CodexReviewRequest,
@@ -350,7 +352,9 @@ class TeamLeadToolbox:
             status_context=_sprint_status_context(self.delivery_state, self.sprint_id),
             artifact_refs=refs,
             correlation_id=item.work_item_id,
-            model="gpt-5.3-codex",
+            model=agent_env_value("TEAM_LEAD_STATUS_INSPECTOR_CODEX_MODEL", self.delivery_state)
+            or agent_env_value("AGENT_CODEX_MODEL", self.delivery_state)
+            or DEFAULT_CODEX_MODEL,
             execution_id=build_agent_execution_id(
                 run_id=str(self.delivery_state["run_id"]),
                 agent_id=TEAM_LEAD_AGENT_ID,

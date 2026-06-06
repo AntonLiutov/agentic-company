@@ -1,4 +1,4 @@
-import json
+﻿import json
 
 from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.orchestration.graphs import (
@@ -157,7 +157,7 @@ def test_delivery_graph_runtime_hydrates_only_execution_session_fields(tmp_path,
                 "agent_version": "0.1.0",
                 "maturity_level": "L6 Codex Agent",
                 "provider": "codex",
-                "model": "gpt-5.3-codex",
+                "model": "gpt-5.5",
                 "target_project_dir": str(run_dir / "generated-project"),
                 "input_artifacts": [],
                 "expected_outputs": [],

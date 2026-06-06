@@ -16,6 +16,7 @@ from agentic_company.agents.handoff.contracts import (
     SPRINT_HANDOFF_SCOPE,
     handoff_contract_paths_for_scope,
 )
+from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.platform.agent_contracts import (
     append_downstream_response,
     artifact_refs,
@@ -175,7 +176,7 @@ def _write_handoff_execution_request(run_dir: Path, delivery_state: DeliveryStat
         model=(
             agent_env_value("HANDOFF_CODEX_MODEL", delivery_state)
             or agent_env_value("AGENT_CODEX_MODEL", delivery_state)
-            or "gpt-5.3-codex"
+            or DEFAULT_CODEX_MODEL
         ),
         input_artifacts=_handoff_input_artifacts(delivery_state),
         expected_outputs=contract_paths.as_list(),

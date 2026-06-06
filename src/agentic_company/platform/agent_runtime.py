@@ -12,6 +12,7 @@ from typing import Any, Protocol
 
 from langgraph.graph import END, START, StateGraph
 
+from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.platform.artifact_registry import (
     artifact_id_for,
     tool_artifact_refs_from_records,
@@ -645,12 +646,12 @@ def _codex_exec_tool_response(
         run_id=str(request.delivery_state.get("run_id") or request.run_dir.name),
         agent_id=result.agent_id or request.agent_id,
         provider="openai",
-        model=agent_env_value("AGENT_CODEX_MODEL", request.delivery_state)
-        or agent_env_value(
+        model=agent_env_value(
             f"{request.agent_id.upper().replace('-', '_')}_CODEX_MODEL",
             request.delivery_state,
         )
-        or "gpt-5.3-codex",
+        or agent_env_value("AGENT_CODEX_MODEL", request.delivery_state)
+        or DEFAULT_CODEX_MODEL,
         purpose="codex_exec",
         prompt_ref=_prompt_artifact_link(result.output_artifacts),
         status=result.status,

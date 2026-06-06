@@ -1,4 +1,4 @@
-import json
+﻿import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -229,7 +229,7 @@ def test_create_project_starts_run_with_monkeypatched_runtime(tmp_path, monkeypa
             "complexity": "simple",
             "agent_provider": "openai",
             "agent_model": "gpt-4.1",
-            "codex_model": "gpt-5.3-codex",
+            "codex_model": "gpt-5.5",
             "codex_reasoning": "medium",
             "service_tier": "standard",
         },
@@ -244,7 +244,7 @@ def test_create_project_starts_run_with_monkeypatched_runtime(tmp_path, monkeypa
     assert "OPENAI_API_KEY=sk-test-project" in env_text
     assert "CODEX_API_KEY=sk-test-project" in env_text
     assert "AGENT_LLM_PROVIDER=openai" in env_text
-    assert "AGENT_CODEX_MODEL=gpt-5.3-codex" in env_text
+    assert "AGENT_CODEX_MODEL=gpt-5.5" in env_text
     assert "AGENTIC_CODEX_SERVICE_TIER=standard" in env_text
     assert repo.list_projects_for_user(1)[0].name == "Task Tracker"
 
@@ -627,7 +627,7 @@ def test_create_project_can_use_gemini_for_agent_executor(tmp_path, monkeypatch)
             "complexity": "simple",
             "agent_provider": "google_gemini",
             "agent_model": "gemini-3.1-flash-lite",
-            "codex_model": "gpt-5.3-codex",
+            "codex_model": "gpt-5.5",
             "codex_reasoning": "medium",
             "service_tier": "standard",
         },
@@ -681,7 +681,7 @@ def test_create_project_can_use_platform_gemini_key(tmp_path, monkeypatch):
             "request_text": "Build a tiny Gemini-routed app",
             "mode": "simple_prototype",
             "complexity": "simple",
-            "codex_model": "gpt-5.3-codex",
+            "codex_model": "gpt-5.5",
             "codex_reasoning": "medium",
             "service_tier": "standard",
         },
@@ -1616,6 +1616,20 @@ def test_project_agents_tab_shows_agent_catalog(tmp_path):
     )
     run_dir = tmp_path / "run"
     run_dir.mkdir()
+    env_dir = run_dir / "delivery"
+    env_dir.mkdir()
+    (env_dir / "agent-runtime.env").write_text(
+        "\n".join(
+            [
+                "AGENT_LLM_PROVIDER=openai",
+                "AGENT_LLM_MODEL=gpt-4.1",
+                "AGENT_CODEX_MODEL=gpt-5.4",
+                "AGENTIC_CODEX_REASONING_EFFORT=high",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     repo.create_run(
         project_id=project.id,
         run_uid="run-agents",
@@ -1634,5 +1648,7 @@ def test_project_agents_tab_shows_agent_catalog(tmp_path):
     assert "Coordinator" in response.text
     assert "/static/agents/coordinator.png" in response.text
     assert "/static/agents/release-reporter.png" in response.text
-    assert "OpenAI or Gemini" in response.text
+    assert "gpt-4.1" in response.text
+    assert "gpt-5.4" in response.text
+    assert ">High<" in response.text
     assert ">none<" not in response.text.lower()

@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import NotRequired, Protocol, TypedDict, cast
 
+from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.platform.agent_contracts import (
     append_downstream_response,
     artifact_refs,
@@ -38,7 +39,7 @@ ARCHITECTURE_JSON = f"{ARCHITECTURE_DIR}/architecture.json"
 ARCHITECTURE_MMD = f"{ARCHITECTURE_DIR}/architecture.mmd"
 BUSINESS_ANALYSIS_MD = f"{ARCHITECTURE_DIR}/business-analysis.md"
 BUSINESS_ANALYSIS_JSON = f"{ARCHITECTURE_DIR}/business-analysis.json"
-DEFAULT_ARCHITECT_MODEL = "gpt-5.3-codex"
+DEFAULT_ARCHITECT_MODEL = DEFAULT_CODEX_MODEL
 
 ARCHITECT_AGENT_SYSTEM_PROMPT = """
 You are the Architect Agent for agentic-company.

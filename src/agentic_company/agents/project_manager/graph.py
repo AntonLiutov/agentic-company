@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import NotRequired, Protocol, TypedDict, cast
 
+from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.platform.agent_contracts import (
     append_downstream_response,
     artifact_refs,
@@ -45,7 +46,7 @@ BUSINESS_ANALYSIS_JSON = f"{UPSTREAM_PLANNING_DIR}/business-analysis.json"
 ARCHITECTURE_MD = f"{UPSTREAM_PLANNING_DIR}/architecture.md"
 ARCHITECTURE_JSON = f"{UPSTREAM_PLANNING_DIR}/architecture.json"
 ARCHITECTURE_MMD = f"{UPSTREAM_PLANNING_DIR}/architecture.mmd"
-DEFAULT_PROJECT_MANAGER_MODEL = "gpt-5.3-codex"
+DEFAULT_PROJECT_MANAGER_MODEL = DEFAULT_CODEX_MODEL
 SPRINT_COUNT_GUIDANCE = (
     "Choose the natural sprint breakdown for the source task, dependencies, "
     "risk, and validation needs. Do not use default sprint counts, numeric "

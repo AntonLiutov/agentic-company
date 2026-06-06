@@ -1,4 +1,4 @@
-import json
+﻿import json
 import subprocess
 from pathlib import Path
 
@@ -64,7 +64,7 @@ def test_tool_and_model_trace_roundtrip_and_summary(tmp_path: Path):
         run_id="run-1",
         agent_id="fullstack-agent",
         provider="openai",
-        model="gpt-5.3-codex",
+        model="gpt-5.5",
         purpose="codex_exec",
         prompt_ref="fullstack/prompt.md",
         status="codex_completed",
@@ -247,7 +247,7 @@ def test_codex_review_runner_records_model_trace_and_registers_artifacts(
             requesting_agent="head-agent",
             purpose="Review artifacts.",
             question="Is this ready?",
-            model="gpt-5.3-codex",
+            model="gpt-5.5",
         )
     )
 
@@ -260,7 +260,7 @@ def test_codex_review_runner_records_model_trace_and_registers_artifacts(
 
     assert result.status == "reviewed"
     assert events[0].provider == "openai"
-    assert events[0].model == "gpt-5.3-codex"
+    assert events[0].model == "gpt-5.5"
     assert events[0].purpose == "codex_review"
     assert events[0].prompt_ref == result.prompt_artifact
     assert events[0].estimated_cost_usd is None
@@ -308,7 +308,7 @@ def test_status_inspector_runner_records_model_trace_and_registers_artifacts(
             scope="sprint",
             purpose="Inspect sprint.",
             status_context={"sprint_id": "sprint-01"},
-            model="gpt-5.3-codex",
+            model="gpt-5.5",
         )
     )
 
@@ -321,7 +321,7 @@ def test_status_inspector_runner_records_model_trace_and_registers_artifacts(
 
     assert result.status == "inspected"
     assert events[0].provider == "openai"
-    assert events[0].model == "gpt-5.3-codex"
+    assert events[0].model == "gpt-5.5"
     assert events[0].purpose == "status_inspection"
     assert events[0].prompt_ref == result.prompt_artifact
     assert events[0].estimated_cost_usd is None

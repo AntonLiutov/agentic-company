@@ -12,6 +12,7 @@ from agentic_company.agents.deployment.codex_cli import (
     DeploymentCodexRunner,
     public_urls_from_deployment_result,
 )
+from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.platform.agent_contracts import (
     append_downstream_response,
     artifact_refs,
@@ -168,7 +169,7 @@ def _write_deployment_execution_request(run_dir: Path, delivery_state: DeliveryS
         model=(
             agent_env_value("DEPLOYMENT_CODEX_MODEL", delivery_state)
             or agent_env_value("AGENT_CODEX_MODEL", delivery_state)
-            or "gpt-5.3-codex"
+            or DEFAULT_CODEX_MODEL
         ),
         input_artifacts=_deployment_input_artifacts(delivery_state),
         expected_outputs=[

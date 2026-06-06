@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agentic_company.integrations.codex import (
+    DEFAULT_CODEX_MODEL,
     build_codex_exec_command,
     build_codex_exec_environment,
     stream_codex_exec_to_log,
@@ -43,7 +44,7 @@ class CodexReviewRequest:
     artifact_refs: list[str] = field(default_factory=list)
     target_agent: str | None = None
     correlation_id: str | None = None
-    model: str = "gpt-5.3-codex"
+    model: str = DEFAULT_CODEX_MODEL
     execution_id: str = ""
     codex_resume_thread_id: str = ""
 

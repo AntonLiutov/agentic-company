@@ -68,6 +68,7 @@ from agentic_company.console.web.voice import (
     speechmatics_configured,
     speechmatics_rt_url,
 )
+from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.platform.logging import configure_logging
 from agentic_company.platform.run_trace import trace_summary
 from agentic_company.platform.runtime_cache import runtime_cache_from_env
@@ -220,13 +221,14 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         reasoning: Annotated[str, Form()] = "medium",
         agent_provider: Annotated[str, Form()] = "google_gemini",
         agent_model: Annotated[str, Form()] = "gemini-3.1-flash-lite",
-        codex_model: Annotated[str, Form()] = "gpt-5.3-codex",
+        codex_model: Annotated[str, Form()] = DEFAULT_CODEX_MODEL,
         codex_reasoning: Annotated[str, Form()] = "medium",
         service_tier: Annotated[str, Form()] = "standard",
         dictation_language: Annotated[str, Form()] = "en",
     ) -> Response:
         agent_provider = normalize_agent_provider(agent_provider)
         agent_model = normalize_agent_model(agent_provider, agent_model)
+        codex_model = normalize_codex_model(codex_model)
         if not name.strip() or not request_text.strip():
             return render_new_project(
                 request,
@@ -481,7 +483,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
                 openai_key_configured=bool(user_openai_key(repo, user)),
                 gemini_key_configured=bool(user_or_platform_gemini_key(repo, user)),
             ),
-            agents=agent_catalog(),
+            agents=agent_catalog_for_run(_latest_user_run(repo, user.id)),
             agent_providers=AGENT_PROVIDER_OPTIONS,
             agent_models=AGENT_MODEL_OPTIONS,
             gemini_models=GEMINI_MODEL_OPTIONS,
@@ -526,7 +528,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             request,
             "agents.html",
             user=user,
-            agents=agent_catalog(),
+            agents=agent_catalog_for_run(_latest_user_run(get_repo(request), user.id)),
             agent_providers=AGENT_PROVIDER_OPTIONS,
             agent_models=AGENT_MODEL_OPTIONS,
             gemini_models=GEMINI_MODEL_OPTIONS,
@@ -861,7 +863,7 @@ def render_workspace(
         "technical_artifacts": [],
         "logs": [],
         "activity_groups": [],
-        "agents": agent_catalog(),
+        "agents": agent_catalog_for_run(run),
         "overview": None,
         "overview_blockers": [],
         "project_request_html": render_markdown(_project_request_text(project, run)),
@@ -1069,7 +1071,7 @@ def new_project_form_values(
     complexity: str = "simple",
     agent_provider: str = "google_gemini",
     agent_model: str = "gemini-3.1-flash-lite",
-    codex_model: str = "gpt-5.3-codex",
+    codex_model: str = DEFAULT_CODEX_MODEL,
     codex_reasoning: str = "medium",
     service_tier: str = "standard",
     dictation_language: str = "en",
@@ -1082,7 +1084,7 @@ def new_project_form_values(
         "complexity": complexity,
         "agent_provider": agent_provider,
         "agent_model": normalize_agent_model(agent_provider, agent_model),
-        "codex_model": codex_model,
+        "codex_model": normalize_codex_model(codex_model),
         "codex_reasoning": codex_reasoning,
         "service_tier": service_tier,
         "dictation_language": normalize_language_code(dictation_language),
@@ -1097,6 +1099,42 @@ def normalize_agent_model(provider: str, model: str) -> str:
     if provider == "google_gemini":
         return model if model in GEMINI_MODEL_OPTIONS else "gemini-3.1-flash-lite"
     return model if model in AGENT_MODEL_OPTIONS else "gpt-4.1"
+
+
+def normalize_codex_model(model: str) -> str:
+    return model if model in CODEX_MODEL_OPTIONS else DEFAULT_CODEX_MODEL
+
+
+def agent_catalog_for_run(run: Run | None) -> list[dict[str, str]]:
+    env = _run_env(run)
+    agent_provider = normalize_agent_provider(env.get("AGENT_LLM_PROVIDER", "google_gemini"))
+    agent_model = normalize_agent_model(
+        agent_provider,
+        env.get("AGENT_LLM_MODEL", "gemini-3.1-flash-lite"),
+    )
+    codex_model = normalize_codex_model(
+        env.get("AGENT_CODEX_MODEL")
+        or env.get("FULLSTACK_CODEX_MODEL")
+        or env.get("BUSINESS_ANALYST_CODEX_MODEL")
+        or DEFAULT_CODEX_MODEL
+    )
+    return agent_catalog(
+        agent_provider=agent_provider,
+        agent_model=agent_model,
+        codex_model=codex_model,
+        codex_reasoning=env.get("AGENTIC_CODEX_REASONING_EFFORT", "medium"),
+    )
+
+
+def _latest_user_run(repo: ConsoleRepository, user_id: int) -> Run | None:
+    latest: Run | None = None
+    for project in repo.list_projects_for_user(user_id):
+        run = repo.latest_run_for_project(project.id, user_id)
+        if run is None:
+            continue
+        if latest is None or run.created_at > latest.created_at:
+            latest = run
+    return latest
 
 
 def user_openai_key(repo: ConsoleRepository, user: User) -> str:
@@ -1155,6 +1193,7 @@ def prepare_run_environment(
 ) -> Path:
     agent_provider = normalize_agent_provider(agent_provider)
     agent_model = normalize_agent_model(agent_provider, agent_model)
+    codex_model = normalize_codex_model(codex_model)
     values = {
         "OPENAI_API_KEY": api_key,
         "CODEX_API_KEY": api_key,
@@ -1191,7 +1230,7 @@ def restart_run_settings(repo: ConsoleRepository, project: Project, user: User) 
         latest_env.get("AGENT_CODEX_MODEL")
         or latest_env.get("FULLSTACK_CODEX_MODEL")
         or latest_env.get("BUSINESS_ANALYST_CODEX_MODEL")
-        or "gpt-5.3-codex"
+        or DEFAULT_CODEX_MODEL
     )
     saved_agent_model = latest_env.get("AGENT_LLM_MODEL", "")
     saved_agent_provider = latest_env.get("AGENT_LLM_PROVIDER", "")
@@ -1203,7 +1242,7 @@ def restart_run_settings(repo: ConsoleRepository, project: Project, user: User) 
         "agent_provider": saved_agent_provider or "google_gemini",
         "agent_model": saved_agent_model or "gemini-3.1-flash-lite",
         "agent_reasoning": agent_reasoning,
-        "codex_model": codex_model,
+        "codex_model": normalize_codex_model(codex_model),
         "codex_reasoning": latest_env.get("AGENTIC_CODEX_REASONING_EFFORT", "medium"),
         "service_tier": latest_env.get("AGENTIC_CODEX_SERVICE_TIER", "standard"),
     }

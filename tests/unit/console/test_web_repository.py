@@ -1,4 +1,4 @@
-from agentic_company.console.web.db import CONSOLE_SCHEMA_VERSION, ConsoleRepository
+﻿from agentic_company.console.web.db import CONSOLE_SCHEMA_VERSION, ConsoleRepository
 from agentic_company.platform.artifact_registry import artifact_id_for, register_artifact
 from agentic_company.platform.run_trace import ModelCallEvent, ToolCallEvent
 
@@ -181,7 +181,7 @@ def test_trace_events_upsert_from_contract_records(tmp_path):
             run_id=run.run_uid,
             agent_id="qa-agent",
             provider="openai",
-            model="gpt-5.3-codex",
+            model="gpt-5.5",
             purpose="codex_exec",
             prompt_ref="qa/prompt.md",
             status="qa_passed",

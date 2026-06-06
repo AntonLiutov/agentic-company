@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import NotRequired, Protocol, TypedDict, cast
 
+from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.platform.agent_contracts import (
     append_downstream_response,
     artifact_refs,
@@ -35,7 +36,7 @@ BUSINESS_ANALYSIS_DIR = "upstream-planning"
 BUSINESS_ANALYSIS_REQUEST = f"{BUSINESS_ANALYSIS_DIR}/business-analysis-request.json"
 BUSINESS_ANALYSIS_MD = f"{BUSINESS_ANALYSIS_DIR}/business-analysis.md"
 BUSINESS_ANALYSIS_JSON = f"{BUSINESS_ANALYSIS_DIR}/business-analysis.json"
-DEFAULT_BUSINESS_ANALYST_MODEL = "gpt-5.3-codex"
+DEFAULT_BUSINESS_ANALYST_MODEL = DEFAULT_CODEX_MODEL
 
 BUSINESS_ANALYST_AGENT_SYSTEM_PROMPT = """
 You are the Business Analyst Agent for agentic-company.

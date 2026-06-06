@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, NotRequired, Protocol, TypedDict, cast
 
+from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.platform.agent_contracts import (
     append_downstream_response,
     artifact_refs,
@@ -266,7 +267,11 @@ def _write_feature_execution_request(
     request = build_execution_request_payload(
         delivery_state,
         agent_id="fullstack-agent",
-        model=agent_env_value("FULLSTACK_CODEX_MODEL", delivery_state) or "gpt-5.3-codex",
+        model=(
+            agent_env_value("FULLSTACK_CODEX_MODEL", delivery_state)
+            or agent_env_value("AGENT_CODEX_MODEL", delivery_state)
+            or DEFAULT_CODEX_MODEL
+        ),
         input_artifacts=upstream_artifacts,
         expected_outputs=[
             "README.md",

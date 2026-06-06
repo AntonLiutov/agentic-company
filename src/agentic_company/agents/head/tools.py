@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from agentic_company.agents.head.contracts import HeadDecision, HeadToolName
 from agentic_company.agents.registry import agent_by_id, route_for_node
+from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.platform.agent_runtime import agent_env_value
 from agentic_company.platform.artifact_registry import artifact_id_for
 from agentic_company.platform.codex_review import (
@@ -276,7 +277,7 @@ class HeadToolbox:
             correlation_id="PLAN-04",
             model=agent_env_value("HEAD_STATUS_INSPECTOR_CODEX_MODEL", self.delivery_state)
             or agent_env_value("AGENT_CODEX_MODEL", self.delivery_state)
-            or "gpt-5.3-codex",
+            or DEFAULT_CODEX_MODEL,
             execution_id=build_agent_execution_id(
                 run_id=str(self.delivery_state["run_id"]),
                 agent_id=HEAD_AGENT_ID,

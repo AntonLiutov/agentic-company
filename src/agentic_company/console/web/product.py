@@ -22,6 +22,7 @@ from agentic_company.console.support import (
     FeatureProgress,
     repo_root,
 )
+from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.platform.artifact_registry import USER_FACING_VISIBILITIES
 
 AGENT_MODEL_OPTIONS = [
@@ -48,8 +49,7 @@ GEMINI_MODEL_OPTIONS = [
 ]
 
 CODEX_MODEL_OPTIONS = [
-    "gpt-5.3-codex",
-    "gpt-5.5",
+    DEFAULT_CODEX_MODEL,
     "gpt-5.4",
     "gpt-5.4-mini",
     "gpt-5.2",
@@ -943,78 +943,85 @@ def _ordered_activity_groups(
     ]
 
 
-def agent_catalog() -> list[dict[str, str]]:
+def agent_catalog(
+    *,
+    agent_provider: str = "google_gemini",
+    agent_model: str = "gemini-3.1-flash-lite",
+    codex_model: str = DEFAULT_CODEX_MODEL,
+    codex_reasoning: str = "medium",
+) -> list[dict[str, str]]:
+    planning_provider = "Google Gemini" if agent_provider == "google_gemini" else "OpenAI"
     agents = [
         {
             "name": "Coordinator",
             "initials": "CO",
             "detail": "Plans the delivery journey and delegates work.",
-            "model": "OpenAI or Gemini",
+            "model": agent_model,
             "reasoning": "none",
-            "provider": "Planning model",
+            "provider": planning_provider,
         },
         {
             "name": "Business Analyst",
             "initials": "BA",
             "detail": "Clarifies scope, users, and acceptance criteria.",
-            "model": "gpt-5.3-codex",
-            "reasoning": "medium",
+            "model": codex_model,
+            "reasoning": codex_reasoning,
             "provider": "Build engine",
         },
         {
             "name": "Solution Architect",
             "initials": "SA",
             "detail": "Shapes the solution approach and diagrams.",
-            "model": "gpt-5.3-codex",
-            "reasoning": "medium",
+            "model": codex_model,
+            "reasoning": codex_reasoning,
             "provider": "Build engine",
         },
         {
             "name": "Delivery Planner",
             "initials": "DP",
             "detail": "Builds sprint plan, sequencing, and release path.",
-            "model": "gpt-5.3-codex",
-            "reasoning": "medium",
+            "model": codex_model,
+            "reasoning": codex_reasoning,
             "provider": "Build engine",
         },
         {
             "name": "Delivery Lead",
             "initials": "DL",
             "detail": "Coordinates build, quality review, publishing, and reporting.",
-            "model": "OpenAI or Gemini",
+            "model": agent_model,
             "reasoning": "none",
-            "provider": "Planning model",
+            "provider": planning_provider,
         },
         {
             "name": "Builder",
             "initials": "B",
             "detail": "Creates the application slice by slice.",
-            "model": "gpt-5.3-codex",
-            "reasoning": "medium",
+            "model": codex_model,
+            "reasoning": codex_reasoning,
             "provider": "Build engine",
         },
         {
             "name": "Quality Reviewer",
             "initials": "QR",
             "detail": "Checks product behavior, design quality, and release confidence.",
-            "model": "gpt-5.3-codex",
-            "reasoning": "medium",
+            "model": codex_model,
+            "reasoning": codex_reasoning,
             "provider": "Build engine",
         },
         {
             "name": "Publisher",
             "initials": "P",
             "detail": "Packages and publishes the generated app.",
-            "model": "gpt-5.3-codex",
-            "reasoning": "medium",
+            "model": codex_model,
+            "reasoning": codex_reasoning,
             "provider": "Build engine",
         },
         {
             "name": "Release Reporter",
             "initials": "RP",
             "detail": "Prepares the business-facing final report.",
-            "model": "gpt-5.3-codex",
-            "reasoning": "medium",
+            "model": codex_model,
+            "reasoning": codex_reasoning,
             "provider": "Build engine",
         },
     ]

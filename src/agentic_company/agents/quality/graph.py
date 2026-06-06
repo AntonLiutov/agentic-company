@@ -11,6 +11,7 @@ from agentic_company.agents.quality.codex_cli import (
     QUALITY_CODEX_AGENT_ID,
     QualityCodexRunner,
 )
+from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.platform.agent_contracts import (
     append_downstream_response,
     artifact_refs,
@@ -176,7 +177,7 @@ def _write_quality_execution_request(
         model=(
             agent_env_value("QUALITY_CODEX_MODEL", delivery_state)
             or agent_env_value("AGENT_CODEX_MODEL", delivery_state)
-            or "gpt-5.3-codex"
+            or DEFAULT_CODEX_MODEL
         ),
         input_artifacts=_quality_input_artifacts(delivery_state),
         expected_outputs=[

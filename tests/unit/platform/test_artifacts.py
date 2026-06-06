@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 
 from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.platform.artifacts import (
@@ -45,7 +45,7 @@ def test_update_execution_request_context_clears_stale_codex_resume_thread(
             "agent_version": "0.1.0",
             "maturity_level": "L6 Codex Agent",
             "provider": "codex",
-            "model": "gpt-5.3-codex",
+            "model": "gpt-5.5",
             "target_project_dir": str(run_dir / "generated-project"),
             "input_artifacts": [],
             "expected_outputs": [],
@@ -68,7 +68,7 @@ def test_build_execution_request_payload_omits_retired_topology_label(tmp_path: 
             "run_dir": str(tmp_path / "run"),
         },
         agent_id="deployment-agent",
-        model="gpt-5.3-codex",
+        model="gpt-5.5",
         input_artifacts=[],
         expected_outputs=[],
         instructions=[],

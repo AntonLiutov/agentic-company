@@ -1,4 +1,4 @@
-import json
+﻿import json
 import subprocess
 from pathlib import Path
 
@@ -28,7 +28,7 @@ def test_project_management_prompt_scopes_codex_to_planning_artifacts(tmp_path, 
     _write_inputs(tmp_path)
     request = {
         "run_id": "run",
-        "model": "gpt-5.3-codex",
+        "model": "gpt-5.5",
         "requirements_artifact": "00-requirements.md",
         "input_artifacts": [
             BUSINESS_ANALYSIS_MD,
@@ -155,7 +155,7 @@ def test_project_manager_codex_runner_maps_valid_contract_to_completed_result(
             {
                 "run_id": "run",
                 "agent_id": "project-manager-agent",
-                "model": "gpt-5.3-codex",
+                "model": "gpt-5.5",
                 "requirements_artifact": "00-requirements.md",
                 "input_artifacts": [
                     BUSINESS_ANALYSIS_MD,

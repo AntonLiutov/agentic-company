@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 import sys
 import threading
@@ -62,7 +62,7 @@ def test_codex_exec_command_allows_host_cli_config_dirs(monkeypatch, tmp_path: P
 
     command = build_codex_exec_command(
         codex_binary="codex-test",
-        model="gpt-5.3-codex",
+        model="gpt-5.5",
         sandbox="workspace-write",
         target_project_dir=str(target_dir),
         run_dir=run_dir,
@@ -311,7 +311,7 @@ def test_codex_exec_command_defaults_to_medium_reasoning_and_standard_service_ti
 
     command = build_codex_exec_command(
         codex_binary="codex-test",
-        model="gpt-5.3-codex",
+        model="gpt-5.5",
         sandbox="workspace-write",
         target_project_dir=str(tmp_path / "generated-project"),
         run_dir=tmp_path,
@@ -329,7 +329,7 @@ def test_codex_exec_command_allows_reasoning_override(monkeypatch, tmp_path: Pat
 
     command = build_codex_exec_command(
         codex_binary="codex-test",
-        model="gpt-5.3-codex",
+        model="gpt-5.5",
         sandbox="workspace-write",
         target_project_dir=str(tmp_path / "generated-project"),
         run_dir=tmp_path,
@@ -344,7 +344,7 @@ def test_codex_exec_command_allows_standard_service_tier(monkeypatch, tmp_path: 
 
     command = build_codex_exec_command(
         codex_binary="codex-test",
-        model="gpt-5.3-codex",
+        model="gpt-5.5",
         sandbox="workspace-write",
         target_project_dir=str(tmp_path / "generated-project"),
         run_dir=tmp_path,
@@ -361,7 +361,7 @@ def test_codex_exec_command_rejects_invalid_service_tier(monkeypatch, tmp_path: 
     try:
         build_codex_exec_command(
             codex_binary="codex-test",
-            model="gpt-5.3-codex",
+            model="gpt-5.5",
             sandbox="workspace-write",
             target_project_dir=str(tmp_path / "generated-project"),
             run_dir=tmp_path,
@@ -378,7 +378,7 @@ def test_codex_exec_command_can_force_read_only_sandbox(monkeypatch, tmp_path: P
 
     command = build_codex_exec_command(
         codex_binary="codex-test",
-        model="gpt-5.3-codex",
+        model="gpt-5.5",
         sandbox="read-only",
         target_project_dir=str(tmp_path),
         run_dir=tmp_path,
@@ -392,7 +392,7 @@ def test_codex_exec_command_can_force_read_only_sandbox(monkeypatch, tmp_path: P
 def test_codex_exec_command_can_resume_existing_session(tmp_path: Path):
     command = build_codex_exec_command(
         codex_binary="codex-test",
-        model="gpt-5.3-codex",
+        model="gpt-5.5",
         sandbox="workspace-write",
         target_project_dir=str(tmp_path / "generated-project"),
         run_dir=tmp_path,
