@@ -16,6 +16,7 @@ from agentic_company.orchestration.graphs import (
     run_delivery_graph,
 )
 from agentic_company.platform.events import write_event
+from agentic_company.platform.runtime_cache import runtime_cache_from_env
 from agentic_company.platform.runtime_db import record_run_lifecycle, run_target_project_dir
 from agentic_company.platform.state import (
     DELIVERY_STATE_SNAPSHOT,
@@ -210,7 +211,8 @@ class DeliveryGraphRuntime:
 
         def run(state: DeliveryState) -> DeliveryState:
             stop_path = Path(state["run_dir"]) / ".stop-requested"
-            if stop_path.exists():
+            stop_requested = stop_path.exists() or runtime_cache_from_env().stop_requested(run_id)
+            if stop_requested:
                 stopped: DeliveryState = {**state}
                 stopped["status"] = "stopped"
                 stopped["blockers"] = [*stopped.get("blockers", []), "Stopped by user"]

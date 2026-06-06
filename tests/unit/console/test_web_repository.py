@@ -259,6 +259,60 @@ def test_activity_events_are_listed_chronologically(tmp_path):
     ]
 
 
+def test_raw_log_events_are_append_only_and_filterable(tmp_path):
+    repo = ConsoleRepository(tmp_path / "console.db")
+    repo.init_schema()
+    user = repo.create_user(email="logs@example.test", username="logs", password="password-1")
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Logs Project",
+        request_text="Build",
+        mode="simple_prototype",
+        complexity="simple",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="logs-run",
+        run_dir=tmp_path / "logs-run",
+        status="running",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+
+    repo.append_raw_log_event(
+        run.id,
+        work_item_id="PLAN-01",
+        sprint_id="planning",
+        agent_id="business-analyst-agent",
+        tool_name="codex_exec",
+        tool_call_id="call-1",
+        seq=1,
+        level="info",
+        stream="stdout",
+        message="BA started",
+    )
+    repo.append_raw_log_event(
+        run.id,
+        work_item_id="PLAN-02",
+        sprint_id="planning",
+        agent_id="architect-agent",
+        tool_name="codex_exec",
+        tool_call_id="call-2",
+        seq=1,
+        level="info",
+        stream="stdout",
+        message="Architect started",
+    )
+
+    assert [event.message for event in repo.list_raw_log_events(run.id)] == [
+        "BA started",
+        "Architect started",
+    ]
+    scoped = repo.list_raw_log_events(run.id, work_item_id="PLAN-01")
+    assert len(scoped) == 1
+    assert scoped[0].agent_id == "business-analyst-agent"
+
+
 def test_delete_private_project_removes_project_and_runs(tmp_path):
     repo = ConsoleRepository(tmp_path / "console.db")
     repo.init_schema()

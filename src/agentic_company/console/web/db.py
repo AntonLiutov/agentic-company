@@ -1,10 +1,9 @@
-"""SQLite repository for the FastAPI product console."""
+"""Repository for the FastAPI product console."""
 
 from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -21,6 +20,7 @@ from agentic_company.console.web.auth import (
     new_session_token,
     verify_password,
 )
+from agentic_company.console.web.sql_backend import DatabaseSettings, connect_database
 from agentic_company.platform.artifact_registry import ArtifactRecord, artifact_record_from_mapping
 from agentic_company.platform.run_trace import (
     ModelCallEvent,
@@ -120,6 +120,22 @@ class ActivityEvent:
     created_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class RawLogEvent:
+    id: int
+    run_id: int
+    work_item_id: str
+    sprint_id: str
+    agent_id: str
+    tool_name: str
+    tool_call_id: str
+    seq: int
+    level: str
+    stream: str
+    message: str
+    created_at: str
+
+
 def default_db_path() -> Path:
     configured = os.getenv("AGENTIC_CONSOLE_DB_PATH", "").strip()
     if configured:
@@ -127,23 +143,24 @@ def default_db_path() -> Path:
     return repo_root() / "data" / "console.db"
 
 
-class ConsoleRepository:
-    """Small SQLite repository with explicit user isolation methods."""
+def default_database_url() -> str:
+    return os.getenv("AGENTIC_DATABASE_URL", "").strip() or os.getenv("DATABASE_URL", "").strip()
 
-    def __init__(self, db_path: Path | None = None) -> None:
+
+class ConsoleRepository:
+    """Product console repository with explicit user isolation methods."""
+
+    def __init__(self, db_path: Path | None = None, *, database_url: str = "") -> None:
+        self.database_url = database_url.strip() or ("" if db_path else default_database_url())
         self.db_path = db_path or default_db_path()
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.settings = DatabaseSettings(url=self.database_url, sqlite_path=self.db_path)
+        if not self.settings.is_postgres:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     @contextmanager
-    def connect(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        try:
+    def connect(self) -> Iterator[Any]:
+        with connect_database(self.settings) as conn:
             yield conn
-            conn.commit()
-        finally:
-            conn.close()
 
     def init_schema(self) -> None:
         with self.connect() as conn:
@@ -402,12 +419,28 @@ class ConsoleRepository:
                     created_at TEXT NOT NULL,
                     UNIQUE(run_id, event_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS raw_log_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                    work_item_id TEXT,
+                    sprint_id TEXT NOT NULL DEFAULT '',
+                    agent_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL DEFAULT '',
+                    tool_call_id TEXT NOT NULL DEFAULT '',
+                    seq INTEGER NOT NULL,
+                    level TEXT NOT NULL DEFAULT '',
+                    stream TEXT NOT NULL DEFAULT '',
+                    message TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(run_id, agent_id, tool_call_id, seq)
+                );
                 """
             )
             self._ensure_artifact_metadata_columns(conn)
             self._ensure_run_columns(conn)
 
-    def _ensure_artifact_metadata_columns(self, conn: sqlite3.Connection) -> None:
+    def _ensure_artifact_metadata_columns(self, conn: Any) -> None:
         existing = {
             str(row["name"])
             for row in conn.execute("PRAGMA table_info(artifact_metadata)").fetchall()
@@ -428,7 +461,7 @@ class ConsoleRepository:
             if name not in existing:
                 conn.execute(f"ALTER TABLE artifact_metadata ADD COLUMN {name} {definition}")
 
-    def _ensure_run_columns(self, conn: sqlite3.Connection) -> None:
+    def _ensure_run_columns(self, conn: Any) -> None:
         existing = {str(row["name"]) for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
         columns = {
             "target_project_dir": "TEXT NOT NULL DEFAULT ''",
@@ -816,7 +849,7 @@ class ConsoleRepository:
 
     def _upsert_artifact_record_conn(
         self,
-        conn: sqlite3.Connection,
+        conn: Any,
         run_id: int,
         record: ArtifactRecord,
     ) -> None:
@@ -1196,7 +1229,82 @@ class ConsoleRepository:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [_activity_event(row) for row in rows]
 
-    def _seed_planning_work_items_conn(self, conn: sqlite3.Connection, run_id: int) -> None:
+    def append_raw_log_event(
+        self,
+        run_id: int,
+        *,
+        agent_id: str,
+        seq: int,
+        message: str,
+        work_item_id: str = "",
+        sprint_id: str = "",
+        tool_name: str = "",
+        tool_call_id: str = "",
+        level: str = "",
+        stream: str = "",
+        created_at: str = "",
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO raw_log_events (
+                    run_id, work_item_id, sprint_id, agent_id, tool_name,
+                    tool_call_id, seq, level, stream, message, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, agent_id, tool_call_id, seq) DO UPDATE SET
+                    work_item_id = excluded.work_item_id,
+                    sprint_id = excluded.sprint_id,
+                    tool_name = excluded.tool_name,
+                    level = excluded.level,
+                    stream = excluded.stream,
+                    message = excluded.message,
+                    created_at = excluded.created_at
+                """,
+                (
+                    run_id,
+                    _canonical_work_item_id(work_item_id) or None,
+                    sprint_id,
+                    agent_id,
+                    tool_name,
+                    tool_call_id,
+                    seq,
+                    level,
+                    stream,
+                    message,
+                    created_at or utc_now(),
+                ),
+            )
+
+    def list_raw_log_events(
+        self,
+        run_id: int,
+        *,
+        work_item_id: str = "",
+        agent_id: str = "",
+        limit: int | None = None,
+    ) -> list[RawLogEvent]:
+        clauses = ["run_id = ?"]
+        params: list[Any] = [run_id]
+        if work_item_id:
+            clauses.append("work_item_id = ?")
+            params.append(_canonical_work_item_id(work_item_id))
+        if agent_id:
+            clauses.append("agent_id = ?")
+            params.append(agent_id)
+        sql = (
+            "SELECT * FROM raw_log_events WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY id"
+        )
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        with self.connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [_raw_log_event(row) for row in rows]
+
+    def _seed_planning_work_items_conn(self, conn: Any, run_id: int) -> None:
         for item in HEAD_PLANNING_ITEMS:
             self._upsert_work_item_conn(
                 conn,
@@ -1213,7 +1321,7 @@ class ConsoleRepository:
 
     def _upsert_work_item_conn(
         self,
-        conn: sqlite3.Connection,
+        conn: Any,
         *,
         run_id: int,
         work_item_id: str,
@@ -1264,7 +1372,7 @@ class ConsoleRepository:
 
     def _record_work_item_transition_conn(
         self,
-        conn: sqlite3.Connection,
+        conn: Any,
         *,
         run_id: int,
         event_id: str,
@@ -1395,7 +1503,7 @@ class ConsoleRepository:
 
     def _upsert_run_event_conn(
         self,
-        conn: sqlite3.Connection,
+        conn: Any,
         run_id: int,
         event: RunEvent,
     ) -> None:
@@ -1462,7 +1570,7 @@ class ConsoleRepository:
 
     def _upsert_tool_call_event_conn(
         self,
-        conn: sqlite3.Connection,
+        conn: Any,
         run_id: int,
         event: ToolCallEvent,
     ) -> None:
@@ -1536,7 +1644,7 @@ class ConsoleRepository:
 
     def _upsert_model_call_event_conn(
         self,
-        conn: sqlite3.Connection,
+        conn: Any,
         run_id: int,
         event: ModelCallEvent,
     ) -> None:
@@ -1723,7 +1831,7 @@ def _read_seed_request_text(run_path: Path) -> str:
         return ""
 
 
-def _user(row: sqlite3.Row) -> User:
+def _user(row: Any) -> User:
     return User(
         id=int(row["id"]),
         email=str(row["email"]),
@@ -1732,7 +1840,7 @@ def _user(row: sqlite3.Row) -> User:
     )
 
 
-def _project(row: sqlite3.Row) -> Project:
+def _project(row: Any) -> Project:
     return Project(
         id=int(row["id"]),
         owner_user_id=int(row["owner_user_id"]) if row["owner_user_id"] is not None else None,
@@ -1750,7 +1858,7 @@ def _project(row: sqlite3.Row) -> Project:
     )
 
 
-def _run(row: sqlite3.Row) -> Run:
+def _run(row: Any) -> Run:
     return Run(
         id=int(row["id"]),
         project_id=int(row["project_id"]),
@@ -1766,7 +1874,7 @@ def _run(row: sqlite3.Row) -> Run:
     )
 
 
-def _provider(row: sqlite3.Row) -> ProviderCredential:
+def _provider(row: Any) -> ProviderCredential:
     return ProviderCredential(
         provider=str(row["provider"]),
         masked_value=str(row["masked_value"]),
@@ -1776,7 +1884,7 @@ def _provider(row: sqlite3.Row) -> ProviderCredential:
     )
 
 
-def _work_item(row: sqlite3.Row) -> WorkItem:
+def _work_item(row: Any) -> WorkItem:
     return WorkItem(
         id=int(row["id"]),
         run_id=int(row["run_id"]),
@@ -1797,7 +1905,7 @@ def _work_item(row: sqlite3.Row) -> WorkItem:
     )
 
 
-def _activity_event(row: sqlite3.Row) -> ActivityEvent:
+def _activity_event(row: Any) -> ActivityEvent:
     return ActivityEvent(
         id=int(row["id"]),
         run_id=int(row["run_id"]),
@@ -1813,7 +1921,24 @@ def _activity_event(row: sqlite3.Row) -> ActivityEvent:
     )
 
 
-def _artifact_record(row: sqlite3.Row) -> ArtifactRecord | None:
+def _raw_log_event(row: Any) -> RawLogEvent:
+    return RawLogEvent(
+        id=int(row["id"]),
+        run_id=int(row["run_id"]),
+        work_item_id=str(row["work_item_id"] or ""),
+        sprint_id=str(row["sprint_id"] or ""),
+        agent_id=str(row["agent_id"]),
+        tool_name=str(row["tool_name"] or ""),
+        tool_call_id=str(row["tool_call_id"] or ""),
+        seq=int(row["seq"]),
+        level=str(row["level"] or ""),
+        stream=str(row["stream"] or ""),
+        message=str(row["message"]),
+        created_at=str(row["created_at"]),
+    )
+
+
+def _artifact_record(row: Any) -> ArtifactRecord | None:
     payload = dict(row)
     payload["relative_path"] = payload.get("path", "")
     payload["owner_agent"] = payload.get("owner_agent") or payload.get("agent") or ""
@@ -1822,7 +1947,7 @@ def _artifact_record(row: sqlite3.Row) -> ArtifactRecord | None:
     return artifact_record_from_mapping(payload)
 
 
-def _agent_message_payload(row: sqlite3.Row) -> dict[str, Any]:
+def _agent_message_payload(row: Any) -> dict[str, Any]:
     return {
         "from_agent": str(row["from_agent"]),
         "to_agent": str(row["to_agent"]),
@@ -1839,7 +1964,7 @@ def _agent_message_payload(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def _run_event(row: sqlite3.Row) -> RunEvent:
+def _run_event(row: Any) -> RunEvent:
     payload = dict(row)
     payload["run_id"] = payload.get("runtime_run_id") or payload.get("run_id")
     payload["artifact_ids"] = _json_column(payload.get("artifact_ids"), default=[])
@@ -1848,7 +1973,7 @@ def _run_event(row: sqlite3.Row) -> RunEvent:
     return run_event_from_mapping(payload)
 
 
-def _tool_call_event(row: sqlite3.Row) -> ToolCallEvent:
+def _tool_call_event(row: Any) -> ToolCallEvent:
     payload = dict(row)
     payload["run_id"] = payload.get("runtime_run_id") or payload.get("run_id")
     payload["input_summary"] = _json_column(payload.get("input_summary"), default={})
@@ -1857,7 +1982,7 @@ def _tool_call_event(row: sqlite3.Row) -> ToolCallEvent:
     return tool_call_event_from_mapping(payload)
 
 
-def _model_call_event(row: sqlite3.Row) -> ModelCallEvent:
+def _model_call_event(row: Any) -> ModelCallEvent:
     payload = dict(row)
     payload["run_id"] = payload.get("runtime_run_id") or payload.get("run_id")
     return model_call_event_from_mapping(payload)

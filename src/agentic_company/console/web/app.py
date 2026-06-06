@@ -70,6 +70,7 @@ from agentic_company.console.web.voice import (
 )
 from agentic_company.platform.logging import configure_logging
 from agentic_company.platform.run_trace import trace_summary
+from agentic_company.platform.runtime_cache import runtime_cache_from_env
 
 COOKIE_NAME = "agentic_console_session"
 
@@ -407,6 +408,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             raise HTTPException(status_code=403)
         run = repo.latest_run_for_project(project.id, user.id)
         if run:
+            runtime_cache_from_env().set_stop_requested(run.run_uid)
             request_codex_execution_stop(Path(run.run_dir))
             repo.update_run_status(run.id, "stopped")
         repo.update_project_status(project.id, "stopped")
