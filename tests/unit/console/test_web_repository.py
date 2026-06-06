@@ -1,6 +1,6 @@
 from agentic_company.console.web.db import ConsoleRepository
-from agentic_company.platform.artifact_registry import register_artifact
-from agentic_company.platform.run_trace import record_model_call_event, record_tool_call_event
+from agentic_company.platform.artifact_registry import artifact_id_for, register_artifact
+from agentic_company.platform.run_trace import ModelCallEvent, ToolCallEvent
 
 
 def test_sessions_and_private_project_isolation(tmp_path):
@@ -103,11 +103,14 @@ def test_artifact_metadata_upsert_and_filter(tmp_path):
     )
     record = register_artifact(
         run_dir,
+        artifact_id=artifact_id_for(run.run_uid, "08-qa-report-F1.md"),
         relative_path="08-qa-report-F1.md",
         run_id=run.run_uid,
         owner_agent="qa-agent",
         visibility="qa_evidence",
         artifact_type="qa_report",
+        label="QA report",
+        source_tool="run_qa",
         external_refs=[{"system": "jira", "type": "work_item", "id": "ADL-1", "url": "https://x"}],
     )
 
@@ -123,7 +126,7 @@ def test_artifact_metadata_upsert_and_filter(tmp_path):
     assert repo.list_artifact_records(run.id, visibility="business") == []
 
 
-def test_trace_events_sync_from_run_dir_and_upsert(tmp_path):
+def test_trace_events_upsert_from_contract_records(tmp_path):
     repo = ConsoleRepository(tmp_path / "console.db")
     repo.init_schema()
     user = repo.create_user(
@@ -148,29 +151,52 @@ def test_trace_events_sync_from_run_dir_and_upsert(tmp_path):
         mode="simple_prototype",
         reasoning="medium",
     )
-    record_tool_call_event(
-        run_dir,
-        run_id=run.run_uid,
-        agent_id="team-lead-agent",
-        tool_name="run_qa",
-        tool_call_id="call-1",
-        status="qa_passed",
-        output_summary={"output_artifacts": [{"artifact_id": "art_trace"}]},
-        duration_ms=5,
+    repo.upsert_tool_call_event(
+        run.id,
+        ToolCallEvent(
+            event_id="tool-call-1",
+            run_id=run.run_uid,
+            work_item_id="US-rooms",
+            agent_id="team-lead-agent",
+            tool_name="run_qa",
+            tool_call_id="call-1",
+            status="qa_passed",
+            output_summary={"output_artifacts": [{"artifact_id": "art_trace"}]},
+            artifact_ids=["art_trace"],
+            duration_ms=5,
+            created_at="2026-05-31T10:00:00Z",
+        ),
     )
-    record_model_call_event(
-        run_dir,
-        run_id=run.run_uid,
-        agent_id="qa-agent",
-        provider="openai",
-        model="gpt-5.3-codex",
-        purpose="codex_exec",
-        prompt_ref="qa/prompt.md",
-        status="qa_passed",
+    repo.upsert_model_call_event(
+        run.id,
+        ModelCallEvent(
+            event_id="model-call-1",
+            run_id=run.run_uid,
+            agent_id="qa-agent",
+            provider="openai",
+            model="gpt-5.3-codex",
+            purpose="codex_exec",
+            prompt_ref="qa/prompt.md",
+            status="qa_passed",
+            created_at="2026-05-31T10:00:01Z",
+        ),
     )
-
-    repo.sync_run_trace_from_run_dir(run.id, run_dir)
-    repo.sync_run_trace_from_run_dir(run.id, run_dir)
+    repo.upsert_tool_call_event(
+        run.id,
+        ToolCallEvent(
+            event_id="tool-call-1",
+            run_id=run.run_uid,
+            work_item_id="US-rooms",
+            agent_id="team-lead-agent",
+            tool_name="run_qa",
+            tool_call_id="call-1",
+            status="qa_passed",
+            output_summary={"output_artifacts": [{"artifact_id": "art_trace"}]},
+            artifact_ids=["art_trace"],
+            duration_ms=5,
+            created_at="2026-05-31T10:00:00Z",
+        ),
+    )
 
     tool_events = repo.list_tool_call_events(run.id, tool_name="run_qa")
     model_events = repo.list_model_call_events(run.id, agent_id="qa-agent")
@@ -180,6 +206,57 @@ def test_trace_events_sync_from_run_dir_and_upsert(tmp_path):
     assert tool_events[0].duration_ms == 5
     assert len(model_events) == 1
     assert model_events[0].estimated_cost_usd is None
+
+
+def test_activity_events_are_listed_chronologically(tmp_path):
+    repo = ConsoleRepository(tmp_path / "console.db")
+    repo.init_schema()
+    user = repo.create_user(
+        email="activity@example.test",
+        username="activity",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Activity Project",
+        request_text="Build",
+        mode="simple_prototype",
+        complexity="simple",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="activity-run",
+        run_dir=tmp_path / "run",
+        status="running",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+    with repo.connect() as conn:
+        for event_id, message, created_at in [
+            ("completed", "Business Analyst completed PLAN-01.", "2026-06-01T09:20:19Z"),
+            ("first-note", "First user-facing note.", "2026-06-01T09:17:46Z"),
+            ("second-note", "Second user-facing note.", "2026-06-01T09:17:51Z"),
+        ]:
+            conn.execute(
+                """
+                INSERT INTO activity_events (
+                    run_id, event_id, work_item_id, owner_agent, agent_id, tool_name,
+                    message, status, artifact_ids, visibility, created_at
+                )
+                VALUES (?, ?, 'PLAN-01', 'business-analyst-agent',
+                    'business-analyst-agent', 'codex_agent_message',
+                    ?, 'in_progress', '[]', 'user', ?)
+                """,
+                (run.id, event_id, message, created_at),
+            )
+
+    events = repo.list_activity_events(run.id, work_item_id="PLAN-01")
+
+    assert [event.message for event in events] == [
+        "First user-facing note.",
+        "Second user-facing note.",
+        "Business Analyst completed PLAN-01.",
+    ]
 
 
 def test_delete_private_project_removes_project_and_runs(tmp_path):

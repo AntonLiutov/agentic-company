@@ -24,8 +24,6 @@ app = [
     "jinja2>=3.1.0",
     "playwright>=1.48.0",
     "python-multipart>=0.0.9",
-    "streamlit>=1.45.0",
-    "streamlit-autorefresh>=1.0.1",
     "uvicorn[standard]>=0.30.0",
 ]
 dev = [

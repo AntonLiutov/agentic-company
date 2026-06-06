@@ -15,7 +15,7 @@ from agentic_company.integrations.codex import (
     build_codex_exec_environment,
     stream_codex_exec_to_log,
 )
-from agentic_company.platform.artifact_registry import register_artifact
+from agentic_company.platform.artifact_registry import artifact_id_for
 from agentic_company.platform.artifacts import read_json_object_artifact, write_json_artifact
 from agentic_company.platform.executions import (
     build_agent_execution_id,
@@ -24,6 +24,8 @@ from agentic_company.platform.executions import (
     extract_codex_thread_id,
 )
 from agentic_company.platform.run_trace import record_model_call_event
+from agentic_company.platform.runtime_db import record_artifact_link
+from agentic_company.platform.tool_contracts import ArtifactRegistrationRequest
 
 CommandExecutor = Callable[
     [Sequence[str], str, int, Path, Path],
@@ -83,7 +85,7 @@ class StatusInspectorRunner:
         execution_id = request.execution_id or build_agent_execution_id(
             run_id=request.run_id,
             agent_id=request.requesting_agent,
-            target=request.correlation_id or request.scope,
+            correlation_id=request.correlation_id or request.scope,
             intent="status_inspection",
             message_id=request.purpose,
         )
@@ -272,7 +274,7 @@ Rules:
 - The JSON must include a concise status summary, a task/sprint table or list,
   worker calls observed, status gates, evidence refs when available, blockers,
   and completion booleans.
-- Do not invent feature ids or sprint ids. Use ids from the context/artifacts only.
+- Do not invent work item ids or sprint ids. Use ids from the context/artifacts only.
 - Do not recommend tools, owners, routing, or next actions. The requesting
   coordinator owns routing decisions.
 - Preserve task status from the context unless referenced artifacts prove a more
@@ -302,8 +304,8 @@ def _schema_hint(scope: str) -> str:
                     {
                         "id": "sprint-01",
                         "status": "not_started|running|handoff_ready|complete|blocked",
-                        "done_features": [],
-                        "pending_features": [],
+                        "done_work_items": [],
+                        "pending_work_items": [],
                         "blockers": [],
                     }
                 ],
@@ -381,17 +383,16 @@ def _register_status_artifacts(
     artifacts: list[tuple[str, str]],
 ) -> None:
     for relative_path, artifact_type in artifacts:
-        try:
-            register_artifact(
-                request.run_dir,
-                relative_path=relative_path,
-                run_id=request.run_id,
-                owner_agent=request.requesting_agent,
+        record_artifact_link(
+            request.run_dir,
+            ArtifactRegistrationRequest(
+                artifact_id=artifact_id_for(request.run_id, relative_path),
                 artifact_type=artifact_type,
                 visibility="developer",
+                owner_agent=request.requesting_agent,
                 source_tool="status_inspection",
-                source_model=request.model,
-                metadata={"scope": request.scope},
-            )
-        except Exception:
-            continue
+                label=Path(relative_path).name,
+                relative_path=relative_path,
+                run_id=request.run_id,
+            ),
+        )

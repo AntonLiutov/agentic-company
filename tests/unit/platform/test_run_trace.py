@@ -2,7 +2,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from agentic_company.platform.artifact_registry import list_artifacts
+from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.platform.codex_review import CodexReviewRequest, CodexReviewRunner
 from agentic_company.platform.events import write_event
 from agentic_company.platform.run_trace import (
@@ -21,7 +21,7 @@ from agentic_company.platform.run_trace import (
 from agentic_company.platform.status_inspector import StatusInspectionRequest, StatusInspectorRunner
 
 
-def test_write_event_records_structured_trace_without_legacy_root_log(tmp_path: Path):
+def test_write_event_records_structured_trace_without_retired_root_log(tmp_path: Path):
     event_log = tmp_path / "events.jsonl"
 
     write_event(
@@ -83,6 +83,117 @@ def test_tool_and_model_trace_roundtrip_and_summary(tmp_path: Path):
     assert summary["tools"] == {"run_fullstack": 1}
 
 
+def test_trace_events_are_persisted_to_console_db(tmp_path: Path, monkeypatch):
+    repo = _db_repo(tmp_path, monkeypatch)
+    user = repo.create_user(
+        email="trace@example.test",
+        username="trace-user",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Trace",
+        request_text="Trace",
+        mode="internal_tool",
+        complexity="simple",
+        status="running",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="run-trace-db",
+        run_dir=tmp_path,
+        status="running",
+        mode="internal_tool",
+        reasoning="medium",
+    )
+
+    write_event(
+        tmp_path,
+        "run-trace-db",
+        "delivery-graph",
+        "delivery_graph_started",
+        {"status": "running"},
+    )
+    record_tool_call_event(
+        tmp_path,
+        run_id="run-trace-db",
+        agent_id="qa-agent",
+        tool_name="run_qa",
+        tool_call_id="qa-1",
+        status="qa_passed",
+        work_item_id="US-accounts",
+        artifact_ids=["art_qa"],
+    )
+    record_model_call_event(
+        tmp_path,
+        run_id="run-trace-db",
+        agent_id="qa-agent",
+        provider="openai",
+        model="gpt-5.5",
+        purpose="codex_exec",
+        prompt_ref="qa/prompt.md",
+        status="qa_passed",
+    )
+
+    assert repo.list_run_events(run.id)[0].event_type == "delivery_graph_started"
+    assert repo.list_tool_call_events(run.id)[0].work_item_id == "US-accounts"
+    assert repo.list_tool_call_events(run.id)[0].artifact_ids == ["art_qa"]
+    assert repo.list_model_call_events(run.id)[0].model == "gpt-5.5"
+
+
+def test_codex_agent_message_run_events_are_card_logs(tmp_path: Path, monkeypatch):
+    repo = _db_repo(tmp_path, monkeypatch)
+    user = repo.create_user(
+        email="cardlog@example.test",
+        username="cardlog",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Card log",
+        request_text="Build",
+        mode="internal_tool",
+        complexity="simple",
+        status="running",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="run-card-log",
+        run_dir=tmp_path,
+        status="running",
+        mode="internal_tool",
+        reasoning="medium",
+    )
+
+    write_event(
+        tmp_path,
+        "run-card-log",
+        "business-analyst-agent",
+        "codex_agent_message",
+        {
+            "status": "in_progress",
+            "message": "I am preparing the requirements brief.",
+            "work_item_id": "PLAN-01",
+        },
+    )
+    write_event(
+        tmp_path,
+        "run-card-log",
+        "business-analyst-agent",
+        "codex_command_started",
+        {
+            "status": "in_progress",
+            "message": "Started command: Get-Content requirements",
+            "work_item_id": "PLAN-01",
+        },
+    )
+
+    events = repo.list_activity_events(run.id, work_item_id="PLAN-01")
+
+    assert [event.message for event in events] == ["I am preparing the requirements brief."]
+    assert events[0].tool_name == "codex_agent_message"
+
+
 def test_trace_sanitizer_redacts_secret_like_fields():
     assert sanitize_trace_data(
         {
@@ -95,7 +206,31 @@ def test_trace_sanitizer_redacts_secret_like_fields():
     }
 
 
-def test_codex_review_runner_records_model_trace_and_registers_artifacts(tmp_path: Path):
+def test_codex_review_runner_records_model_trace_and_registers_artifacts(
+    tmp_path: Path, monkeypatch
+):
+    repo = _db_repo(tmp_path, monkeypatch)
+    user = repo.create_user(
+        email="review@example.test",
+        username="review-user",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Review",
+        request_text="Review",
+        mode="internal_tool",
+        complexity="simple",
+        status="running",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="run-review",
+        run_dir=tmp_path,
+        status="running",
+        mode="internal_tool",
+        reasoning="medium",
+    )
     runner = CodexReviewRunner(command_executor=_review_command)
 
     result = runner.run(
@@ -110,7 +245,11 @@ def test_codex_review_runner_records_model_trace_and_registers_artifacts(tmp_pat
     )
 
     events = load_model_call_events(tmp_path)
-    artifacts = list_artifacts(tmp_path, owner_agent="head-agent")
+    artifacts = [
+        record
+        for record in repo.list_artifact_records(run.id)
+        if record.owner_agent == "head-agent"
+    ]
 
     assert result.status == "reviewed"
     assert events[0].provider == "openai"
@@ -127,7 +266,31 @@ def test_codex_review_runner_records_model_trace_and_registers_artifacts(tmp_pat
     assert all(artifact.visibility == "developer" for artifact in artifacts)
 
 
-def test_status_inspector_runner_records_model_trace_and_registers_artifacts(tmp_path: Path):
+def test_status_inspector_runner_records_model_trace_and_registers_artifacts(
+    tmp_path: Path, monkeypatch
+):
+    repo = _db_repo(tmp_path, monkeypatch)
+    user = repo.create_user(
+        email="status@example.test",
+        username="status-user",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Status",
+        request_text="Status",
+        mode="internal_tool",
+        complexity="simple",
+        status="running",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="run-status",
+        run_dir=tmp_path,
+        status="running",
+        mode="internal_tool",
+        reasoning="medium",
+    )
     runner = StatusInspectorRunner(command_executor=_status_command)
 
     result = runner.run(
@@ -143,7 +306,11 @@ def test_status_inspector_runner_records_model_trace_and_registers_artifacts(tmp
     )
 
     events = load_model_call_events(tmp_path)
-    artifacts = list_artifacts(tmp_path, owner_agent="team-lead-agent")
+    artifacts = [
+        record
+        for record in repo.list_artifact_records(run.id)
+        if record.owner_agent == "team-lead-agent"
+    ]
 
     assert result.status == "inspected"
     assert events[0].provider == "openai"
@@ -199,3 +366,11 @@ def _status_command(
     log_path.write_text("log", encoding="utf-8")
     raw_events_path.write_text("", encoding="utf-8")
     return subprocess.CompletedProcess(command, 0, stdout="Ready.", stderr="")
+
+
+def _db_repo(tmp_path: Path, monkeypatch) -> ConsoleRepository:
+    db_path = tmp_path / "console.db"
+    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
+    repo = ConsoleRepository(db_path)
+    repo.init_schema()
+    return repo

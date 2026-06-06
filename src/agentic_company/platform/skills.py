@@ -683,7 +683,7 @@ DEFAULT_SKILLS_BY_AGENT = default_skills_by_agent(DEFAULT_SKILL_CATALOG)
 
 def _selection_reason(skill_id: str, agent_id: str, stage: str) -> str:
     if skill_id == "repair-loop":
-        return f"{agent_id} may need bounded recovery during {stage or 'runtime'}."
+        return f"{agent_id} may need bounded Repair during {stage or 'runtime'}."
     return f"{skill_id} is the default skill for {agent_id} during {stage or 'runtime'}."
 
 
@@ -702,7 +702,7 @@ def _repair_context(state: DeliveryState, stage: str) -> bool:
         return True
     if state.get("fix_request_artifacts"):
         return True
-    return bool(state.get("feature_repair_attempts") or state.get("post_deploy_repair_attempts"))
+    return bool(state.get("repair_attempts") or state.get("post_deploy_repair_attempts"))
 
 
 def _unique(values: list[str] | tuple[str, ...]) -> list[str]:

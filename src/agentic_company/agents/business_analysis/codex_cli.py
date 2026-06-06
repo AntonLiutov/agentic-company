@@ -56,7 +56,7 @@ class BusinessAnalystCodexRunner:
         execution_id = build_agent_execution_id(
             run_id=str(request["run_id"]),
             agent_id=BUSINESS_ANALYST_AGENT_ID,
-            target="requirements",
+            correlation_id="requirements",
             intent="business_analysis",
         )
         codex_execution_id = build_codex_execution_id(
@@ -308,7 +308,7 @@ Write policy:
 - Write only the two allowed business analysis artifacts listed above.
 - Do not modify generated-project files.
 - Do not write implementation, QA, deployment, handoff, or Team Lead artifacts.
-- Do not create sprint plans, feature queues, delivery sequencing, or technical
+- Do not create sprint plans, planned work item contracts, delivery sequencing, or technical
   architecture.
 - Do not edit platform repository files.
 - Do not print secrets.
@@ -331,12 +331,12 @@ Business analysis output:
 - Treat the JSON as an internal contract for downstream platform roles from the
   registry snapshot. Do not treat Markdown as that internal contract.
 - Acceptance criteria must be business-facing, testable, and scoped.
-- If the requirements include feature ids, sprint ids, milestones, phases, or
+- If the requirements include work item ids, sprint ids, milestones, phases, or
   named plan markers, preserve those original labels as `source_refs` on related
   JSON user stories, acceptance criteria, risks, and open questions.
 - Preserve every distinct feature/source label from the requirements. Do not
   collapse many features into a smaller fixed set, and do not invent generic
-  feature ids when the user provided specific labels.
+  work item ids when the user provided specific labels.
 - Preserve source references for both feature and non-feature requirements.
   Use the most specific original label available: feature id, milestone, phase,
   section heading, bullet label, requirement name, or a concise descriptive

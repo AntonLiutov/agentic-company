@@ -13,7 +13,7 @@ from typing import Any, Protocol
 from langgraph.graph import END, START, StateGraph
 
 from agentic_company.platform.artifact_registry import (
-    register_artifact,
+    artifact_id_for,
     tool_artifact_refs_from_records,
 )
 from agentic_company.platform.messages import AgentMessage, AgentMessageStore
@@ -23,6 +23,7 @@ from agentic_company.platform.run_trace import (
     record_run_event,
     record_tool_call_event,
 )
+from agentic_company.platform.runtime_db import record_artifact_link
 from agentic_company.platform.skills import (
     SkillSelection,
     render_skill_instructions,
@@ -32,9 +33,10 @@ from agentic_company.platform.skills import (
 from agentic_company.platform.state import DeliveryState, record_codex_thread
 from agentic_company.platform.tool_contracts import (
     CODEX_EXEC_TOOL_CONTRACT,
+    ArtifactRegistrationRequest,
     ToolCallResult,
     ToolDashboardUpdate,
-    artifact_refs_from_paths,
+    WorkItemExecutionPacket,
     dashboard_status_from_runtime_status,
     failure_mode_from_status,
     render_tool_docstring,
@@ -122,6 +124,7 @@ class SpecialistAgentRequest:
     runner: CodexRunner
     run_dir: Path
     delivery_state: DeliveryState
+    packet: WorkItemExecutionPacket
     max_steps: int = 4
     max_codex_tool_calls: int = DEFAULT_CODEX_TOOL_CALL_LIMIT
     default_model: str = DEFAULT_AGENT_LLM_MODEL
@@ -206,6 +209,7 @@ class LangChainSpecialistAgentExecutor:
         """Expose `codex_exec` to create_agent and return the Codex tool result."""
 
         request = _specialist_request_with_selected_skills(request)
+        request.packet.validate()
         tool_result: AgentRunResult | None = None
         tool_call_count = 0
 
@@ -224,8 +228,7 @@ class LangChainSpecialistAgentExecutor:
                         "Duplicate codex_exec call suppressed after a successful specialist "
                         "result; returning cached evidence."
                     ),
-                    work_item_id=str(request.delivery_state.get("active_feature_id") or "")
-                    or None,
+                    work_item_id=request.packet.work_item_id,
                     data={
                         "stage": request.stage,
                         "execution_id": tool_result.execution_id,
@@ -279,7 +282,6 @@ class LangChainSpecialistAgentExecutor:
                             "artifact_links": [],
                             "labels": ["tool-limit"],
                         },
-                        "implicit_resolution_warnings": [],
                     },
                     sort_keys=True,
                 )
@@ -434,7 +436,7 @@ def _record_selected_skills(
         event_type="skills_selected",
         status="selected",
         message=f"Selected {len(selected_skills)} runtime skill(s).",
-        work_item_id=str(delivery_state.get("active_feature_id") or "") or None,
+        work_item_id=str(delivery_state.get("agent_call_correlation_id") or "") or None,
         data={
             "stage": stage,
             "selected_skills": selected_skill_trace_data(selected_skills),
@@ -555,33 +557,24 @@ def _codex_exec_tool_response(
     duration_ms: int | None = None,
     cached: bool = False,
 ) -> str:
-    """Return a structured codex_exec response while preserving legacy fields."""
+    """Return a structured codex_exec response for the explicit work-item packet."""
 
     remaining = request.max_codex_tool_calls - tool_call_count
     failure_mode = failure_mode_from_status(result.status, result.blocking_findings)
     dashboard_status = dashboard_status_from_runtime_status(result.status)
+    runtime_run_id = str(request.delivery_state.get("run_id") or request.run_dir.name)
     artifact_records = [
-        register_artifact(
+        record_artifact_link(
             request.run_dir,
-            relative_path=path,
-            run_id=str(request.delivery_state.get("run_id") or request.run_dir.name),
-            owner_agent=request.agent_id,
-            source_tool="codex_exec",
-            source_model=request.default_model,
-            metadata={
-                "implicit_resolution_warnings": [
-                    f"artifact_type inferred from path {path}",
-                    "visibility inferred from codex_exec output path",
-                ]
-            },
+            _artifact_registration_request(
+                request=request,
+                runtime_run_id=runtime_run_id,
+                relative_path=path,
+            ),
         )
         for path in result.output_artifacts
     ]
-    output_artifacts = (
-        tool_artifact_refs_from_records(artifact_records)
-        if artifact_records
-        else artifact_refs_from_paths(result.output_artifacts)
-    )
+    output_artifacts = tool_artifact_refs_from_records(artifact_records)
     tool_result = ToolCallResult(
         tool_name="codex_exec",
         status=result.status,
@@ -615,7 +608,6 @@ def _codex_exec_tool_response(
     payload = {
         **tool_result.to_dict(),
         "summary": result.summary,
-        "legacy_output_artifacts": result.output_artifacts,
         "blocking_findings": result.blocking_findings,
         "fix_request_artifacts": result.fix_request_artifacts,
         "recommended_next_action": result.recommended_next_action,
@@ -633,7 +625,7 @@ def _codex_exec_tool_response(
         agent_id=request.agent_id,
         tool_name="codex_exec",
         tool_call_id=tool_result.tool_call_id,
-        work_item_id=str(request.delivery_state.get("active_feature_id") or "") or None,
+        work_item_id=request.packet.work_item_id,
         input_summary={
             "reason": reason,
             "message": message,
@@ -660,19 +652,63 @@ def _codex_exec_tool_response(
         )
         or "gpt-5.3-codex",
         purpose="codex_exec",
-        prompt_ref=_prompt_artifact_ref(result.output_artifacts),
+        prompt_ref=_prompt_artifact_link(result.output_artifacts),
         status=result.status,
         duration_ms=duration_ms,
     )
     return json.dumps(payload, sort_keys=True)
 
 
-def _prompt_artifact_ref(output_artifacts: list[str]) -> str:
+def _prompt_artifact_link(output_artifacts: list[str]) -> str:
     for artifact in output_artifacts:
         normalized = artifact.lower()
         if "prompt" in normalized and normalized.endswith((".md", ".txt", ".json")):
             return artifact
     return ""
+
+
+def _artifact_registration_request(
+    *,
+    request: SpecialistAgentRequest,
+    runtime_run_id: str,
+    relative_path: str,
+) -> ArtifactRegistrationRequest:
+    artifact_type, visibility, label_prefix = _artifact_contract_for_stage(
+        request.stage,
+        relative_path,
+    )
+    return ArtifactRegistrationRequest(
+        artifact_id=artifact_id_for(runtime_run_id, relative_path),
+        artifact_type=artifact_type,
+        visibility=visibility,
+        owner_agent=request.agent_id,
+        source_tool="codex_exec",
+        label=f"{label_prefix}: {Path(relative_path).name}",
+        relative_path=relative_path,
+        run_id=runtime_run_id,
+        work_item_id=request.packet.work_item_id,
+        task_scoped=True,
+    )
+
+
+def _artifact_contract_for_stage(stage: str, relative_path: str) -> tuple[str, str, str]:
+    if _is_internal_execution_artifact(relative_path):
+        return "codex_output", "internal", "Codex output"
+    normalized = stage.strip().lower()
+    if normalized in {"business_analysis", "architecture", "project_management"}:
+        return f"{normalized}_deliverable", "business", "Planning report"
+    if normalized == "qa":
+        return "qa_evidence", "qa_evidence", "Quality evidence"
+    if normalized == "deployment":
+        return "deployment_evidence", "release", "Deployment evidence"
+    if normalized == "handoff":
+        return "release_report", "release", "Release report"
+    return "codex_output", "internal", "Codex output"
+
+
+def _is_internal_execution_artifact(relative_path: str) -> bool:
+    name = Path(relative_path).name.lower()
+    return name in {"prompt.md", "execution.log", "events.jsonl"}
 
 
 def _agent_executor_summary(agent_output: Any) -> str:
@@ -739,13 +775,13 @@ def build_agent_executor_graph(
     return graph.compile()
 
 
-def coordinator_recovery_policy(
+def coordinator_repair_policy(
     *,
     coordinator_name: str,
     downstream_tools: Sequence[str],
     repair_limit: int = DEFAULT_CODEX_TOOL_CALL_LIMIT,
 ) -> list[str]:
-    """Return the standard recovery policy for coordinator AgentExecutors."""
+    """Return the standard Repair policy for coordinator AgentExecutors."""
 
     tools = ", ".join(f"`{tool}`" for tool in downstream_tools)
     bounded_limit = max(1, int(repair_limit))
@@ -775,7 +811,7 @@ def coordinator_recovery_policy(
             "advice when available."
         ),
         (
-            "Keep recovery bounded: do not loop forever, do not retry the same downstream "
+            "Keep Repair bounded: do not loop forever, do not retry the same downstream "
             "tool without new evidence, and do not exceed the run's configured repair limit "
             f"or {bounded_limit} repair attempt(s) by default."
         ),
@@ -811,7 +847,7 @@ def coordinator_quality_review_policy(
             "is failed/blocked/preconditioned."
         ),
         (
-            "When using `codex_review`, ask for a concise artifact sanity check and recovery "
+            "When using `codex_review`, ask for a concise artifact sanity check and Repair "
             "advice. It should confirm expected artifacts and summaries exist, status is "
             "clear, and the result matches the requested sprint/feature. It should not run "
             "QA, deployment checks, implementation work, or deep report editing."

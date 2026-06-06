@@ -5,9 +5,8 @@ from fastapi.testclient import TestClient
 
 from agentic_company.console.web.app import create_app
 from agentic_company.console.web.db import ConsoleRepository
-from agentic_company.platform.artifact_registry import register_artifact
-from agentic_company.platform.events import write_event
-from agentic_company.platform.run_trace import record_tool_call_event
+from agentic_company.platform.artifact_registry import artifact_id_for, register_artifact
+from agentic_company.platform.run_trace import RunEvent, ToolCallEvent
 from agentic_company.platform.state import DELIVERY_STATE_SNAPSHOT
 
 
@@ -15,6 +14,16 @@ def delivery_state_path(run_dir: Path) -> Path:
     state_path = run_dir / DELIVERY_STATE_SNAPSHOT
     state_path.parent.mkdir(parents=True, exist_ok=True)
     return state_path
+
+
+def register_artifact_content(repo: ConsoleRepository, run_id: int, record, content: str) -> None:
+    repo.upsert_artifact_content(
+        run_id,
+        artifact_id=record.artifact_id,
+        path=record.relative_path,
+        content_kind=Path(record.relative_path).suffix.lstrip(".") or "text",
+        content_text=content,
+    )
 
 
 def test_landing_page_renders_public_story(tmp_path):
@@ -95,7 +104,7 @@ def test_speechmatics_token_endpoint_disabled_without_key(tmp_path, monkeypatch)
     assert response.status_code == 200
     payload = response.json()
     assert payload["enabled"] is False
-    assert payload["fallback"] == "browser"
+    assert payload["browser_mode"] == "browser"
     assert "token" not in payload
     italian = next(language for language in payload["languages"] if language["code"] == "it")
     assert italian["name"] == "Italian"
@@ -294,7 +303,7 @@ def test_pm_queue_materializes_feature_work_items_in_db(tmp_path):
     run_dir = tmp_path / "run-pm"
     pm_dir = run_dir / "upstream-planning" / "project-management"
     pm_dir.mkdir(parents=True)
-    (pm_dir / "candidate-feature-queue.json").write_text(
+    (pm_dir / "planned-work-items.json").write_text(
         json.dumps(
             [
                 {
@@ -324,7 +333,27 @@ def test_pm_queue_materializes_feature_work_items_in_db(tmp_path):
         reasoning="medium",
     )
 
-    repo.sync_work_items_from_run_dir(run.id, run_dir)
+    with repo.connect() as conn:
+        for item in json.loads((pm_dir / "planned-work-items.json").read_text()):
+            conn.execute(
+                """
+                INSERT INTO work_items (
+                    run_id, work_item_id, title, sprint_id, delivery_order, status,
+                    lane, owner_agent, source_refs, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'todo', 'todo', ?, '[]', ?, ?)
+                """,
+                (
+                    run.id,
+                    item["id"],
+                    item["title"],
+                    item["sprint_id"],
+                    item["delivery_order"],
+                    item["suggested_owner_agent"],
+                    "2026-05-31T10:00:00Z",
+                    "2026-05-31T10:00:00Z",
+                ),
+            )
     items = {item.work_item_id: item for item in repo.list_work_items(run.id)}
 
     assert items["US-rooms"].status == "todo"
@@ -350,7 +379,7 @@ def test_logs_endpoint_filters_db_activity_by_task_id(tmp_path):
     run_dir = tmp_path / "run-logs"
     pm_dir = run_dir / "upstream-planning" / "project-management"
     pm_dir.mkdir(parents=True)
-    (pm_dir / "candidate-feature-queue.json").write_text(
+    (pm_dir / "planned-work-items.json").write_text(
         json.dumps(
             [
                 {"id": "US-rooms", "title": "Rooms", "sprint_id": "sprint-01"},
@@ -367,51 +396,59 @@ def test_logs_endpoint_filters_db_activity_by_task_id(tmp_path):
         mode="simple_prototype",
         reasoning="medium",
     )
-    record_tool_call_event(
-        run_dir,
-        run_id="run-logs",
-        agent_id="team-lead-agent",
-        tool_name="run_fullstack",
-        tool_call_id="rooms-build",
-        status="fullstack_feature_implemented",
-        work_item_id="US-rooms",
-        output_summary={
-            "dashboard_update": {
-                "status": "review",
-                "comment": "Rooms are ready for QA.",
-            }
-        },
-    )
-    record_tool_call_event(
-        run_dir,
-        run_id="run-logs",
-        agent_id="team-lead-agent",
-        tool_name="run_qa",
-        tool_call_id="rooms-qa",
-        status="qa_passed",
-        work_item_id="US-rooms",
-        output_summary={
-            "dashboard_update": {
-                "status": "done",
-                "comment": "Rooms passed quality review.",
-            }
-        },
-    )
-    record_tool_call_event(
-        run_dir,
-        run_id="run-logs",
-        agent_id="team-lead-agent",
-        tool_name="run_fullstack",
-        tool_call_id="contacts-build",
-        status="fullstack_feature_implemented",
-        work_item_id="US-contacts",
-        output_summary={
-            "dashboard_update": {
-                "status": "review",
-                "comment": "Contacts are ready for QA.",
-            }
-        },
-    )
+    with repo.connect() as conn:
+        now = "2026-05-31T10:00:00Z"
+        for work_item_id, title, status, owner in [
+            ("US-rooms", "Rooms", "done", "qa-agent"),
+            ("US-contacts", "Contacts", "review", "fullstack-agent"),
+        ]:
+            conn.execute(
+                """
+                INSERT INTO work_items (
+                    run_id, work_item_id, title, sprint_id, delivery_order, status,
+                    lane, owner_agent, assigned_agent, source_refs, artifact_ids,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, 'sprint-01', 1, ?, ?, ?, ?, '[]', '[]', ?, ?)
+                """,
+                (run.id, work_item_id, title, status, status, owner, owner, now, now),
+            )
+        for event_id, work_item_id, owner, tool, message, status in [
+            (
+                "rooms-build",
+                "US-rooms",
+                "fullstack-agent",
+                "run_fullstack",
+                "Rooms are ready for Quality.",
+                "review",
+            ),
+            (
+                "rooms-qa",
+                "US-rooms",
+                "qa-agent",
+                "run_qa",
+                "Rooms passed quality review.",
+                "done",
+            ),
+            (
+                "contacts-build",
+                "US-contacts",
+                "fullstack-agent",
+                "run_fullstack",
+                "Contacts are ready for Quality.",
+                "review",
+            ),
+        ]:
+            conn.execute(
+                """
+                INSERT INTO activity_events (
+                    run_id, event_id, work_item_id, owner_agent, agent_id, tool_name,
+                    message, status, artifact_ids, visibility, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', 'user', ?)
+                """,
+                (run.id, event_id, work_item_id, owner, owner, tool, message, status, now),
+            )
     app = create_app(repo)
     client = TestClient(app)
     client.cookies.set("agentic_console_session", repo.create_session(user.id))
@@ -428,7 +465,55 @@ def test_logs_endpoint_filters_db_activity_by_task_id(tmp_path):
     assert items["US-rooms"].status == "done"
 
 
-def test_logs_endpoint_does_not_fallback_to_trace_when_db_work_items_exist(tmp_path):
+def test_status_endpoint_reports_active_owner_without_duplicate_running(tmp_path):
+    repo = ConsoleRepository(tmp_path / "console.db")
+    repo.init_schema()
+    user = repo.create_user(
+        email="status-owner@example.test",
+        username="statusowner",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Status owner",
+        request_text="Build",
+        mode="simple_prototype",
+        complexity="large",
+        status="running",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="run-status-owner",
+        run_dir=tmp_path / "run-status-owner",
+        status="running",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+    with repo.connect() as conn:
+        conn.execute(
+            """
+            UPDATE work_items
+            SET status = 'in_progress',
+                lane = 'in_progress',
+                owner_agent = 'business-analyst-agent',
+                active = 1
+            WHERE run_id = ? AND work_item_id = 'PLAN-01'
+            """,
+            (run.id,),
+        )
+    app = create_app(repo)
+    client = TestClient(app)
+    client.cookies.set("agentic_console_session", repo.create_session(user.id))
+
+    response = client.get(f"/api/runs/{run.id}/status")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "Running"
+    assert response.json()["stage"] == "Running"
+    assert response.json()["active_owner"] == "Business Analyst"
+
+
+def test_logs_endpoint_reads_db_activity_only_when_db_work_items_exist(tmp_path):
     repo = ConsoleRepository(tmp_path / "console.db")
     repo.init_schema()
     user = repo.create_user(
@@ -452,21 +537,6 @@ def test_logs_endpoint_does_not_fallback_to_trace_when_db_work_items_exist(tmp_p
         mode="simple_prototype",
         reasoning="medium",
     )
-    record_tool_call_event(
-        run_dir,
-        run_id="run-strict-logs",
-        agent_id="team-lead-agent",
-        tool_name="run_fullstack",
-        tool_call_id="missing-target",
-        status="fullstack_feature_implemented",
-        work_item_id="",
-        output_summary={
-            "dashboard_update": {
-                "status": "review",
-                "comment": "This trace-only message must not leak into DB-backed activity.",
-            }
-        },
-    )
     app = create_app(repo)
     client = TestClient(app)
     client.cookies.set("agentic_console_session", repo.create_session(user.id))
@@ -477,7 +547,7 @@ def test_logs_endpoint_does_not_fallback_to_trace_when_db_work_items_exist(tmp_p
     assert response.json() == {"logs": [], "groups": []}
 
 
-def test_db_work_item_sync_does_not_infer_tool_target_from_legacy_fields(tmp_path):
+def test_db_activity_requires_explicit_work_item_rows(tmp_path):
     repo = ConsoleRepository(tmp_path / "console.db")
     repo.init_schema()
     user = repo.create_user(
@@ -493,12 +563,7 @@ def test_db_work_item_sync_does_not_infer_tool_target_from_legacy_fields(tmp_pat
         complexity="large",
     )
     run_dir = tmp_path / "run-strict-sync"
-    pm_dir = run_dir / "upstream-planning" / "project-management"
-    pm_dir.mkdir(parents=True)
-    (pm_dir / "candidate-feature-queue.json").write_text(
-        json.dumps([{"id": "US-rooms", "title": "Rooms", "sprint_id": "sprint-01"}]),
-        encoding="utf-8",
-    )
+    run_dir.mkdir()
     run = repo.create_run(
         project_id=project.id,
         run_uid="run-strict-sync",
@@ -507,23 +572,18 @@ def test_db_work_item_sync_does_not_infer_tool_target_from_legacy_fields(tmp_pat
         mode="simple_prototype",
         reasoning="medium",
     )
-    record_tool_call_event(
-        run_dir,
-        run_id="run-strict-sync",
-        agent_id="team-lead-agent",
-        tool_name="run_qa",
-        tool_call_id="legacy-target-only",
-        status="qa_passed",
-        work_item_id="",
-        output_summary={
-            "target": "US-rooms",
-            "feature_id": "US-rooms",
-            "summary": "Legacy target-only event must not move the Rooms card.",
-        },
-    )
-
-    repo.sync_run_trace_from_run_dir(run.id, run_dir)
-    repo.sync_work_items_from_run_dir(run.id, run_dir)
+    with repo.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO work_items (
+                run_id, work_item_id, title, sprint_id, delivery_order, status,
+                lane, owner_agent, source_refs, created_at, updated_at
+            )
+            VALUES (?, 'US-rooms', 'Rooms', 'sprint-01', 1, 'todo',
+                'todo', 'fullstack-agent', '[]', ?, ?)
+            """,
+            (run.id, "2026-05-31T10:00:00Z", "2026-05-31T10:00:00Z"),
+        )
 
     rooms = next(item for item in repo.list_work_items(run.id) if item.work_item_id == "US-rooms")
     assert rooms.status == "todo"
@@ -950,7 +1010,7 @@ def test_stop_project_marks_latest_run_stopped(tmp_path):
     assert response.status_code == 303
     assert repo.get_run(run.id).status == "stopped"
     assert repo.get_project_for_user(project.id, user.id).status == "stopped"
-    assert (run_dir / ".stop-requested").exists()
+    assert (run_dir / ".codex-execution.stop").exists()
 
 
 def test_promote_and_demote_project_from_workspace(tmp_path):
@@ -980,31 +1040,16 @@ def test_promote_and_demote_project_from_workspace(tmp_path):
     release_path.write_text("<h1>Release ready</h1>", encoding="utf-8")
     release = register_artifact(
         run_dir,
+        artifact_id=artifact_id_for("showcase", "handoff/project/final/release-report.html"),
         relative_path="handoff/project/final/release-report.html",
+        run_id="showcase",
         owner_agent="handoff-agent",
         artifact_type="release_report",
         visibility="release",
         label="Final report",
         source_tool="run_handoff",
     )
-    record_tool_call_event(
-        run_dir,
-        run_id="showcase",
-        agent_id="team-lead-agent",
-        tool_name="run_handoff",
-        tool_call_id="tool_showcase_handoff",
-        status="handoff_ready",
-        output_summary={
-            "business_summary": "Release report is ready.",
-            "dashboard_update": {
-                "status": "done",
-                "summary": "Release report is ready.",
-                "comment": "Release report is ready.",
-            },
-        },
-        artifact_ids=[release.artifact_id],
-    )
-    repo.create_run(
+    run = repo.create_run(
         project_id=project.id,
         run_uid="showcase",
         run_dir=run_dir,
@@ -1012,6 +1057,35 @@ def test_promote_and_demote_project_from_workspace(tmp_path):
         mode="simple_prototype",
         reasoning="medium",
     )
+    repo.upsert_artifact_record(run.id, release)
+    with repo.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO tool_call_events (
+                run_id, runtime_run_id, event_id, work_item_id, agent_id, tool_name,
+                tool_call_id, input_summary, output_summary, artifact_ids, status,
+                created_at
+            )
+            VALUES (?, ?, 'tool_showcase_handoff', '', 'team-lead-agent', 'run_handoff',
+                'tool_showcase_handoff', '{}', ?, ?, 'handoff_ready', ?)
+            """,
+            (
+                run.id,
+                "showcase",
+                json.dumps(
+                    {
+                        "business_summary": "Release report is ready.",
+                        "dashboard_update": {
+                            "status": "done",
+                            "summary": "Release report is ready.",
+                            "comment": "Release report is ready.",
+                        },
+                    }
+                ),
+                json.dumps([release.artifact_id]),
+                "2026-05-31T10:00:00Z",
+            ),
+        )
     app = create_app(repo)
     client = TestClient(app)
     client.cookies.set("agentic_console_session", repo.create_session(owner.id))
@@ -1092,7 +1166,7 @@ def test_showcase_page_lists_multiple_public_projects_with_owner_private_action(
     owner_project = repo.create_project(
         owner_user_id=owner.id,
         name="Owner Showcase",
-        request_text="",
+        request_text="Seeded showcase request from database.",
         mode="simple_prototype",
         complexity="simple",
     )
@@ -1129,7 +1203,7 @@ def test_showcase_page_lists_multiple_public_projects_with_owner_private_action(
     assert response.status_code == 200
     assert "Owner Showcase" in response.text
     assert "Other Showcase" in response.text
-    assert "Seeded showcase request from run folder" in response.text
+    assert "Seeded showcase request from database." in response.text
     assert "Public project</small>" not in response.text
     assert f"/projects/{owner_project.id}/demote" in response.text
     assert f"/projects/{other_project.id}/demote" not in response.text
@@ -1226,6 +1300,17 @@ def test_artifact_view_uses_business_title_instead_of_internal_path(tmp_path):
     report_path = run_dir / "handoff" / "sprints" / "sprint-01" / "release-report.html"
     report_path.parent.mkdir(parents=True)
     report_path.write_text("<html><body>Stakeholder summary</body></html>", encoding="utf-8")
+    record = register_artifact(
+        run_dir,
+        artifact_id=artifact_id_for("run-report", "handoff/sprints/sprint-01/release-report.html"),
+        relative_path="handoff/sprints/sprint-01/release-report.html",
+        run_id="run-report",
+        owner_agent="handoff-agent",
+        artifact_type="release_report",
+        visibility="release",
+        label="Sprint 1 report",
+        source_tool="run_handoff",
+    )
     run = repo.create_run(
         project_id=project.id,
         run_uid="run-report",
@@ -1234,11 +1319,18 @@ def test_artifact_view_uses_business_title_instead_of_internal_path(tmp_path):
         mode="simple_prototype",
         reasoning="medium",
     )
+    repo.upsert_artifact_record(run.id, record)
+    register_artifact_content(
+        repo,
+        run.id,
+        record,
+        "<html><body>Stakeholder summary</body></html>",
+    )
     app = create_app(repo)
     client = TestClient(app)
     client.cookies.set("agentic_console_session", repo.create_session(user.id))
 
-    response = client.get(f"/artifacts/{run.id}/handoff/sprints/sprint-01/release-report.html")
+    response = client.get(f"/artifacts/{run.id}/by-id/{record.artifact_id}")
 
     assert response.status_code == 200
     assert "Sprint 1 report" in response.text
@@ -1274,14 +1366,24 @@ def test_artifact_view_resolves_registry_id(tmp_path):
     )
     record = register_artifact(
         run_dir,
+        artifact_id=artifact_id_for(
+            run.run_uid, "handoff/project/final/release-report.html"
+        ),
         relative_path="handoff/project/final/release-report.html",
         run_id=run.run_uid,
         owner_agent="documentation-handoff-agent",
         label="Registered final report",
         visibility="release",
         artifact_type="release_report",
+        source_tool="run_handoff",
     )
     repo.upsert_artifact_record(run.id, record)
+    register_artifact_content(
+        repo,
+        run.id,
+        record,
+        "<html><body>Registered report</body></html>",
+    )
     app = create_app(repo)
     client = TestClient(app)
     client.cookies.set("agentic_console_session", repo.create_session(user.id))
@@ -1323,21 +1425,35 @@ def test_run_trace_api_returns_owned_structured_trace_without_secrets(tmp_path):
         mode="simple_prototype",
         reasoning="medium",
     )
-    write_event(
-        run_dir / "events.jsonl",
-        run.run_uid,
-        "delivery-graph",
-        "delivery_graph_started",
-        {"status": "running", "OPENAI_API_KEY": "sk-secret"},
+    repo.upsert_run_event(
+        run.id,
+        RunEvent(
+            event_id="run-started",
+            project_id=project.id,
+            run_id=run.run_uid,
+            work_item_id=None,
+            agent_id="delivery-graph",
+            event_type="delivery_graph_started",
+            status="running",
+            message="Delivery started.",
+            data={"status": "running", "OPENAI_API_KEY": "sk-secret"},
+            created_at="2026-05-31T10:00:00Z",
+        ),
     )
-    record_tool_call_event(
-        run_dir,
-        run_id=run.run_uid,
-        agent_id="team-lead-agent",
-        tool_name="run_fullstack",
-        tool_call_id="call-1",
-        status="codex_completed",
-        output_summary={"output_artifacts": [{"artifact_id": "art_route"}]},
+    repo.upsert_tool_call_event(
+        run.id,
+        ToolCallEvent(
+            event_id="tool-call-1",
+            run_id=run.run_uid,
+            work_item_id="US-rooms",
+            agent_id="team-lead-agent",
+            tool_name="run_fullstack",
+            tool_call_id="call-1",
+            status="codex_completed",
+            artifact_ids=["art_route"],
+            output_summary={"output_artifacts": [{"artifact_id": "art_route"}]},
+            created_at="2026-05-31T10:01:00Z",
+        ),
     )
     app = create_app(repo)
     client = TestClient(app)
@@ -1379,6 +1495,19 @@ def test_html_artifact_view_opens_report_links_outside_preview(tmp_path):
         '<html><body><a href="https://example.test/app">Open app</a></body></html>',
         encoding="utf-8",
     )
+    record = register_artifact(
+        run_dir,
+        artifact_id=artifact_id_for(
+            "run-report-links", "handoff/sprints/sprint-01/release-report.html"
+        ),
+        relative_path="handoff/sprints/sprint-01/release-report.html",
+        run_id="run-report-links",
+        owner_agent="handoff-agent",
+        artifact_type="release_report",
+        visibility="release",
+        label="Sprint 1 report",
+        source_tool="run_handoff",
+    )
     run = repo.create_run(
         project_id=project.id,
         run_uid="run-report-links",
@@ -1387,14 +1516,19 @@ def test_html_artifact_view_opens_report_links_outside_preview(tmp_path):
         mode="simple_prototype",
         reasoning="medium",
     )
+    repo.upsert_artifact_record(run.id, record)
+    register_artifact_content(
+        repo,
+        run.id,
+        record,
+        '<html><body><a href="https://example.test/app">Open app</a></body></html>',
+    )
     app = create_app(repo)
     client = TestClient(app)
     client.cookies.set("agentic_console_session", repo.create_session(user.id))
 
-    response = client.get(f"/artifacts/{run.id}/handoff/sprints/sprint-01/release-report.html")
-    raw_response = client.get(
-        f"/artifacts/{run.id}/handoff/sprints/sprint-01/release-report.html?raw=1"
-    )
+    response = client.get(f"/artifacts/{run.id}/by-id/{record.artifact_id}")
+    raw_response = client.get(f"/artifacts/{run.id}/by-id/{record.artifact_id}?raw=1")
 
     assert response.status_code == 200
     assert "allow-popups-to-escape-sandbox" in response.text
@@ -1422,6 +1556,17 @@ def test_artifact_view_renders_mermaid_reports(tmp_path):
     report_path = run_dir / "upstream-planning" / "architecture.mmd"
     report_path.parent.mkdir(parents=True)
     report_path.write_text("flowchart LR\n  A[One\\nTwo] --> B[Done]\n", encoding="utf-8")
+    record = register_artifact(
+        run_dir,
+        artifact_id=artifact_id_for("run-mermaid", "upstream-planning/architecture.mmd"),
+        relative_path="upstream-planning/architecture.mmd",
+        run_id="run-mermaid",
+        owner_agent="architect-agent",
+        artifact_type="architecture_report",
+        visibility="release",
+        label="Architecture diagram",
+        source_tool="run_architect",
+    )
     run = repo.create_run(
         project_id=project.id,
         run_uid="run-mermaid",
@@ -1430,11 +1575,18 @@ def test_artifact_view_renders_mermaid_reports(tmp_path):
         mode="simple_prototype",
         reasoning="medium",
     )
+    repo.upsert_artifact_record(run.id, record)
+    register_artifact_content(
+        repo,
+        run.id,
+        record,
+        "flowchart LR\n  A[One\\nTwo] --> B[Done]\n",
+    )
     app = create_app(repo)
     client = TestClient(app)
     client.cookies.set("agentic_console_session", repo.create_session(user.id))
 
-    response = client.get(f"/artifacts/{run.id}/upstream-planning/architecture.mmd")
+    response = client.get(f"/artifacts/{run.id}/by-id/{record.artifact_id}")
 
     assert response.status_code == 200
     assert "Architecture diagram" in response.text

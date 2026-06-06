@@ -106,7 +106,7 @@ def stream_codex_exec_to_log(
     command_env = env or build_codex_exec_environment(_target_project_dir_from_command(command))
     lock_path = _codex_execution_lock_path(
         trace_run_dir=trace_run_dir,
-        fallback_dir=raw_events_path.parent,
+        default_dir=raw_events_path.parent,
         codex_execution_id=codex_execution_id,
     )
     lock_handle: int | None = None
@@ -178,12 +178,12 @@ def stream_codex_exec_to_log(
 def _codex_execution_lock_path(
     *,
     trace_run_dir: Path | None,
-    fallback_dir: Path,
+    default_dir: Path,
     codex_execution_id: str,
 ) -> Path | None:
     if not codex_execution_id:
         return None
-    root = trace_run_dir or fallback_dir
+    root = trace_run_dir or default_dir
     safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", codex_execution_id).strip("-")
     if not safe_id:
         return None

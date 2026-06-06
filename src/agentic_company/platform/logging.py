@@ -8,7 +8,7 @@ import sys
 
 
 def configure_logging(default_level: str = "INFO") -> None:
-    """Configure process-wide logging without duplicating handlers on Streamlit reruns."""
+    """Configure process-wide logging without duplicating handlers on repeated app starts."""
 
     level_name = os.getenv("AGENTIC_COMPANY_LOG_LEVEL", default_level).upper()
     level = getattr(logging, level_name, logging.INFO)

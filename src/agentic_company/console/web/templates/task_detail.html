@@ -22,7 +22,7 @@
 
   <section class="task-detail-layout">
     <article class="panel task-activity-panel">
-      <h2>Activity</h2>
+      <h2>Card Log</h2>
       {% if detail.activity_groups %}
         <div class="activity-owner-list" data-live-logs-run="{{ run.id }}" data-live-task-id="{{ detail.card.id }}">
           {% for group in detail.activity_groups %}
@@ -38,7 +38,7 @@
         </div>
       {% else %}
         <div class="activity-owner-list" data-live-logs-run="{{ run.id }}" data-live-task-id="{{ detail.card.id }}">
-          <p class="empty">Activity will appear here when this item is active.</p>
+          <p class="empty">Card log entries will appear here when this item is active.</p>
         </div>
       {% endif %}
     </article>

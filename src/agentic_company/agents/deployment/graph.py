@@ -31,6 +31,12 @@ from agentic_company.platform.artifacts import (
 )
 from agentic_company.platform.events import write_event
 from agentic_company.platform.models import AgentRunResult
+from agentic_company.platform.runtime_db import (
+    completed_work_item_ids,
+    get_work_item,
+    packet_for_work_item,
+    record_run_lifecycle,
+)
 from agentic_company.platform.state import (
     DeliveryState,
     codex_resume_thread_id,
@@ -154,7 +160,8 @@ def _prepare_context(state: DeploymentAgentGraphState) -> DeploymentAgentGraphSt
 def _write_deployment_execution_request(run_dir: Path, delivery_state: DeliveryState) -> None:
     """Write the Codex execution envelope required by the Deployment runner."""
 
-    active_feature = _active_feature(delivery_state)
+    work_item_id = str(delivery_state.get("agent_call_correlation_id") or "").strip()
+    work_item = get_work_item(str(delivery_state["run_id"]), work_item_id).to_dict()
     request = build_execution_request_payload(
         delivery_state,
         agent_id=DEPLOYMENT_AGENT_ID,
@@ -184,30 +191,19 @@ def _write_deployment_execution_request(run_dir: Path, delivery_state: DeliveryS
             "Do not delete cloud resources.",
             "Return explicit artifact refs and deployment status.",
         ],
-        active_feature=active_feature,
+        target_project_dir=str(delivery_state["target_project_dir"]),
+        work_item=work_item,
+        completed_work_item_ids=completed_work_item_ids(
+            str(delivery_state["run_id"]), str(work_item.get("sprint_id") or "")
+        ),
         codex_resume_thread_id=codex_resume_thread_id(delivery_state, DEPLOYMENT_CODEX_AGENT_ID),
     )
     write_execution_request(run_dir, request)
 
 
 def _deployment_input_artifacts(delivery_state: DeliveryState) -> list[str]:
-    paths = [
-        "00-requirements.md",
-        *[
-            str(artifact.get("path"))
-            for artifact in delivery_state.get("artifacts", [])
-            if artifact.get("path") and "/codex/" not in str(artifact.get("path"))
-        ],
-    ]
+    paths = ["00-requirements.md"]
     return _unique_paths(paths)
-
-
-def _active_feature(delivery_state: DeliveryState) -> dict[str, object] | None:
-    active_feature_id = str(delivery_state.get("active_feature_id") or "")
-    for feature in delivery_state.get("feature_queue", []):
-        if str(feature.get("id") or "") == active_feature_id:
-            return dict(feature)
-    return None
 
 
 def _unique_paths(paths: list[str]) -> list[str]:
@@ -231,6 +227,16 @@ def _run_agent_executor(runner: DeploymentRunner | None, agent_executor: Special
                 runner=runner or DeploymentCodexRunner(),
                 run_dir=run_dir,
                 delivery_state=state["delivery_state"],
+                packet=packet_for_work_item(
+                    run_id=str(state["delivery_state"]["run_id"]),
+                    work_item_id=str(
+                        state["delivery_state"].get("agent_call_correlation_id") or ""
+                    ),
+                    tool_name="run_deployment",
+                    tool_call_id=str(state["delivery_state"].get("agent_execution_id") or ""),
+                    attempt_id="1",
+                    owner_agent=DEPLOYMENT_AGENT_ID,
+                ),
             )
         )
         status = _normalize_deployment_status(result.status)
@@ -276,6 +282,11 @@ def _apply_deployment_result(state: DeploymentAgentGraphState) -> DeploymentAgen
     updated["public_url"] = public_urls[0] if public_urls else None
     if public_urls:
         updated["public_urls"] = public_urls
+        record_run_lifecycle(
+            str(updated["run_id"]),
+            str(updated["status"]),
+            generated_app_url=str(public_urls[0]),
+        )
     extend_artifacts(
         updated,
         artifact_refs(result.output_artifacts, kind="deployment", owner_agent=result.agent_id),

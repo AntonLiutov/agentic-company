@@ -39,14 +39,14 @@ COMMON_RESULT_SCHEMA: dict[str, object] = {
     "failure_mode": "string|null",
     "recommended_next_action": "string",
     "dashboard_update": "object",
-    "implicit_resolution_warnings": "array",
 }
 
 HEAD_COORDINATOR_INPUT_SCHEMA: dict[str, object] = {
-    "target": "string compatibility target; prefer work_item_id, sprint_id, or artifact_id refs",
+    "work_item_id": "explicit DB work item id when the tool is work-item scoped",
+    "sprint_id": "explicit sprint id when the tool is sprint-scoped",
     "reason": "string coordinator rationale",
     "message": "string downstream assignment or decision context",
-    "artifact_refs": "array of artifact ids or paths",
+    "artifact_refs": "array of registered artifact ids",
     "external_reference": "optional GitHub/Jira/Azure/internal dashboard reference",
 }
 
@@ -99,7 +99,7 @@ HEAD_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         purpose="Delegate source requirement analysis to the Business Analyst agent.",
         business_description="Business Analyst converts the product idea into a delivery brief.",
         required_parameters=("reason", "message"),
-        optional_parameters=("target", "artifact_refs", "external_reference"),
+        optional_parameters=("artifact_refs", "external_reference"),
         artifact_inputs=("requirements_brief", "source_request"),
         artifact_outputs=("business_analysis", "agent_response", "head_decision"),
         status_outputs=("succeeded", "failed", "blocked", "needs_repair"),
@@ -121,7 +121,7 @@ HEAD_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
             "Solution Architect turns the delivery brief into a buildable approach."
         ),
         required_parameters=("reason", "message"),
-        optional_parameters=("target", "artifact_refs", "external_reference"),
+        optional_parameters=("artifact_refs", "external_reference"),
         artifact_inputs=("requirements_brief", "business_analysis"),
         artifact_outputs=("architecture_report", "architecture_json", "agent_response"),
         status_outputs=("succeeded", "failed", "blocked", "needs_repair"),
@@ -139,20 +139,25 @@ HEAD_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     _contract(
         tool_name="run_project_manager",
         purpose="Delegate release and sprint planning after architecture is ready.",
-        business_description="Project Manager creates a Team Lead-consumable feature queue.",
+        business_description=(
+            "Project Manager creates a Team Lead-consumable planned work item contract."
+        ),
         required_parameters=("reason", "message"),
-        optional_parameters=("target", "artifact_refs", "external_reference"),
+        optional_parameters=("artifact_refs", "external_reference"),
         artifact_inputs=("business_analysis", "architecture_report"),
-        artifact_outputs=("release_plan", "sprint_plan", "candidate_feature_queue"),
+        artifact_outputs=("release_plan", "sprint_plan", "planned_work_items"),
         status_outputs=("succeeded", "failed", "blocked", "needs_repair"),
-        failure_modes=("worker_failed", "architecture_missing", "invalid_feature_queue"),
+        failure_modes=("worker_failed", "architecture_missing", "invalid_work_items"),
         retry_policy="Retry when sprint ids, queue shape, or acceptance criteria are incomplete.",
         idempotency="Not idempotent; may rewrite release and sprint plans.",
         dashboard_status="in_progress",
         examples=(
             {
                 "reason": "Plan execution.",
-                "message": "Create the smallest useful sprint plan and canonical feature queue.",
+                "message": (
+                    "Create the smallest useful sprint plan and canonical planned work "
+                    "item contract."
+                ),
             },
         ),
     ),
@@ -162,9 +167,9 @@ HEAD_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         business_description=(
             "Team Lead executes planned sprint work through builder, review, deploy, and handoff."
         ),
-        required_parameters=("target", "reason", "message"),
-        optional_parameters=("sprint_id", "artifact_refs", "external_reference"),
-        artifact_inputs=("release_plan", "sprint_plan", "candidate_feature_queue"),
+        required_parameters=("sprint_id", "reason", "message"),
+        optional_parameters=("artifact_refs", "external_reference"),
+        artifact_inputs=("release_plan", "sprint_plan", "planned_work_items"),
         artifact_outputs=("team_lead_result", "handoff_artifacts", "agent_response"),
         status_outputs=("succeeded", "failed", "blocked", "needs_repair"),
         failure_modes=("missing_sprint_target", "worker_failed", "delivery_blocked"),
@@ -176,7 +181,7 @@ HEAD_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         risk_level="high",
         examples=(
             {
-                "target": "sprint-01",
+                "sprint_id": "sprint-01",
                 "reason": "Execute planned sprint.",
                 "message": "Use the canonical sprint plan and return delivery evidence refs.",
             },
@@ -189,7 +194,7 @@ HEAD_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
             "Head reviews returned evidence before routing repair or continuing delivery."
         ),
         required_parameters=("purpose", "question", "artifact_refs"),
-        optional_parameters=("target_agent", "intent", "target", "reason", "message"),
+        optional_parameters=("target_agent", "intent", "correlation_id", "reason", "message"),
         artifact_inputs=("referenced_artifacts",),
         artifact_outputs=("review_summary", "review_prompt", "review_log"),
         status_outputs=("succeeded", "failed", "blocked"),
@@ -212,7 +217,7 @@ HEAD_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
             "Status Inspector provides a machine-readable delivery progress readback."
         ),
         required_parameters=("reason",),
-        optional_parameters=("target", "message", "artifact_refs"),
+        optional_parameters=("message", "artifact_refs"),
         artifact_inputs=("planning_artifacts", "team_lead_history", "handoff_artifacts"),
         artifact_outputs=("status_inspection_json", "status_summary", "status_logs"),
         status_outputs=("succeeded", "failed", "blocked"),
@@ -224,7 +229,7 @@ HEAD_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         dashboard_status="review",
         examples=(
             {
-                "target": "company-delivery",
+                "correlation_id": "company-delivery",
                 "reason": "Confirm delivery completion readiness.",
                 "message": "Inspect status only; Head owns routing.",
             },
@@ -237,7 +242,7 @@ HEAD_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
             "Head closes the run after planning, delivery, and handoff evidence are complete."
         ),
         required_parameters=("reason",),
-        optional_parameters=("target", "message", "artifact_refs"),
+        optional_parameters=("message", "artifact_refs"),
         artifact_inputs=("status_inspection_json", "handoff_artifacts", "team_lead_result"),
         artifact_outputs=("head_result", "completion_event"),
         status_outputs=("succeeded", "failed", "blocked"),
@@ -254,12 +259,12 @@ HEAD_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     ),
     _contract(
         tool_name="block_planning",
-        purpose="Block upstream planning or delivery when bounded recovery cannot continue.",
+        purpose="Block upstream planning or delivery when bounded Repair cannot continue.",
         business_description=(
             "Head records a visible blocker instead of hiding a failed automation step."
         ),
         required_parameters=("reason",),
-        optional_parameters=("target", "message", "artifact_refs", "external_reference"),
+        optional_parameters=("correlation_id", "message", "artifact_refs", "external_reference"),
         artifact_inputs=("blocker_evidence",),
         artifact_outputs=("block_event", "head_result"),
         status_outputs=("blocked",),
@@ -270,7 +275,7 @@ HEAD_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         risk_level="high",
         examples=(
             {
-                "target": "upstream-planning",
+                "correlation_id": "upstream-planning",
                 "reason": "Required provider key is missing.",
                 "message": "Block with exact next action for the user.",
             },
@@ -287,7 +292,7 @@ class HeadDecision:
 
     tool: HeadToolName
     reason: str
-    target: str | None = None
+    correlation_id: str | None = None
     message: str = ""
 
     def to_dict(self) -> dict[str, Any]:

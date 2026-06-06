@@ -52,7 +52,7 @@ def test_business_analysis_prompt_scopes_codex_to_analysis_artifacts(tmp_path):
     assert BUSINESS_ANALYSIS_JSON in prompt
     assert "Write only the two allowed business analysis artifacts" in prompt
     assert "Do not modify generated-project files" in prompt
-    assert "Do not create sprint plans, feature queues" in prompt
+    assert "Do not create sprint plans, planned work item contracts" in prompt
     assert "Azure-oriented deployment infrastructure" in prompt
     assert "Azure deployment is a supported platform capability" in prompt
     assert "Scale the depth of analysis to the source request" in prompt
@@ -78,7 +78,7 @@ def test_business_analysis_prompt_scopes_codex_to_analysis_artifacts(tmp_path):
     assert "Do not include tool write policy" in prompt
     assert "agent registry, orchestration routing, or AI-provider details" in prompt
     assert "source_refs" in prompt
-    assert "feature ids, sprint ids, milestones, phases" in prompt
+    assert "work item ids, sprint ids, milestones, phases" in prompt
     assert "Preserve every distinct feature/source label" in prompt
     assert "collapse many features into a smaller fixed set" in prompt
     assert "limit references to examples" in prompt

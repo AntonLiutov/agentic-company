@@ -24,8 +24,8 @@ ToolResultStatus = Literal[
 
 
 @dataclass(frozen=True, slots=True)
-class ToolArtifactRef:
-    """Structured artifact reference used by contract-ready tool results."""
+class ArtifactLink:
+    """Structured artifact link used by contract-ready tool results."""
 
     artifact_id: str = ""
     path: str = ""
@@ -45,7 +45,7 @@ class ToolDashboardUpdate:
     status: DashboardStatus
     summary: str
     comment: str
-    artifact_links: tuple[ToolArtifactRef, ...] = ()
+    artifact_links: tuple[ArtifactLink, ...] = ()
     labels: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -69,11 +69,120 @@ class ToolExternalReference:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkItemExecutionPacket:
+    """Strict specialist tool input shape for DB-backed work-item execution."""
+
+    run_id: str
+    work_item_id: str
+    sprint_id: str
+    owner_agent: str
+    tool_name: str
+    tool_call_id: str
+    attempt_id: str
+    status: str = "in_progress"
+    assigned_agent: str = ""
+    params: dict[str, Any] = field(default_factory=dict)
+
+    def validate(self) -> None:
+        _require_contract_fields(
+            self,
+            (
+                "run_id",
+                "work_item_id",
+                "sprint_id",
+                "owner_agent",
+                "tool_name",
+                "tool_call_id",
+                "attempt_id",
+                "status",
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return _drop_empty(asdict(self))
+
+
+@dataclass(frozen=True, slots=True)
+class ToolExecutionRecord:
+    """Strict DB write contract for a completed tool transition."""
+
+    run_id: str
+    work_item_id: str
+    sprint_id: str
+    owner_agent: str
+    tool_name: str
+    tool_call_id: str
+    attempt_id: str
+    status: str
+    activity_message: str
+    artifact_ids: tuple[str, ...] = ()
+
+    def validate(self) -> None:
+        _require_contract_fields(
+            self,
+            (
+                "run_id",
+                "work_item_id",
+                "sprint_id",
+                "owner_agent",
+                "tool_name",
+                "tool_call_id",
+                "attempt_id",
+                "status",
+                "activity_message",
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        data = asdict(self)
+        data["artifact_ids"] = list(self.artifact_ids)
+        return _drop_empty(data)
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactRegistrationRequest:
+    """Strict metadata contract for registering a dashboard-visible artifact."""
+
+    artifact_id: str
+    artifact_type: str
+    visibility: str
+    owner_agent: str
+    source_tool: str
+    label: str
+    relative_path: str
+    run_id: str
+    work_item_id: str = ""
+    task_scoped: bool = False
+
+    def validate(self) -> None:
+        _require_contract_fields(
+            self,
+            (
+                "artifact_id",
+                "artifact_type",
+                "visibility",
+                "owner_agent",
+                "source_tool",
+                "label",
+                "relative_path",
+                "run_id",
+            ),
+        )
+        if self.task_scoped and not self.work_item_id.strip():
+            raise ValueError("Missing required contract fields: work_item_id")
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return _drop_empty(asdict(self))
+
+
+@dataclass(frozen=True, slots=True)
 class ToolCallInput:
     """DB-ready shape for a tool invocation.
 
-    Existing tools may still receive legacy positional arguments, but adapters
-    should be able to normalize those calls to this shape.
+    Runtime tools should be invoked through explicit contract fields.
     """
 
     tool_name: str
@@ -82,9 +191,8 @@ class ToolCallInput:
     run_id: str = ""
     agent_id: str = ""
     work_item_id: str = ""
-    feature_id: str = ""
     sprint_id: str = ""
-    artifact_refs: tuple[ToolArtifactRef, ...] = ()
+    artifact_refs: tuple[ArtifactLink, ...] = ()
     external_reference: ToolExternalReference | None = None
     params: dict[str, Any] = field(default_factory=dict)
     reason: str = ""
@@ -108,11 +216,10 @@ class ToolCallResult:
     business_summary: str
     tool_call_id: str = ""
     developer_diagnostics: dict[str, Any] = field(default_factory=dict)
-    output_artifacts: tuple[ToolArtifactRef, ...] = ()
+    output_artifacts: tuple[ArtifactLink, ...] = ()
     failure_mode: str | None = None
     recommended_next_action: str = ""
     dashboard_update: ToolDashboardUpdate | None = None
-    implicit_resolution_warnings: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -120,7 +227,6 @@ class ToolCallResult:
         data["dashboard_update"] = (
             self.dashboard_update.to_dict() if self.dashboard_update else None
         )
-        data["implicit_resolution_warnings"] = list(self.implicit_resolution_warnings)
         return data
 
     def to_json(self) -> str:
@@ -154,7 +260,6 @@ class ToolContract:
     dashboard_artifact_links: tuple[str, ...] = ()
     risk_level: str = "medium"
     requires_human_approval: bool = False
-    legacy: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -189,10 +294,6 @@ def render_tool_docstring(contract: ToolContract) -> str:
     artifact_inputs = ", ".join(contract.artifact_inputs) or "none"
     artifact_outputs = ", ".join(contract.artifact_outputs) or "none"
     example = json.dumps(contract.examples[0] if contract.examples else {}, sort_keys=True)
-    legacy_note = (
-        "\nCompatibility: legacy target/reason/message inputs are accepted, but prefer "
-        "explicit IDs and artifact refs when available."
-    )
     return (
         f"{contract.purpose}\n\n"
         f"Business use: {contract.business_description}\n"
@@ -208,16 +309,7 @@ def render_tool_docstring(contract: ToolContract) -> str:
         "to GitHub, Jira, Azure DevOps, or the internal board.\n"
         f"Dashboard status mapping: {contract.dashboard_status}.\n"
         f"Example call: {example}."
-        f"{legacy_note}"
     )
-
-
-def artifact_refs_from_paths(
-    paths: list[str] | tuple[str, ...] | None,
-) -> tuple[ToolArtifactRef, ...]:
-    """Build structured artifact refs from current path-based artifact values."""
-
-    return tuple(ToolArtifactRef(path=path, label=path) for path in _unique_strings(paths or ()))
 
 
 CODEX_EXEC_TOOL_CONTRACT = ToolContract(
@@ -228,7 +320,7 @@ CODEX_EXEC_TOOL_CONTRACT = ToolContract(
     input_schema={
         "reason": "string AgentExecutor rationale",
         "message": "string repair or execution instruction",
-        "artifact_refs": "array of artifact ids or paths from prior result",
+        "artifact_refs": "array of registered artifact ids from prior result",
     },
     output_schema={
         "tool_call_id": "string",
@@ -240,7 +332,6 @@ CODEX_EXEC_TOOL_CONTRACT = ToolContract(
         "failure_mode": "string|null",
         "recommended_next_action": "string",
         "dashboard_update": "object",
-        "implicit_resolution_warnings": "array",
     },
     required_parameters=("reason",),
     optional_parameters=("message", "artifact_refs"),
@@ -299,13 +390,15 @@ def failure_mode_from_status(status: str, blockers: list[Any] | tuple[Any, ...] 
     return None
 
 
-def _unique_strings(values: list[str] | tuple[str, ...]) -> list[str]:
-    unique: list[str] = []
-    for value in values:
-        if value and value not in unique:
-            unique.append(value)
-    return unique
-
-
 def _drop_empty(data: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in data.items() if value not in ("", None, [], {}, ())}
+
+
+def _require_contract_fields(instance: object, fields: tuple[str, ...]) -> None:
+    missing = [
+        field_name
+        for field_name in fields
+        if not str(getattr(instance, field_name, "") or "").strip()
+    ]
+    if missing:
+        raise ValueError("Missing required contract fields: " + ", ".join(missing))

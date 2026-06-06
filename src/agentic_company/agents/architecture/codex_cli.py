@@ -59,7 +59,7 @@ class ArchitectCodexRunner:
         execution_id = build_agent_execution_id(
             run_id=str(request["run_id"]),
             agent_id=ARCHITECT_AGENT_ID,
-            target="architecture",
+            correlation_id="architecture",
             intent="solution_architecture",
         )
         codex_execution_id = build_codex_execution_id(
@@ -252,7 +252,7 @@ Architecture principles:
 - Treat application deployment as the normal delivery path unless the source
   explicitly excludes deployment. Do not design a local-only system by default
   for an app, site, API, service, or automation that a user expects to use.
-- Do not create sprint plans, feature queues, delivery sequencing, or code.
+- Do not create sprint plans, planned work item contracts, delivery sequencing, or code.
 
 Platform context:
 - The current platform path uses Azure-oriented deployment infrastructure.
@@ -330,7 +330,7 @@ Architecture output:
   Fullstack, QA, Deployment, and future agents. Put exhaustive downstream
   constraints, coordination notes, QA/deployment implications, and traceability
   here instead of overloading the Markdown. Planning constraints for PM are
-  useful; sprint plans, feature queues, and delivery sequencing are not.
+  useful; sprint plans, planned work item contracts, and delivery sequencing are not.
 - Write valid Mermaid text to `{ARCHITECTURE_MMD}`. Prefer `flowchart` or
   `graph`. Show user/client surface, services/components, state/data ownership,
   local runtime, and deployment target when applicable.
@@ -374,7 +374,7 @@ Architecture output:
   decisions, constraints, risks, QA/deployment implications, and open questions.
 - Preserve every distinct feature/source label from BA and requirements. Do not
   collapse many features into a smaller fixed set, and do not invent generic
-  feature ids when the user provided specific labels.
+  work item ids when the user provided specific labels.
 - If BA marked a question unresolved, either carry it forward as an open
   question or make a clearly labeled technical assumption with source refs.
 - Do not overrule BA non-goals. If a technical concern conflicts with a non-goal,

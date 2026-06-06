@@ -3,6 +3,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.platform.status_inspector import (
     StatusInspectionRequest,
     StatusInspectorRunner,
@@ -10,9 +11,10 @@ from agentic_company.platform.status_inspector import (
 )
 
 
-def test_status_inspector_runner_writes_and_reads_status_json(tmp_path):
+def test_status_inspector_runner_writes_and_reads_status_json(tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
+    _create_run(tmp_path, monkeypatch, run_dir, "run")
 
     def executor(command, prompt, timeout_seconds, log_path, raw_events_path):
         assert "--sandbox" in command
@@ -68,9 +70,12 @@ def test_status_inspector_runner_writes_and_reads_status_json(tmp_path):
     assert result.result_artifact.startswith("team-lead/status-inspections/")
 
 
-def test_status_inspector_runner_reads_and_normalizes_utf8_bom_status_json(tmp_path):
+def test_status_inspector_runner_reads_and_normalizes_utf8_bom_status_json(
+    tmp_path, monkeypatch
+):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
+    _create_run(tmp_path, monkeypatch, run_dir, "run")
 
     def executor(command, prompt, timeout_seconds, log_path, raw_events_path):
         match = re.search(r"Required output JSON: (.+)", prompt)
@@ -114,9 +119,10 @@ def test_status_inspector_runner_reads_and_normalizes_utf8_bom_status_json(tmp_p
     assert not status_path.read_bytes().startswith(b"\xef\xbb\xbf")
 
 
-def test_status_inspector_runner_writes_failed_status_when_json_missing(tmp_path):
+def test_status_inspector_runner_writes_failed_status_when_json_missing(tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
+    _create_run(tmp_path, monkeypatch, run_dir, "run")
 
     def executor(command, prompt, timeout_seconds, log_path, raw_events_path):
         return subprocess.CompletedProcess(command, 0, stdout="summary only", stderr="")
@@ -163,3 +169,31 @@ def test_status_inspection_prompt_requires_json_readback(tmp_path):
     assert "Do not recommend tools, owners, routing, or next actions" in prompt
     assert "next_action" not in prompt
     assert "next_required_owner" not in prompt
+
+
+def _create_run(tmp_path: Path, monkeypatch, run_dir: Path, run_uid: str) -> None:
+    db_path = tmp_path / "console.db"
+    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
+    repo = ConsoleRepository(db_path)
+    repo.init_schema()
+    user = repo.create_user(
+        email=f"{run_uid}@example.test",
+        username=f"user-{run_uid}",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Status",
+        request_text="Status",
+        mode="internal_tool",
+        complexity="simple",
+        status="running",
+    )
+    repo.create_run(
+        project_id=project.id,
+        run_uid=run_uid,
+        run_dir=run_dir,
+        status="running",
+        mode="internal_tool",
+        reasoning="medium",
+    )

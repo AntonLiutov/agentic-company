@@ -45,7 +45,7 @@ Explain what was built, how to try it, what evidence exists, and what should hap
 ## Failure And Repair
 
 - Retry when the report misses evidence or contradicts artifacts.
-- Block when deployment/QA artifacts are absent and no reliable fallback exists.
+- Block when deployment/QA artifacts are absent from the registered evidence contract.
 - Human approval is required for public-facing release claims in high-risk mode.
 
 ## Examples

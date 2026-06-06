@@ -11,11 +11,10 @@ from agentic_company.agents.team_lead.tools import (
     TeamLeadWorkers,
     apply_team_lead_result,
     checkpoint_delivery_state,
-    write_json_artifact,
+    write_sprint_plan_artifact,
     write_team_lead_event,
 )
 from agentic_company.platform.agent_runtime import build_agent_executor_graph
-from agentic_company.platform.sprints import sprint_from_delivery_state
 from agentic_company.platform.state import DeliveryState
 
 TEAM_LEAD_AGENT_GRAPH_NODE_ORDER: tuple[str, ...] = (
@@ -107,23 +106,24 @@ def render_team_lead_agent_graph_mermaid() -> str:
 def _prepare_sprint(max_steps: int):
     def run(state: TeamLeadGraphState) -> TeamLeadGraphState:
         delivery_state = state["delivery_state"]
-        sprint = sprint_from_delivery_state(delivery_state)
+        sprint_id = str(delivery_state.get("team_lead_sprint_id") or "sprint-01")
+        sprint = {"sprint_id": sprint_id, "id": sprint_id, "features": []}
         updated = {**delivery_state}
         updated["stage"] = "team_lead"
         updated["status"] = "team_lead_sprint_started"
-        updated["team_lead_sprint_id"] = sprint.sprint_id
+        updated["team_lead_sprint_id"] = sprint_id
         write_team_lead_event(
             updated,
             "team_lead_sprint_started",
-            {"sprint_id": sprint.sprint_id, "available_tools": list(TEAM_LEAD_TOOLS)},
+            {"sprint_id": sprint_id, "available_tools": list(TEAM_LEAD_TOOLS)},
         )
-        write_json_artifact(updated, f"team-lead/{sprint.sprint_id}-plan.json", sprint.to_dict())
+        write_sprint_plan_artifact(updated, sprint_id, sprint)
         checkpoint_delivery_state(updated)
         return {
             **state,
             "delivery_state": cast(DeliveryState, updated),
-            "sprint": sprint.to_dict(),
-            "sprint_id": sprint.sprint_id,
+            "sprint": sprint,
+            "sprint_id": sprint_id,
             "history": [],
             "max_steps": max_steps,
         }

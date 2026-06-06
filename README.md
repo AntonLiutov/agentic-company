@@ -49,11 +49,3 @@ uv run ruff format --check .
 uv run ruff check .
 uv run pytest
 ```
-
-## Legacy Operator Console
-
-The older Streamlit console is still available as a fallback:
-
-```powershell
-uv run --extra app streamlit run src/agentic_company/console/app.py --server.port 8502
-```

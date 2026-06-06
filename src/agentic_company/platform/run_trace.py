@@ -218,6 +218,7 @@ def record_run_event(
         created_at=created,
     )
     stored = TraceStore(run_dir).append_run_event(event)
+    _persist_run_event_to_db(stored)
     _log_run_event(stored)
     return stored
 
@@ -275,6 +276,7 @@ def record_tool_call_event(
         created_at=created,
     )
     stored = TraceStore(run_dir).append_tool_call_event(event)
+    _persist_tool_call_event_to_db(stored)
     _log_tool_call_event(stored)
     return stored
 
@@ -323,7 +325,9 @@ def record_model_call_event(
         duration_ms=duration_ms,
         created_at=created,
     )
-    return TraceStore(run_dir).append_model_call_event(event)
+    stored = TraceStore(run_dir).append_model_call_event(event)
+    _persist_model_call_event_to_db(stored)
+    return stored
 
 
 def load_run_events(run_dir: Path) -> list[RunEvent]:
@@ -344,6 +348,117 @@ def load_model_call_events(run_dir: Path) -> list[ModelCallEvent]:
         model_call_event_from_mapping(item)
         for item in _read_jsonl(trace_dir(run_dir) / MODEL_CALL_EVENTS_FILE)
     ]
+
+
+def _persist_run_event_to_db(event: RunEvent) -> None:
+    run_id = _console_run_db_id(event.run_id)
+    if run_id is None:
+        return
+    try:
+        from agentic_company.console.web.db import ConsoleRepository
+
+        repo = ConsoleRepository()
+        repo.init_schema()
+        with repo.connect() as conn:
+            repo._upsert_run_event_conn(conn, run_id, event)
+            _insert_card_log_from_run_event(conn, run_id, event)
+    except Exception:
+        RUNTIME_LOGGER.debug("Skipping DB run trace persistence", exc_info=True)
+
+
+def _persist_tool_call_event_to_db(event: ToolCallEvent) -> None:
+    run_id = _console_run_db_id(event.run_id)
+    if run_id is None:
+        return
+    try:
+        from agentic_company.console.web.db import ConsoleRepository
+
+        repo = ConsoleRepository()
+        repo.init_schema()
+        repo.upsert_tool_call_event(run_id, event)
+    except Exception:
+        RUNTIME_LOGGER.debug("Skipping DB tool trace persistence", exc_info=True)
+
+
+def _persist_model_call_event_to_db(event: ModelCallEvent) -> None:
+    run_id = _console_run_db_id(event.run_id)
+    if run_id is None:
+        return
+    try:
+        from agentic_company.console.web.db import ConsoleRepository
+
+        repo = ConsoleRepository()
+        repo.init_schema()
+        repo.upsert_model_call_event(run_id, event)
+    except Exception:
+        RUNTIME_LOGGER.debug("Skipping DB model trace persistence", exc_info=True)
+
+
+def _console_run_db_id(runtime_run_id: int | str) -> int | None:
+    try:
+        from agentic_company.console.web.db import ConsoleRepository
+
+        repo = ConsoleRepository()
+        repo.init_schema()
+        if isinstance(runtime_run_id, int):
+            run = repo.get_run(runtime_run_id)
+            return run.id if run else None
+        token = str(runtime_run_id or "").strip()
+        if not token:
+            return None
+        run = repo.get_run_by_uid(token)
+        if run:
+            return run.id
+        if token.isdigit():
+            by_id = repo.get_run(int(token))
+            return by_id.id if by_id else None
+    except Exception:
+        RUNTIME_LOGGER.debug("Skipping DB trace lookup", exc_info=True)
+    return None
+
+
+def _insert_card_log_from_run_event(conn: Any, run_id: int, event: RunEvent) -> None:
+    if not _is_card_log_run_event(event):
+        return
+    conn.execute(
+        """
+        INSERT INTO activity_events (
+            run_id, event_id, work_item_id, owner_agent, agent_id, tool_name,
+            message, status, artifact_ids, visibility, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'user', ?)
+        ON CONFLICT(run_id, event_id) DO UPDATE SET
+            work_item_id = excluded.work_item_id,
+            owner_agent = excluded.owner_agent,
+            agent_id = excluded.agent_id,
+            tool_name = excluded.tool_name,
+            message = excluded.message,
+            status = excluded.status,
+            artifact_ids = excluded.artifact_ids,
+            visibility = excluded.visibility,
+            created_at = excluded.created_at
+        """,
+        (
+            run_id,
+            event.event_id,
+            str(event.work_item_id or ""),
+            event.agent_id,
+            event.agent_id,
+            event.event_type,
+            event.message,
+            event.status,
+            json.dumps(sanitize_trace_data(event.artifact_ids), sort_keys=True),
+            event.created_at,
+        ),
+    )
+
+
+def _is_card_log_run_event(event: RunEvent) -> bool:
+    return (
+        event.event_type == "codex_agent_message"
+        and bool(str(event.work_item_id or "").strip())
+        and bool(str(event.message or "").strip())
+    )
 
 
 def run_event_from_mapping(payload: dict[str, Any]) -> RunEvent:
@@ -540,7 +655,7 @@ def _is_operator_run_event(event: RunEvent) -> bool:
 
 
 def _operator_agent_label(agent_id: str) -> str:
-    aliases = {
+    labels = {
         "head-agent": "Coordinator",
         "team-lead-agent": "Delivery Lead",
         "business-analyst-agent": "Business Analyst",
@@ -554,7 +669,7 @@ def _operator_agent_label(agent_id: str) -> str:
         "handoff-agent": "Release Reporter",
         "handoff-codex-agent": "Release Reporter",
     }
-    return aliases.get(agent_id, agent_id or "runtime")
+    return labels.get(agent_id, agent_id or "runtime")
 
 
 def _first_text(*values: Any) -> str:

@@ -51,7 +51,7 @@ def test_architecture_prompt_scopes_codex_to_architecture_artifacts(tmp_path):
     assert ARCHITECTURE_JSON in prompt
     assert ARCHITECTURE_MMD in prompt
     assert "Write only the three allowed architecture artifacts" in prompt
-    assert "Do not create sprint plans, feature queues" in prompt
+    assert "Do not create sprint plans, planned work item contracts" in prompt
     assert "Available agent registry snapshot" in prompt
     assert "architect-agent: Architect Agent" in prompt
     assert "Head Agent coordinates this planning flow" in prompt
@@ -84,7 +84,7 @@ def test_architecture_prompt_scopes_codex_to_architecture_artifacts(tmp_path):
     assert "Use arrows only for meaningful runtime calls" in prompt
     assert "show it as a boundary/environment" in prompt
     assert "Put process notes, QA implications" in prompt
-    assert "sprint plans, feature queues, and delivery sequencing are not" in prompt
+    assert "sprint plans, planned work item contracts, and delivery sequencing are not" in prompt
     assert "quality attributes" in prompt
     assert "technical_decisions" in prompt
     assert "Preserve every distinct feature/source label" in prompt

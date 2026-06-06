@@ -27,6 +27,7 @@ from agentic_company.platform.state import (
     codex_resume_thread_id,
     mark_node_completed,
 )
+from agentic_company.platform.tool_contracts import WorkItemExecutionPacket
 
 ARCHITECT_AGENT_ID = "architect-agent"
 ARCHITECT_AGENT_GRAPH_NODE_ORDER = AGENT_EXECUTOR_GRAPH_NODE_ORDER
@@ -170,6 +171,18 @@ def _run_agent_executor(
                 runner=runner,
                 run_dir=Path(state["run_dir"]),
                 delivery_state=state["delivery_state"],
+                packet=WorkItemExecutionPacket(
+                    run_id=str(state["delivery_state"]["run_id"]),
+                    work_item_id="PLAN-02",
+                    sprint_id="planning",
+                    owner_agent=ARCHITECT_AGENT_ID,
+                    tool_name="run_architect",
+                    tool_call_id=str(
+                        state["delivery_state"].get("agent_execution_id") or "PLAN-02"
+                    ),
+                    attempt_id="1",
+                    status="in_progress",
+                ),
             )
         )
         return {**state, "result": result}

@@ -73,6 +73,7 @@ class AgentMessageStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(message.to_dict(), sort_keys=True) + "\n")
+        _persist_message_to_db(self.run_dir, message)
         return message
 
     def get(self, message_id: str) -> AgentMessage | None:
@@ -94,6 +95,16 @@ class AgentMessageStore:
     ) -> list[AgentMessage]:
         """Read messages with optional sender, recipient, intent, and limit filters."""
 
+        db_messages = _read_messages_from_db(
+            self.run_dir,
+            to_agent=to_agent,
+            from_agent=from_agent,
+            intent=intent,
+            correlation_id=correlation_id,
+            limit=limit,
+        )
+        if db_messages is not None:
+            return db_messages
         if not self.path.exists():
             return []
 
@@ -179,6 +190,68 @@ def append_agent_response(
             status="sent",
         )
     )
+
+
+def _persist_message_to_db(run_dir: Path, message: AgentMessage) -> None:
+    db_run_id = _db_run_id_for_run_dir(run_dir)
+    if db_run_id is None:
+        return
+    try:
+        from agentic_company.console.web.db import ConsoleRepository
+
+        repo = ConsoleRepository()
+        repo.init_schema()
+        repo.upsert_agent_message(db_run_id, message.to_dict())
+    except Exception:
+        return
+
+
+def _read_messages_from_db(
+    run_dir: Path,
+    *,
+    to_agent: str | None,
+    from_agent: str | None,
+    intent: str | None,
+    correlation_id: str | None,
+    limit: int | None,
+) -> list[AgentMessage] | None:
+    db_run_id = _db_run_id_for_run_dir(run_dir)
+    if db_run_id is None:
+        return None
+    try:
+        from agentic_company.console.web.db import ConsoleRepository
+
+        repo = ConsoleRepository()
+        repo.init_schema()
+        return [
+            AgentMessage.from_dict(payload)
+            for payload in repo.list_agent_messages(
+                db_run_id,
+                to_agent=to_agent,
+                from_agent=from_agent,
+                intent=intent,
+                correlation_id=correlation_id,
+                limit=limit,
+            )
+        ]
+    except Exception:
+        return None
+
+
+def _db_run_id_for_run_dir(run_dir: Path) -> int | None:
+    try:
+        from agentic_company.console.web.db import ConsoleRepository
+
+        repo = ConsoleRepository()
+        repo.init_schema()
+        with repo.connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM runs WHERE run_dir = ?",
+                (str(run_dir),),
+            ).fetchone()
+        return int(row["id"]) if row else None
+    except Exception:
+        return None
 
 
 def _indent_message(content: str, *, prefix: str) -> str:

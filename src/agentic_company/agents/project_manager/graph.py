@@ -19,16 +19,16 @@ from agentic_company.platform.agent_runtime import (
     agent_env_value,
     build_agent_executor_graph,
 )
-from agentic_company.platform.artifacts import read_json_artifact
 from agentic_company.platform.events import write_event
 from agentic_company.platform.messages import render_incoming_messages_for_prompt
 from agentic_company.platform.models import AgentRunResult
-from agentic_company.platform.sprints import sync_work_board
+from agentic_company.platform.runtime_db import materialize_pm_work_items
 from agentic_company.platform.state import (
     DeliveryState,
     codex_resume_thread_id,
     mark_node_completed,
 )
+from agentic_company.platform.tool_contracts import WorkItemExecutionPacket
 
 PROJECT_MANAGER_AGENT_ID = "project-manager-agent"
 PROJECT_MANAGER_AGENT_GRAPH_NODE_ORDER = AGENT_EXECUTOR_GRAPH_NODE_ORDER
@@ -37,7 +37,7 @@ PROJECT_MANAGEMENT_DIR = f"{UPSTREAM_PLANNING_DIR}/project-management"
 PROJECT_MANAGEMENT_REQUEST = f"{UPSTREAM_PLANNING_DIR}/project-management-request.json"
 PROJECT_MANAGEMENT_MD = f"{PROJECT_MANAGEMENT_DIR}/release-plan.md"
 PROJECT_MANAGEMENT_JSON = f"{PROJECT_MANAGEMENT_DIR}/release-plan.json"
-PROJECT_MANAGEMENT_FEATURE_QUEUE_JSON = f"{PROJECT_MANAGEMENT_DIR}/candidate-feature-queue.json"
+PROJECT_MANAGEMENT_WORK_ITEMS_JSON = f"{PROJECT_MANAGEMENT_DIR}/planned-work-items.json"
 PROJECT_MANAGEMENT_RISKS_MD = f"{PROJECT_MANAGEMENT_DIR}/risks-and-dependencies.md"
 PROJECT_MANAGEMENT_ROADMAP_CSV = f"{PROJECT_MANAGEMENT_DIR}/roadmap.csv"
 BUSINESS_ANALYSIS_MD = f"{UPSTREAM_PLANNING_DIR}/business-analysis.md"
@@ -54,7 +54,7 @@ SPRINT_COUNT_GUIDANCE = (
 )
 FEATURE_SIZING_GUIDANCE = (
     "Keep features as meaningful vertical slices that are small enough for "
-    "Fullstack to implement and QA to validate without guessing. Preserve "
+    "Fullstack to implement and QA to validate without unspecified input. Preserve "
     "user journeys and source traceability. Avoid both tiny technical chores "
     "and overloaded feature bundles."
 )
@@ -202,6 +202,18 @@ def _run_agent_executor(
                 runner=runner,
                 run_dir=Path(state["run_dir"]),
                 delivery_state=state["delivery_state"],
+                packet=WorkItemExecutionPacket(
+                    run_id=str(state["delivery_state"]["run_id"]),
+                    work_item_id="PLAN-03",
+                    sprint_id="planning",
+                    owner_agent=PROJECT_MANAGER_AGENT_ID,
+                    tool_name="run_project_manager",
+                    tool_call_id=str(
+                        state["delivery_state"].get("agent_execution_id") or "PLAN-03"
+                    ),
+                    attempt_id="1",
+                    status="in_progress",
+                ),
             )
         )
         return {**state, "result": result}
@@ -231,7 +243,7 @@ def _project_manager_user_prompt(state: DeliveryState) -> str:
             "expected_outputs": [
                 PROJECT_MANAGEMENT_MD,
                 PROJECT_MANAGEMENT_JSON,
-                PROJECT_MANAGEMENT_FEATURE_QUEUE_JSON,
+                PROJECT_MANAGEMENT_WORK_ITEMS_JSON,
                 PROJECT_MANAGEMENT_RISKS_MD,
                 PROJECT_MANAGEMENT_ROADMAP_CSV,
             ],
@@ -263,10 +275,7 @@ def _apply_result(state: ProjectManagerAgentGraphState) -> ProjectManagerAgentGr
     )
     append_downstream_response(updated, from_agent=PROJECT_MANAGER_AGENT_ID, result=result)
     if result.status == "project_management_completed":
-        candidate_queue = _candidate_feature_queue(Path(updated["run_dir"]))
-        if candidate_queue:
-            updated["candidate_feature_queue"] = candidate_queue
-            updated = _materialize_planned_work_items(updated, candidate_queue)
+        materialize_pm_work_items(str(updated["run_id"]), Path(updated["run_dir"]))
     else:
         updated["blockers"] = [*updated.get("blockers", []), result.summary]
     completed_event = (
@@ -282,56 +291,6 @@ def _apply_result(state: ProjectManagerAgentGraphState) -> ProjectManagerAgentGr
         {"status": result.status, "artifacts": result.output_artifacts},
     )
     return {**state, "delivery_state": updated}
-
-
-def _materialize_planned_work_items(
-    state: DeliveryState,
-    candidate_queue: list[dict[str, object]],
-) -> DeliveryState:
-    """Expose PM-planned features as canonical To Do board items immediately."""
-
-    run_dir = Path(state["run_dir"])
-    run_id = state["run_id"]
-    planned_items: list[dict[str, object]] = []
-    for index, feature in enumerate(candidate_queue, start=1):
-        work_item_id = str(feature.get("id") or feature.get("feature_id") or "").strip()
-        if not work_item_id:
-            continue
-        planned = {
-            "id": work_item_id,
-            "work_item_id": work_item_id,
-            "title": str(feature.get("title") or feature.get("name") or work_item_id),
-            "sprint_id": str(feature.get("sprint_id") or ""),
-            "delivery_order": _int_value(feature.get("delivery_order"), index),
-            "owner_agent": str(feature.get("suggested_owner_agent") or "fullstack-agent"),
-            "suggested_owner_agent": str(feature.get("suggested_owner_agent") or "fullstack-agent"),
-            "status": "pending",
-            "source_refs": _string_list(feature.get("source_refs", [])),
-            "acceptance_criteria": _string_list(feature.get("acceptance_criteria", [])),
-            "description": str(feature.get("description") or feature.get("user_value") or ""),
-            "dependencies": _string_list(feature.get("dependencies", [])),
-        }
-        planned_items.append(planned)
-        write_event(
-            run_dir,
-            run_id,
-            PROJECT_MANAGER_AGENT_ID,
-            "work_item_planned",
-            {
-                "work_item_id": work_item_id,
-                "feature_id": work_item_id,
-                "title": planned["title"],
-                "sprint_id": planned["sprint_id"],
-                "delivery_order": planned["delivery_order"],
-                "owner_agent": planned["owner_agent"],
-                "status": "pending",
-                "source_refs": planned["source_refs"],
-            },
-        )
-    if not planned_items:
-        return state
-    updated: DeliveryState = {**state, "work_items": planned_items}
-    return sync_work_board(updated, sprint_id=str(updated.get("team_lead_sprint_id") or ""))
 
 
 def _project_management_request(run_dir: Path, state: DeliveryState) -> dict[str, object]:
@@ -361,7 +320,7 @@ def _project_management_request(run_dir: Path, state: DeliveryState) -> dict[str
         "expected_outputs": [
             PROJECT_MANAGEMENT_MD,
             PROJECT_MANAGEMENT_JSON,
-            PROJECT_MANAGEMENT_FEATURE_QUEUE_JSON,
+            PROJECT_MANAGEMENT_WORK_ITEMS_JSON,
             PROJECT_MANAGEMENT_RISKS_MD,
             PROJECT_MANAGEMENT_ROADMAP_CSV,
         ],
@@ -378,33 +337,6 @@ def _project_management_request(run_dir: Path, state: DeliveryState) -> dict[str
             to_agent=PROJECT_MANAGER_AGENT_ID,
         ),
     }
-
-
-def _candidate_feature_queue(run_dir: Path) -> list[dict[str, object]]:
-    path = run_dir / PROJECT_MANAGEMENT_FEATURE_QUEUE_JSON
-    if not path.exists():
-        return []
-    payload = read_json_artifact(path, normalize_bom=True)
-    if not isinstance(payload, list):
-        return []
-    return [item for item in payload if isinstance(item, dict)]
-
-
-def _int_value(value: object, default: int) -> int:
-    try:
-        return int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return default
-
-
-def _string_list(value: object) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, list | tuple | set):
-        return [str(item) for item in value]
-    return [str(value)]
 
 
 def _relative_or_absolute(run_dir: Path, path: Path) -> str:

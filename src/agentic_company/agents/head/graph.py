@@ -13,7 +13,7 @@ from agentic_company.agents.head.tools import (
     write_head_result,
 )
 from agentic_company.platform.agent_runtime import build_agent_executor_graph
-from agentic_company.platform.sprints import seed_head_work_board
+from agentic_company.platform.runtime_db import materialize_planning_items
 from agentic_company.platform.state import DeliveryState
 
 HEAD_AGENT_GRAPH_NODE_ORDER: tuple[str, ...] = (
@@ -100,7 +100,8 @@ def _prepare_context(max_steps: int):
         updated = {**delivery_state}
         updated["stage"] = "head"
         updated["status"] = "head_planning_started"
-        seeded = seed_head_work_board(cast(DeliveryState, updated))
+        materialize_planning_items(str(updated["run_id"]))
+        seeded = cast(DeliveryState, updated)
         write_head_event(
             seeded,
             "head_planning_started",

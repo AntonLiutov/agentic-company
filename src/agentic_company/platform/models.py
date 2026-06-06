@@ -19,9 +19,8 @@ class ExecutionRequest:
     expected_outputs: list[str]
     instructions: list[str]
     constraints: list[str]
-    feature_queue: list[dict[str, Any]] = field(default_factory=list)
-    active_feature: dict[str, Any] | None = None
-    completed_feature_ids: list[str] = field(default_factory=list)
+    work_item: dict[str, Any] = field(default_factory=dict)
+    completed_work_item_ids: list[str] = field(default_factory=list)
     execution_id: str = ""
     execution_intent: str = ""
     parent_message_id: str = ""

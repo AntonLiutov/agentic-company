@@ -13,7 +13,7 @@ async function pollRunStatus() {
     const response = await fetch(`/api/runs/${runId}/status`);
     if (!response.ok) return;
     const payload = await response.json();
-    target.textContent = payload.running ? `${payload.stage} - ${payload.status}` : payload.status;
+    target.textContent = formatRunStatus(payload);
     if (
       lastRunEventCount !== null &&
       payload.events !== lastRunEventCount &&
@@ -28,6 +28,16 @@ async function pollRunStatus() {
   } catch {
     setTimeout(pollRunStatus, 5000);
   }
+}
+
+function formatRunStatus(payload) {
+  const status = payload.status || "";
+  const stage = payload.stage || "";
+  const owner = payload.active_owner || "";
+  if (!payload.running) return status;
+  if (owner) return `${owner} - ${status}`;
+  if (stage && stage !== status) return `${stage} - ${status}`;
+  return status;
 }
 
 function shouldRefreshWorkspaceFragments() {

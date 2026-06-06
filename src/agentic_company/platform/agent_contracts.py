@@ -11,8 +11,6 @@ from agentic_company.platform.agent_runtime import (
     LangChainSpecialistAgentExecutor,
     SpecialistAgentExecutor,
 )
-from agentic_company.platform.artifact_registry import register_artifacts_from_refs
-from agentic_company.platform.artifacts import ArtifactKind, ArtifactRef, artifact_ref
 from agentic_company.platform.messages import AgentMessageStore, append_agent_response
 from agentic_company.platform.models import AgentRunResult
 from agentic_company.platform.state import (
@@ -23,7 +21,6 @@ from agentic_company.platform.state import (
 
 SEND_MESSAGE_TOOL = "send_message"
 READ_MESSAGES_TOOL = "read_messages"
-LIST_ARTIFACTS_TOOL = "list_artifacts"
 READ_ARTIFACT_TOOL = "read_artifact"
 SHARE_ARTIFACT_TOOL = "share_artifact"
 PUBLISH_ARTIFACT_TOOL = "publish_artifact"
@@ -48,7 +45,6 @@ COORDINATOR_RESPONSE_INTENTS: tuple[str, ...] = (
 COMMON_AGENT_TOOLS: tuple[str, ...] = (
     SEND_MESSAGE_TOOL,
     READ_MESSAGES_TOOL,
-    LIST_ARTIFACTS_TOOL,
     READ_ARTIFACT_TOOL,
     SHARE_ARTIFACT_TOOL,
 )
@@ -197,29 +193,16 @@ def blocked_state(
     return updated
 
 
-def extend_artifacts(state: DeliveryState, artifacts: list[ArtifactRef]) -> None:
-    """Append artifact references to delivery state."""
+def extend_artifacts(state: DeliveryState, artifacts: list[str]) -> None:
+    """Keep run state free of board truth; artifact links live in registry/DB."""
 
-    state["artifacts"] = [*state.get("artifacts", []), *artifacts]
-    run_dir = state.get("run_dir")
-    if run_dir:
-        register_artifacts_from_refs(
-            Path(str(run_dir)),
-            artifacts,
-            run_id=str(state.get("run_id", "")),
-            source_tool="delivery_graph",
-        )
+    state["last_artifact_refs"] = [*state.get("last_artifact_refs", []), *artifacts]
 
 
-def artifact_refs(
-    paths: list[str],
-    *,
-    kind: ArtifactKind,
-    owner_agent: str,
-) -> list[ArtifactRef]:
-    """Build artifact references for a runner result."""
+def artifact_refs(paths: list[str], *, kind: str = "", owner_agent: str = "") -> list[str]:
+    """Return artifact paths for agent messages without deriving registry metadata."""
 
-    return [artifact_ref(path, kind=kind, owner_agent=owner_agent) for path in paths]
+    return list(paths)
 
 
 def append_downstream_response(
@@ -247,9 +230,7 @@ def append_downstream_response(
         parent_message.correlation_id
         if parent_message
         else str(
-            state.get("agent_call_correlation_id")
-            or state.get("active_feature_id")
-            or default_correlation_id
+            state.get("agent_call_correlation_id") or default_correlation_id
             or ""
         )
         or None

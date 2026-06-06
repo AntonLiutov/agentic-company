@@ -1,3 +1,4 @@
+from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.platform.messages import (
     AgentMessage,
     AgentMessageStore,
@@ -116,3 +117,51 @@ def test_agent_messages_render_prompt_context_and_response(tmp_path):
     assert "08-qa-report-F1.md" in rendered
     assert response.intent == "agent_response"
     assert response.parent_message_id == "msg-in"
+
+
+def test_agent_message_store_mirrors_run_messages_to_db(tmp_path, monkeypatch):
+    db_path = tmp_path / "console.db"
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
+    repo = ConsoleRepository(db_path)
+    repo.init_schema()
+    user = repo.create_user(
+        email="messages@example.test",
+        username="messages-user",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Messages",
+        request_text="Messages",
+        mode="internal_tool",
+        complexity="simple",
+        status="running",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="run-messages",
+        run_dir=run_dir,
+        status="running",
+        mode="internal_tool",
+        reasoning="medium",
+    )
+
+    AgentMessageStore(run_dir).append(
+        AgentMessage(
+            message_id="msg-db",
+            from_agent="team-lead-agent",
+            to_agent="qa-agent",
+            intent="request_qa",
+            content="Validate from DB.",
+            correlation_id="US-1",
+            created_at="2026-05-09T00:00:00+00:00",
+        )
+    )
+
+    db_payloads = repo.list_agent_messages(run.id, to_agent="qa-agent", correlation_id="US-1")
+    messages = AgentMessageStore(run_dir).read(to_agent="qa-agent", correlation_id="US-1")
+
+    assert [payload["message_id"] for payload in db_payloads] == ["msg-db"]
+    assert [message.message_id for message in messages] == ["msg-db"]

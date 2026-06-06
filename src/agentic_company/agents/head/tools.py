@@ -13,8 +13,7 @@ from uuid import uuid4
 from agentic_company.agents.head.contracts import HeadDecision, HeadToolName
 from agentic_company.agents.registry import agent_by_id, route_for_node
 from agentic_company.platform.agent_runtime import agent_env_value
-from agentic_company.platform.artifact_registry import register_artifact
-from agentic_company.platform.artifacts import artifact_ref
+from agentic_company.platform.artifact_registry import artifact_id_for
 from agentic_company.platform.codex_review import (
     CodexReviewRequest,
     CodexReviewResult,
@@ -24,11 +23,17 @@ from agentic_company.platform.events import write_event
 from agentic_company.platform.executions import build_agent_execution_id, short_hash
 from agentic_company.platform.messages import AgentMessage, AgentMessageStore
 from agentic_company.platform.run_trace import record_tool_call_event
-from agentic_company.platform.sprints import (
-    HEAD_WORK_ITEM_BY_NODE,
-    seed_head_work_board,
-    set_work_item_status,
-    sync_work_board,
+from agentic_company.platform.runtime_db import (
+    artifact_links_for_paths,
+    artifact_paths_by_owner,
+    artifact_paths_by_type,
+    count_tool_call_events,
+    materialize_planning_items,
+    next_sprint_to_run,
+    record_artifact_link,
+    record_work_item_transition,
+    sprint_completion_state,
+    sprint_ids,
 )
 from agentic_company.platform.state import (
     DeliveryState,
@@ -43,12 +48,14 @@ from agentic_company.platform.status_inspector import (
     StatusInspectorRunner,
 )
 from agentic_company.platform.tool_contracts import (
+    ArtifactRegistrationRequest,
     ToolCallResult,
     ToolDashboardUpdate,
-    artifact_refs_from_paths,
+    ToolExecutionRecord,
     dashboard_status_from_runtime_status,
     failure_mode_from_status,
 )
+from agentic_company.platform.work_item_contracts import HEAD_WORK_ITEM_BY_NODE
 
 HEAD_AGENT_ID = "head-agent"
 HEAD_CODEX_REVIEW_AGENT_ID = "head-codex-review"
@@ -89,23 +96,27 @@ class HeadToolbox:
     codex_reviewer: CodexReviewerLike | None = None
     status_inspector: StatusInspectorLike | None = None
     history: list[dict[str, Any]] | None = None
+    initial_tool_call_count: int = 0
+    current_tool_name: str = ""
 
     def __post_init__(self) -> None:
         if self.history is None:
             self.history = []
-        if not self.delivery_state.get("feature_queue"):
-            self.delivery_state = seed_head_work_board(self.delivery_state)
+        materialize_planning_items(str(self.delivery_state["run_id"]))
+        self.initial_tool_call_count = count_tool_call_events(
+            str(self.delivery_state["run_id"]),
+            agent_id=HEAD_AGENT_ID,
+        )
 
     def run_business_analyst(
         self,
-        target: str | None = None,
         reason: str = "",
         message: str = "",
     ) -> str:
         return self._run_worker(
             tool="run_business_analyst",
             node_name="business_analyst",
-            target=target or "requirements",
+            correlation_id="PLAN-01",
             reason=reason,
             message=message,
             worker=self.workers.business_analyst,
@@ -113,14 +124,13 @@ class HeadToolbox:
 
     def run_architect(
         self,
-        target: str | None = None,
         reason: str = "",
         message: str = "",
     ) -> str:
         return self._run_worker(
             tool="run_architect",
             node_name="architecture",
-            target=target or "architecture",
+            correlation_id="PLAN-02",
             reason=reason,
             message=message,
             worker=self.workers.architect,
@@ -128,14 +138,13 @@ class HeadToolbox:
 
     def run_project_manager(
         self,
-        target: str | None = None,
         reason: str = "",
         message: str = "",
     ) -> str:
         return self._run_worker(
             tool="run_project_manager",
             node_name="project_management",
-            target=target or "project-management",
+            correlation_id="PLAN-03",
             reason=reason,
             message=message,
             worker=self.workers.project_manager,
@@ -143,25 +152,12 @@ class HeadToolbox:
 
     def run_team_lead(
         self,
-        target: str | None = None,
+        sprint_id: str,
         reason: str = "",
         message: str = "",
     ) -> str:
-        promoted = promote_candidate_feature_queue(self.delivery_state)
-        if not promoted.get("feature_queue"):
-            self.delivery_state = promoted
-            self._record(
-                "run_team_lead",
-                target or "sprint-delivery",
-                reason or "Team Lead requested before Project Manager produced a feature queue.",
-                message,
-                result_status="head_waiting_for_feature_queue",
-            )
-            return self._tool_response(
-                "Team Lead was not started because no candidate feature queue is available."
-            )
-        self.delivery_state = promoted
-        if not target:
+        sprint_id = str(sprint_id or "").strip()
+        if not sprint_id:
             self._record(
                 "run_team_lead",
                 "missing-sprint-target",
@@ -170,13 +166,56 @@ class HeadToolbox:
                 result_status="head_waiting_for_explicit_sprint_target",
             )
             return self._tool_response(
-                "Team Lead was not started because run_team_lead requires an explicit "
-                "target sprint id from the PM artifacts, for example target='sprint-02'."
+                "Team Lead was not started because run_team_lead requires explicit sprint_id."
+            )
+        sprint_state = sprint_completion_state(str(self.delivery_state["run_id"]), sprint_id)
+        if not sprint_state.has_items:
+            self._record(
+                "run_team_lead",
+                sprint_id,
+                reason or "Team Lead requested a sprint with no DB work items.",
+                message,
+                result_status="head_waiting_for_db_work_items",
+            )
+            return self._tool_response(
+                f"Team Lead was not started because sprint {sprint_id} has no DB work items."
+            )
+        if sprint_state.is_complete:
+            next_sprint_id = next_sprint_to_run(str(self.delivery_state["run_id"]))
+            self._record(
+                "run_team_lead",
+                sprint_id,
+                reason or "Team Lead requested an already completed sprint.",
+                message,
+                result_status="sprint_already_complete",
+            )
+            return self._tool_response(
+                (
+                    f"Sprint {sprint_id} is already complete in DB."
+                    + (f" Next sprint to run: {next_sprint_id}." if next_sprint_id else "")
+                ),
+                input_summary={
+                    "sprint_id": sprint_id,
+                    "sprint_state": sprint_state.to_dict(),
+                    "next_sprint_id": next_sprint_id,
+                },
+            )
+        if sprint_state.is_blocked:
+            self._record(
+                "run_team_lead",
+                sprint_id,
+                reason or "Team Lead requested a blocked sprint.",
+                message,
+                result_status="sprint_blocked",
+            )
+            return self._tool_response(
+                f"Team Lead was not started because sprint {sprint_id} is blocked.",
+                input_summary={"sprint_id": sprint_id, "sprint_state": sprint_state.to_dict()},
             )
         return self._run_worker(
             tool="run_team_lead",
             node_name="team_lead",
-            target=target,
+            correlation_id=sprint_id,
             reason=reason,
             message=message,
             worker=self.workers.team_lead,
@@ -184,16 +223,14 @@ class HeadToolbox:
 
     def complete_delivery(
         self,
-        target: str | None = None,
         reason: str = "",
         message: str = "",
     ) -> str:
         started = time.perf_counter()
         if limit_response := self._limit_response(message):
             return limit_response
-        promoted = promote_candidate_feature_queue(self.delivery_state)
         self.delivery_state = mark_node_completed(
-            promoted,
+            self.delivery_state,
             node_name="head",
             stage="head",
             status="head_delivery_completed",
@@ -203,12 +240,13 @@ class HeadToolbox:
             "head_delivery_completed",
             {"reason": reason, "message": message},
         )
-        self._record("complete_delivery", target or "company-delivery", reason, message)
+        self._record("complete_delivery", "PLAN-04", reason, message)
         return self._tool_response(
             "Head Agent completed BA -> Architect -> PM -> Team Lead.",
             duration_ms=_duration_ms(started),
             input_summary={
-                "target": target or "company-delivery",
+                "correlation_id": "company-delivery",
+                "work_item_id": "PLAN-04",
                 "reason": reason,
                 "message": message,
             },
@@ -216,18 +254,16 @@ class HeadToolbox:
 
     def inspect_delivery_status(
         self,
-        target: str | None = None,
         reason: str = "",
         message: str = "",
     ) -> str:
         started = time.perf_counter()
         if limit_response := self._limit_response(message):
             return limit_response
-        promoted = promote_candidate_feature_queue(self.delivery_state)
-        refs = _delivery_status_artifact_refs(promoted)
+        refs = _delivery_status_artifact_refs(self.delivery_state)
         inspection_request = StatusInspectionRequest(
-            run_id=promoted["run_id"],
-            run_dir=Path(promoted["run_dir"]),
+            run_id=self.delivery_state["run_id"],
+            run_dir=Path(self.delivery_state["run_dir"]),
             requesting_agent=HEAD_AGENT_ID,
             scope="delivery",
             purpose=(
@@ -235,24 +271,25 @@ class HeadToolbox:
                 or "Inspect all PM-planned sprints, worker calls, gates, evidence, blockers, "
                 "and completion readiness. Do not choose coordinator routing."
             ),
-            status_context=_delivery_status_context(promoted, self.history or []),
+            status_context=_delivery_status_context(self.delivery_state, self.history or []),
             artifact_refs=refs,
-            correlation_id=target or "company-delivery",
-            model=agent_env_value("HEAD_STATUS_INSPECTOR_CODEX_MODEL", promoted)
-            or agent_env_value("AGENT_CODEX_MODEL", promoted)
+            correlation_id="PLAN-04",
+            model=agent_env_value("HEAD_STATUS_INSPECTOR_CODEX_MODEL", self.delivery_state)
+            or agent_env_value("AGENT_CODEX_MODEL", self.delivery_state)
             or "gpt-5.3-codex",
             execution_id=build_agent_execution_id(
-                run_id=str(promoted["run_id"]),
+                run_id=str(self.delivery_state["run_id"]),
                 agent_id=HEAD_AGENT_ID,
-                target=target or "company-delivery",
+                correlation_id="PLAN-04",
                 intent="inspect_delivery_status",
-                message_id=message or reason or target or "delivery-status",
+                message_id=message or reason or "delivery-status",
             ),
-            codex_resume_thread_id=codex_resume_thread_id(promoted, HEAD_STATUS_INSPECTOR_AGENT_ID),
+            codex_resume_thread_id=codex_resume_thread_id(
+                self.delivery_state, HEAD_STATUS_INSPECTOR_AGENT_ID
+            ),
         )
         inspector = self.status_inspector or StatusInspectorRunner()
         result = inspector.run(inspection_request)
-        self.delivery_state = promoted
         self.delivery_state["last_delivery_status_inspection"] = result.payload
         record_codex_thread(
             self.delivery_state,
@@ -269,9 +306,16 @@ class HeadToolbox:
         self.delivery_state["last_delivery_status_inspection_artifacts"] = [
             ref for ref in extend_refs if ref
         ]
+        _register_head_tool_artifacts(
+            self.delivery_state,
+            extend_refs,
+            artifact_type="status_inspection",
+            source_tool="inspect_delivery_status",
+            work_item_id="PLAN-04",
+        )
         self._record(
             "inspect_delivery_status",
-            target or "company-delivery",
+            "PLAN-04",
             reason,
             message,
             result_status=str(result.payload.get("delivery_status") or result.status),
@@ -283,20 +327,20 @@ class HeadToolbox:
                 "intent": "inspect_delivery_status",
                 "content": result.payload,
                 "artifact_refs": [
-                    *result.artifact_refs,
                     result.result_artifact,
                     result.summary_artifact,
                     result.prompt_artifact,
                     result.log_artifact,
                     result.raw_events_artifact,
                 ],
-                "correlation_id": target or "company-delivery",
+                "correlation_id": "PLAN-04",
                 "execution_id": result.execution_id,
                 "codex_thread_id": result.codex_thread_id,
             },
             duration_ms=_duration_ms(started),
             input_summary={
-                "target": target or "company-delivery",
+                "correlation_id": "company-delivery",
+                "work_item_id": "PLAN-04",
                 "reason": reason,
                 "message": message,
                 "artifact_refs": refs,
@@ -311,30 +355,20 @@ class HeadToolbox:
         question: str = "",
         artifact_refs: str = "",
         intent: str = "review_feedback",
-        target: str | None = None,
+        correlation_id: str = "upstream-planning",
         reason: str = "",
         message: str = "",
     ) -> str:
         started = time.perf_counter()
         if limit_response := self._limit_response(message or question):
             return limit_response
-        review_item_id = _review_work_item_id(self.delivery_state, target)
-        if review_item_id:
-            self.delivery_state = set_work_item_status(
-                self.delivery_state,
-                review_item_id,
-                "review",
-                active=True,
-                sprint_id=str(self.delivery_state.get("team_lead_sprint_id") or ""),
-            )
-            checkpoint_delivery_state(self.delivery_state)
         refs = _split_artifact_refs(artifact_refs)
         review_request = CodexReviewRequest(
             run_id=self.delivery_state["run_id"],
             run_dir=Path(self.delivery_state["run_dir"]),
             requesting_agent=HEAD_AGENT_ID,
             target_agent=target_agent or None,
-            correlation_id=target or "upstream-planning",
+            correlation_id=correlation_id,
             purpose=purpose or reason or "Review referenced planning artifacts.",
             question=question
             or message
@@ -344,7 +378,7 @@ class HeadToolbox:
             execution_id=build_agent_execution_id(
                 run_id=str(self.delivery_state["run_id"]),
                 agent_id=HEAD_AGENT_ID,
-                target=target or "upstream-planning",
+                correlation_id=correlation_id,
                 intent="codex_review",
                 message_id=question or message or reason or target_agent,
             ),
@@ -370,11 +404,23 @@ class HeadToolbox:
                     intent=intent or "review_feedback",
                     content=result.content,
                     artifact_refs=refs,
-                    correlation_id=target or "upstream-planning",
+                    correlation_id=correlation_id,
                     execution_id=result.execution_id or None,
                 )
             )
-        self._record("codex_review", target_agent or target or "upstream-planning", reason, message)
+        _register_head_tool_artifacts(
+            self.delivery_state,
+            [
+                result.summary_artifact,
+                result.prompt_artifact,
+                result.log_artifact,
+                result.raw_events_artifact,
+            ],
+            artifact_type="review_output",
+            source_tool="codex_review",
+            work_item_id="PLAN-04",
+        )
+        self._record("codex_review", target_agent or correlation_id, reason, message)
         return self._tool_response(
             f"Codex review {result.status}.",
             downstream_response={
@@ -382,7 +428,6 @@ class HeadToolbox:
                 "intent": "codex_review",
                 "content": result.content,
                 "artifact_refs": [
-                    *refs,
                     result.summary_artifact,
                     result.prompt_artifact,
                     result.log_artifact,
@@ -390,7 +435,7 @@ class HeadToolbox:
                 ],
                 "message_id": sent_message.message_id if sent_message else None,
                 "to_agent": known_target_agent or None,
-                "correlation_id": target or "upstream-planning",
+                "correlation_id": correlation_id,
                 "execution_id": result.execution_id,
                 "codex_thread_id": result.codex_thread_id,
                 "review_authority": "advisory_only",
@@ -406,7 +451,7 @@ class HeadToolbox:
             duration_ms=_duration_ms(started),
             input_summary={
                 "target_agent": target_agent,
-                "target": target or "upstream-planning",
+                "correlation_id": correlation_id,
                 "purpose": purpose,
                 "question": question,
                 "artifact_refs": refs,
@@ -420,7 +465,7 @@ class HeadToolbox:
     def block_planning(
         self,
         reason: str,
-        target: str | None = None,
+        correlation_id: str = "upstream-planning",
         message: str = "",
     ) -> str:
         started = time.perf_counter()
@@ -434,14 +479,14 @@ class HeadToolbox:
         write_head_event(
             self.delivery_state,
             "head_planning_blocked",
-            HeadDecision("block_planning", reason, target, message).to_dict(),
+            HeadDecision("block_planning", reason, correlation_id, message).to_dict(),
         )
-        self._record("block_planning", target or "upstream-planning", reason, message)
+        self._record("block_planning", correlation_id, reason, message)
         return self._tool_response(
             "Planning blocked: " + reason,
             duration_ms=_duration_ms(started),
             input_summary={
-                "target": target or "upstream-planning",
+                "correlation_id": correlation_id,
                 "reason": reason,
                 "message": message,
             },
@@ -452,12 +497,18 @@ class HeadToolbox:
         checkpoint_delivery_state(self.delivery_state)
         return HeadExecutorResult(self.delivery_state, list(self.history or []))
 
+    def tool_calls_made(self) -> bool:
+        return (
+            count_tool_call_events(str(self.delivery_state["run_id"]), agent_id=HEAD_AGENT_ID)
+            > self.initial_tool_call_count
+        )
+
     def _run_worker(
         self,
         *,
         tool: HeadToolName,
         node_name: str,
-        target: str,
+        correlation_id: str,
         reason: str,
         message: str,
         worker: HeadWorker,
@@ -467,13 +518,12 @@ class HeadToolbox:
             return limit_response
         updated = {**self.delivery_state}
         if node_name == "team_lead":
-            updated["team_lead_sprint_id"] = target
-        item_id = HEAD_WORK_ITEM_BY_NODE.get(node_name, target)
-        track_head_item = node_name != "team_lead" or not updated.get("feature_queue")
+            updated["team_lead_sprint_id"] = correlation_id
+        item_id = HEAD_WORK_ITEM_BY_NODE.get(node_name, correlation_id)
         outbound = append_agent_call_message(
             updated,
             node_name=node_name,
-            target=target,
+            correlation_id=correlation_id,
             reason=reason,
             message=message,
         )
@@ -481,25 +531,27 @@ class HeadToolbox:
         updated["agent_execution_id"] = execution_id
         updated["agent_execution_intent"] = outbound.intent
         updated["agent_execution_agent_id"] = outbound.to_agent
-        if track_head_item:
-            self.delivery_state = set_work_item_status(
-                cast(DeliveryState, updated),
-                item_id,
-                "in_progress",
-                active=True,
-                sprint_id=str(updated.get("team_lead_sprint_id") or ""),
+        self.delivery_state = cast(DeliveryState, updated)
+        record_work_item_transition(
+            ToolExecutionRecord(
+                run_id=str(self.delivery_state["run_id"]),
+                work_item_id=item_id,
+                sprint_id="planning",
+                owner_agent=outbound.to_agent,
+                tool_name=tool,
+                tool_call_id=execution_id or _tool_call_id(self.delivery_state, tool, 0),
+                attempt_id="start",
+                status="in_progress",
+                activity_message=f"{outbound.to_agent} started {item_id}.",
             )
-        else:
-            self.delivery_state = sync_work_board(
-                cast(DeliveryState, updated),
-                sprint_id=str(updated.get("team_lead_sprint_id") or ""),
-            )
+        )
         write_request(
             self.delivery_state,
             kind=f"{node_name}_request",
             target_agent=outbound.to_agent,
             payload={
-                "target": target,
+                "correlation_id": correlation_id,
+                "work_item_id": item_id,
                 "message": message,
                 "message_id": outbound.message_id,
                 "message_intent": outbound.intent,
@@ -519,24 +571,24 @@ class HeadToolbox:
         )
         checkpoint_delivery_state(self.delivery_state)
         self.delivery_state = worker(self.delivery_state)
-        if track_head_item:
-            item_status = "blocked" if self.delivery_state.get("blockers") else "done"
-            self.delivery_state = set_work_item_status(
-                self.delivery_state,
-                item_id,
-                item_status,
-                active=False,
-                sprint_id=str(self.delivery_state.get("team_lead_sprint_id") or ""),
+        item_status = "blocked" if self.delivery_state.get("blockers") else "done"
+        record_work_item_transition(
+            ToolExecutionRecord(
+                run_id=str(self.delivery_state["run_id"]),
+                work_item_id=item_id,
+                sprint_id="planning",
+                owner_agent=outbound.to_agent,
+                tool_name=tool,
+                tool_call_id=execution_id or _tool_call_id(self.delivery_state, tool, 0),
+                attempt_id="finish",
+                status=item_status,
+                activity_message=f"{outbound.to_agent} completed {item_id}.",
             )
-        else:
-            self.delivery_state = sync_work_board(
-                self.delivery_state,
-                sprint_id=str(self.delivery_state.get("team_lead_sprint_id") or ""),
-            )
+        )
         downstream_response = latest_downstream_response(
             self.delivery_state,
             from_agent=outbound.to_agent,
-            correlation_id=target,
+            correlation_id=correlation_id,
         )
         write_head_event(
             self.delivery_state,
@@ -549,7 +601,7 @@ class HeadToolbox:
                 "execution_id": execution_id,
             },
         )
-        self._record(tool, target, reason, message)
+        self._record(tool, correlation_id, reason, message)
         return self._tool_response(
             f"{tool} completed with status {self.delivery_state.get('status')}.",
             downstream_response=downstream_response,
@@ -557,7 +609,8 @@ class HeadToolbox:
             input_summary={
                 "tool": tool,
                 "node_name": node_name,
-                "target": target,
+                "correlation_id": correlation_id,
+                "work_item_id": item_id,
                 "reason": reason,
                 "message": message,
                 "execution_id": execution_id,
@@ -568,14 +621,14 @@ class HeadToolbox:
     def _record(
         self,
         tool: HeadToolName,
-        target: str | None,
+        correlation_id: str | None,
         reason: str,
         message: str,
         *,
         result_status: str | None = None,
     ) -> None:
         step = len(self.history or []) + 1
-        decision = HeadDecision(tool, reason or "No reason provided.", target, message)
+        decision = HeadDecision(tool, reason or "No reason provided.", correlation_id, message)
         decision_path = write_decision_artifact(self.delivery_state, step, decision)
         write_head_event(
             self.delivery_state,
@@ -583,12 +636,13 @@ class HeadToolbox:
             {"step": step, "decision": decision.to_dict(), "artifact": decision_path},
         )
         status = result_status or str(self.delivery_state.get("status") or "")
+        self.current_tool_name = tool
         history = self.history or []
         history.append(
             {
                 "step": step,
                 "tool": tool,
-                "target": target,
+                "correlation_id": correlation_id,
                 "reason": reason,
                 "message": message,
                 "result_status": status,
@@ -627,9 +681,15 @@ class HeadToolbox:
             artifact_refs=artifact_refs,
             downstream_response=downstream_response,
         )
-        tool_name = _latest_history_tool(self.history or [])
+        tool_name = self.current_tool_name
+        if not tool_name:
+            raise RuntimeError("Head tool response requires explicit current tool name.")
         failure_mode = failure_mode_from_status(status, self.delivery_state.get("blockers", []))
         dashboard_status = dashboard_status_from_runtime_status(status)
+        artifact_links = artifact_links_for_paths(
+            str(self.delivery_state["run_id"]),
+            output_artifacts,
+        )
         structured = ToolCallResult(
             tool_name=tool_name,
             status=status,
@@ -640,19 +700,17 @@ class HeadToolbox:
                 "completed_nodes": self.delivery_state.get("completed_nodes", []),
                 "blockers": self.delivery_state.get("blockers", []),
                 "team_lead_sprint_id": self.delivery_state.get("team_lead_sprint_id"),
-                "active_feature_id": self.delivery_state.get("active_feature_id"),
             },
-            output_artifacts=artifact_refs_from_paths(output_artifacts),
+            output_artifacts=artifact_links,
             failure_mode=failure_mode,
             recommended_next_action=_recommended_next_action(status, failure_mode),
             dashboard_update=ToolDashboardUpdate(
                 status=dashboard_status,
                 summary=message,
                 comment=message,
-                artifact_links=artifact_refs_from_paths(output_artifacts),
+                artifact_links=artifact_links,
                 labels=(failure_mode,) if failure_mode else (),
             ),
-            implicit_resolution_warnings=(),
         )
         snapshot: dict[str, Any] = {
             **structured.to_dict(),
@@ -695,7 +753,7 @@ def append_agent_call_message(
     state: DeliveryState,
     *,
     node_name: str,
-    target: str,
+    correlation_id: str,
     reason: str,
     message: str,
 ) -> AgentMessage:
@@ -706,7 +764,7 @@ def append_agent_call_message(
     execution_id = build_agent_execution_id(
         run_id=str(state["run_id"]),
         agent_id=target_agent,
-        target=target,
+        correlation_id=correlation_id,
         intent=intent,
         message_id=message_id,
     )
@@ -718,12 +776,12 @@ def append_agent_call_message(
             content=content,
             artifact_refs=_agent_call_artifacts(node_name, state),
             message_id=message_id,
-            correlation_id=target,
+            correlation_id=correlation_id,
             execution_id=execution_id,
         )
     )
     state["agent_call_message_id"] = outbound.message_id
-    state["agent_call_correlation_id"] = target
+    state["agent_call_correlation_id"] = correlation_id
     state["agent_execution_id"] = execution_id
     return outbound
 
@@ -759,117 +817,60 @@ def _delivery_status_context(
     state: DeliveryState,
     history: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    promoted = promote_candidate_feature_queue(state)
-    feature_queue = list(promoted.get("feature_queue", []))
-    feature_statuses = dict(promoted.get("feature_statuses", {}))
-    completed = {str(feature_id) for feature_id in promoted.get("completed_feature_ids", [])}
-    sprints: dict[str, dict[str, Any]] = {}
-    for feature in feature_queue:
-        if not isinstance(feature, dict):
-            continue
-        sprint_id = str(feature.get("sprint_id") or "sprint-01")
-        feature_id = str(feature.get("id") or feature.get("feature_id") or "")
-        if not feature_id:
-            continue
-        status = str(feature_statuses.get(feature_id) or feature.get("status") or "pending")
-        if feature_id in completed and status == "pending":
-            status = "done"
-        sprint = sprints.setdefault(
-            sprint_id,
-            {"id": sprint_id, "features": [], "done_features": [], "pending_features": []},
-        )
-        item = {
-            "id": feature_id,
-            "title": feature.get("title"),
-            "status": status,
-            "owner_agent": feature.get("suggested_owner_agent"),
-            "delivery_order": feature.get("delivery_order"),
-        }
-        sprint["features"].append(item)
-        if feature_id in completed or status in {"qa_passed", "done", "deployed", "handoff_ready"}:
-            sprint["done_features"].append(feature_id)
-        else:
-            sprint["pending_features"].append(feature_id)
-
+    sprint_ids = _db_sprint_ids(str(state["run_id"]))
     return {
-        "run_id": promoted.get("run_id"),
-        "stage": promoted.get("stage"),
-        "status": promoted.get("status"),
-        "team_lead_sprint_id": promoted.get("team_lead_sprint_id"),
-        "active_feature_id": promoted.get("active_feature_id"),
-        "completed_nodes": promoted.get("completed_nodes", []),
-        "completed_feature_ids": promoted.get("completed_feature_ids", []),
-        "feature_statuses": feature_statuses,
-        "qa_status": promoted.get("qa_status"),
-        "deployment_status": promoted.get("deployment_status"),
-        "post_deploy_qa_status": promoted.get("post_deploy_qa_status"),
-        "public_url": promoted.get("public_url"),
-        "public_urls": promoted.get("public_urls", []),
-        "blockers": promoted.get("blockers", []),
-        "pending_feature_ids": _pending_feature_ids(promoted),
-        "sprints": list(sprints.values()),
+        "run_id": state.get("run_id"),
+        "stage": state.get("stage"),
+        "status": state.get("status"),
+        "team_lead_sprint_id": state.get("team_lead_sprint_id"),
+        "next_sprint_to_run": next_sprint_to_run(str(state["run_id"])),
+        "sprints": [
+            sprint_completion_state(str(state["run_id"]), sprint_id).to_dict()
+            for sprint_id in sprint_ids
+        ],
+        "completed_nodes": state.get("completed_nodes", []),
+        "qa_status": state.get("qa_status"),
+        "deployment_status": state.get("deployment_status"),
+        "post_deploy_qa_status": state.get("post_deploy_qa_status"),
+        "public_url": state.get("public_url"),
+        "public_urls": state.get("public_urls", []),
+        "blockers": state.get("blockers", []),
         "head_history": history,
-        "team_lead_results": _json_artifacts_under(promoted, "team-lead/*-result.json"),
-        "team_lead_histories": _json_artifacts_under(promoted, "team-lead/*-history.json"),
-        "messages": _recent_messages(promoted, limit=30),
-        "artifact_refs": _delivery_status_artifact_refs(promoted),
+        "messages": _recent_messages(state, limit=30),
+        "artifact_refs": _delivery_status_artifact_refs(state),
         "status_rules": {
             "team_lead_sprint_handoff_ready": (
                 "Sprint-level handoff evidence only; Head still needs inspector confirmation "
                 "before company delivery can complete."
             ),
             "can_complete_delivery": (
-                "true only when every PM-planned feature, sprint handoff, and required final "
-                "delivery gate is done or explicitly out of scope."
+                "true only when every DB-planned work item, sprint handoff, and required "
+                "final delivery gate is done or explicitly out of scope."
             ),
         },
     }
 
 
+def _db_sprint_ids(run_id: str) -> list[str]:
+    return sprint_ids(run_id)
+
+
 def _delivery_status_artifact_refs(state: DeliveryState) -> list[str]:
-    run_dir = Path(state["run_dir"])
-    discovered = [
+    return _unique_paths(
+        [
         "00-requirements.md",
         "head/planning-history.json",
         "upstream-planning/project-management/release-plan.md",
         "upstream-planning/project-management/release-plan.json",
-        "upstream-planning/project-management/candidate-feature-queue.json",
+        "upstream-planning/project-management/planned-work-items.json",
         "upstream-planning/project-management/roadmap.csv",
         "upstream-planning/project-management/risks-and-dependencies.md",
-    ]
-    for pattern in [
-        "upstream-planning/project-management/sprint-*.json",
-        "upstream-planning/project-management/sprint-*.md",
-        "team-lead/*-history.json",
-        "team-lead/*-result.json",
-        "handoff/**/*.md",
-        "handoff/**/*.json",
-        "deployment/**/*.json",
-        "qa/**/*.json",
-    ]:
-        discovered.extend(path.relative_to(run_dir).as_posix() for path in run_dir.glob(pattern))
-    discovered.extend(str(artifact.get("path")) for artifact in state.get("artifacts", []))
-    return _unique_paths([path for path in discovered if path and (run_dir / path).exists()])
-
-
-def _json_artifacts_under(state: DeliveryState, pattern: str) -> list[dict[str, Any]]:
-    run_dir = Path(state["run_dir"])
-    payloads: list[dict[str, Any]] = []
-    for path in sorted(run_dir.glob(pattern)):
-        if not path.is_file():
-            continue
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if isinstance(payload, dict):
-            payloads.append(
-                {
-                    "path": path.relative_to(run_dir).as_posix(),
-                    "content": payload,
-                }
-            )
-    return payloads
+        *artifact_paths_by_type(
+            str(state["run_id"]),
+            {"handoff", "release_report", "deployment_summary", "qa_report"},
+        ),
+        ]
+    )
 
 
 def _recent_messages(state: DeliveryState, *, limit: int) -> list[dict[str, Any]]:
@@ -953,7 +954,7 @@ def _agent_call_artifacts(node_name: str, state: DeliveryState) -> list[str]:
                 "upstream-planning/architecture.mmd",
                 "upstream-planning/project-management/release-plan.md",
                 "upstream-planning/project-management/release-plan.json",
-                "upstream-planning/project-management/candidate-feature-queue.json",
+                "upstream-planning/project-management/planned-work-items.json",
                 "upstream-planning/project-management/risks-and-dependencies.md",
                 "upstream-planning/project-management/roadmap.csv",
             ]
@@ -970,26 +971,8 @@ def _split_artifact_refs(value: str) -> list[str]:
     return refs
 
 
-def _review_work_item_id(state: DeliveryState, target: str | None) -> str:
-    candidate = str(target or "").strip()
-    if not candidate:
-        return ""
-    board = state.get("work_board", {})
-    items = board.get("items", []) if isinstance(board, dict) else []
-    item_ids = {
-        str(item.get("item_id") or "")
-        for item in items
-        if isinstance(item, dict) and item.get("item_id")
-    }
-    return candidate if candidate in item_ids else ""
-
-
 def _artifact_paths_by_owner(state: DeliveryState, owner_agent: str) -> list[str]:
-    return [
-        str(artifact.get("path"))
-        for artifact in state.get("artifacts", [])
-        if artifact.get("owner_agent") == owner_agent and artifact.get("path")
-    ]
+    return artifact_paths_by_owner(str(state["run_id"]), owner_agent)
 
 
 def _existing_paths(state: DeliveryState, paths: list[str]) -> list[str]:
@@ -1005,69 +988,18 @@ def _unique_paths(paths: list[str]) -> list[str]:
     return unique
 
 
-def _pending_feature_ids(state: DeliveryState) -> list[str]:
-    completed = {str(feature_id) for feature_id in state.get("completed_feature_ids", [])}
-    statuses = {
-        str(feature_id): str(status)
-        for feature_id, status in dict(state.get("feature_statuses", {})).items()
-    }
-    done_statuses = {"qa_passed", "done", "deployed", "handoff_ready"}
-    pending: list[str] = []
-    for feature in sorted(
-        list(state.get("feature_queue", [])),
-        key=lambda item: int(item.get("delivery_order", 0) or 0),
-    ):
-        feature_id = str(feature.get("id") or feature.get("feature_id") or "")
-        if (
-            feature_id
-            and feature_id not in completed
-            and statuses.get(feature_id) not in done_statuses
-        ):
-            pending.append(feature_id)
-    return pending
+def _head_work_item_for_request_kind(kind: str) -> str:
+    node = kind.removesuffix("_request")
+    return HEAD_WORK_ITEM_BY_NODE.get(node, "PLAN-04")
 
 
-def promote_candidate_feature_queue(state: DeliveryState) -> DeliveryState:
-    """Promote PM's candidate feature queue into the active delivery queue."""
-
-    if state.get("feature_queue"):
-        if not state.get("active_feature_id"):
-            updated = {**state}
-            next_feature = sorted(
-                [
-                    feature
-                    for feature in list(updated.get("feature_queue", []))
-                    if isinstance(feature, dict) and feature.get("id")
-                ],
-                key=lambda feature: int(feature.get("delivery_order", 0) or 0),
-            )
-            if next_feature:
-                updated["active_feature_id"] = str(next_feature[0]["id"])
-            state = cast(DeliveryState, updated)
-        return sync_work_board(
-            state,
-            sprint_id=str(state.get("team_lead_sprint_id") or ""),
-        )
-    candidate_queue = [
-        feature
-        for feature in list(state.get("candidate_feature_queue", []))
-        if isinstance(feature, dict)
-    ]
-    if not candidate_queue:
-        return state
-
-    updated = {**state}
-    updated["feature_queue"] = candidate_queue
-    next_feature = sorted(
-        candidate_queue,
-        key=lambda feature: int(feature.get("delivery_order", 0) or 0),
-    )[0]
-    if next_feature.get("id"):
-        updated["active_feature_id"] = str(next_feature["id"])
-    return sync_work_board(
-        cast(DeliveryState, updated),
-        sprint_id=str(updated.get("team_lead_sprint_id") or ""),
-    )
+def _head_work_item_for_tool(tool: str) -> str:
+    return {
+        "run_business_analyst": "PLAN-01",
+        "run_architect": "PLAN-02",
+        "run_project_manager": "PLAN-03",
+        "run_team_lead": "PLAN-04",
+    }.get(tool, "PLAN-04")
 
 
 def write_request(
@@ -1099,6 +1031,7 @@ def write_request(
         artifact_type="tool_request",
         visibility="internal",
         source_tool="head_request",
+        work_item_id=_head_work_item_for_request_kind(kind),
     )
     return path
 
@@ -1112,6 +1045,7 @@ def write_decision_artifact(state: DeliveryState, step: int, decision: HeadDecis
         artifact_type="debug_trace",
         visibility="internal",
         source_tool=decision.tool,
+        work_item_id=_head_work_item_for_tool(decision.tool),
     )
     return relative_path
 
@@ -1125,6 +1059,7 @@ def write_history_artifact(state: DeliveryState, history: list[dict[str, Any]]) 
         artifact_type="debug_trace",
         visibility="developer",
         source_tool="head_history",
+        work_item_id="PLAN-04",
     )
 
 
@@ -1144,16 +1079,8 @@ def write_head_result(state: DeliveryState, history: list[dict[str, Any]]) -> No
         artifact_type="execution_summary",
         visibility="developer",
         source_tool="head_result",
+        work_item_id="PLAN-04",
     )
-    state["artifacts"] = [
-        *state.get("artifacts", []),
-        artifact_ref(
-            relative_path,
-            kind="internal",
-            owner_agent=HEAD_AGENT_ID,
-            visibility="developer",
-        ),
-    ]
     write_head_event(state, "head_agent_completed", {"result": result, "steps": len(history)})
 
 
@@ -1185,20 +1112,42 @@ def _register_head_artifact(
     artifact_type: str,
     visibility: str,
     source_tool: str,
+    work_item_id: str,
 ) -> None:
-    try:
-        register_artifact(
-            Path(state["run_dir"]),
-            relative_path=relative_path,
-            run_id=state.get("run_id"),
-            project_id=state.get("project_id"),
-            owner_agent=HEAD_AGENT_ID,
+    record_artifact_link(
+        Path(state["run_dir"]),
+        ArtifactRegistrationRequest(
+            artifact_id=artifact_id_for(str(state["run_id"]), relative_path),
             artifact_type=artifact_type,
             visibility=visibility,
+            owner_agent=HEAD_AGENT_ID,
             source_tool=source_tool,
+            label=Path(relative_path).name,
+            relative_path=relative_path,
+            run_id=str(state["run_id"]),
+            work_item_id=work_item_id,
+            task_scoped=True,
+        ),
+    )
+
+
+def _register_head_tool_artifacts(
+    state: DeliveryState,
+    relative_paths: list[str],
+    *,
+    artifact_type: str,
+    source_tool: str,
+    work_item_id: str,
+) -> None:
+    for relative_path in _unique_paths([path for path in relative_paths if path]):
+        _register_head_artifact(
+            state,
+            relative_path,
+            artifact_type=artifact_type,
+            visibility="internal",
+            source_tool=source_tool,
+            work_item_id=work_item_id,
         )
-    except Exception:
-        return
 
 
 def _response_artifact_refs(
@@ -1212,12 +1161,6 @@ def _response_artifact_refs(
             if ref:
                 refs.append(str(ref))
     return _unique_paths(refs)
-
-
-def _latest_history_tool(history: list[dict[str, Any]]) -> str:
-    if not history:
-        return "unknown"
-    return str(history[-1].get("tool") or "unknown")
 
 
 def _tool_call_id(state: DeliveryState, tool_name: str, step: int) -> str:
@@ -1241,10 +1184,10 @@ def _head_work_item_id(
     input_summary: dict[str, Any] | None,
 ) -> str | None:
     if input_summary:
-        for key in ("work_item_id", "target", "node_name"):
+        for key in ("work_item_id", "node_name"):
             if input_summary.get(key):
                 return str(input_summary[key])
-    return str(state.get("active_feature_id") or "") or None
+    return None
 
 
 def _duration_ms(started: float) -> int:
