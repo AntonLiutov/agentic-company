@@ -1,7 +1,7 @@
 import json
 
 from agentic_company.agents.head.executor import LangChainHeadExecutor
-from agentic_company.agents.head.tools import HeadToolbox, HeadWorkers
+from agentic_company.agents.head.tools import HeadToolbox, HeadWorkers, write_head_result
 from agentic_company.agents.team_lead.executor import LangChainTeamLeadExecutor
 from agentic_company.agents.team_lead.graph import run_team_lead_agent_graph
 from agentic_company.agents.team_lead.tools import (
@@ -115,11 +115,60 @@ def test_team_lead_executor_blocks_if_runtime_stops_after_contract_error(tmp_pat
     )
 
     assert result.delivery_state["status"] == "team_lead_sprint_blocked"
-    assert "Next DB work item still pending: US-1" in result.delivery_state["blockers"][-1]
+    assert "Team Lead AgentExecutor completed without calling any tool." in (
+        result.delivery_state["blockers"][-1]
+    )
     assert sprint_completion_state("run", "sprint-01").status == "blocked"
     assert get_work_item("run", "PLAN-04").status == "blocked"
     tool_names = [event.tool_name for event in repo.list_tool_call_events(run.id)]
-    assert tool_names[-2:] == ["codex_review", "block_sprint"]
+    assert tool_names == ["block_sprint"]
+
+
+def test_contract_error_without_work_item_id_does_not_write_runtime_tool_event(
+    tmp_path, monkeypatch
+):
+    repo, run, state = _setup_runtime(tmp_path, monkeypatch)
+    toolbox = TeamLeadToolbox(
+        delivery_state=state,
+        sprint={"sprint_id": "sprint-01"},
+        workers=_team_lead_workers(),
+        max_steps=5,
+        history=[],
+    )
+
+    payload = json.loads(
+        toolbox.codex_review(
+            target_agent="",
+            purpose="Diagnose status.",
+            question="What happened?",
+            artifact_refs="",
+            intent="review_feedback",
+            work_item_id="",
+            reason="Diagnose status.",
+            message="",
+        )
+    )
+
+    assert payload["status"] == "contract_error"
+    assert repo.list_tool_call_events(run.id, agent_id="team-lead-agent") == []
+    assert toolbox.history == []
+
+
+def test_head_result_recomputes_blockers_from_db_not_stale_state(tmp_path, monkeypatch):
+    _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
+    _mark_work_item_done("US-1")
+    mark_sprint_done("run", "sprint-01")
+    stale_state = {
+        **state,
+        "stage": "head",
+        "status": "head_planning_blocked",
+        "blockers": ["Fullstack work item US-1 did not complete successfully."],
+    }
+
+    write_head_result(stale_state, [])
+
+    result = json.loads((tmp_path / "run" / "head" / "result.json").read_text(encoding="utf-8"))
+    assert result["blockers"] == []
 
 
 def test_team_lead_sprint_plan_artifact_is_registered_to_plan_04(tmp_path, monkeypatch):

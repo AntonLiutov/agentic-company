@@ -97,15 +97,26 @@ class QualityCodexRunner:
             returncode = int(attempt_artifacts["returncode"])
             codex_thread_id = str(attempt_artifacts.get("codex_thread_id") or codex_thread_id)
             structured_artifacts.extend(attempt_artifacts["artifacts"])
+            if returncode != 0 and _is_provider_limit(summary):
+                break
             contract = _read_qa_contract(run_dir, request, work_item_id, summary)
             if returncode == 0 and contract["contract_valid"]:
                 break
             contract_errors = list(contract["contract_errors"])
 
         contract = _read_qa_contract(run_dir, request, work_item_id, summary)
-        if returncode != 0:
+        provider_limit = returncode != 0 and _is_provider_limit(summary)
+        if provider_limit:
+            status = "provider_limit"
+            summary = summary or "QA Codex could not run because provider usage limit was reached."
+        elif returncode != 0:
             status = "failed"
-            summary = summary or "QA Codex exited non-zero."
+            summary = _write_contract_failure_artifacts(
+                run_dir,
+                work_item_id,
+                summary or "QA Codex exited non-zero.",
+                [f"QA Codex exited non-zero with returncode {returncode}."],
+            )
         elif not contract["contract_valid"]:
             status = "failed"
             summary = _write_contract_failure_artifacts(
@@ -117,14 +128,16 @@ class QualityCodexRunner:
         else:
             status = str(contract["status"])
 
-        output_artifacts = _unique_artifacts(
-            [
-                report_artifact,
-                results_artifact,
-                *structured_artifacts,
-                *contract["optional_artifacts"],
-                *_fix_request_artifacts(run_dir, work_item_id),
-            ]
+        output_artifacts = _existing_artifacts(
+            run_dir,
+            _unique_artifacts(
+                [
+                    *([] if provider_limit else [report_artifact, results_artifact]),
+                    *structured_artifacts,
+                    *contract["optional_artifacts"],
+                    *_fix_request_artifacts(run_dir, work_item_id),
+                ]
+            ),
         )
         write_event(
             event_log,
@@ -134,7 +147,7 @@ class QualityCodexRunner:
             {
                 "work_item_id": work_item_id,
                 "status": status,
-                "artifact": report_artifact,
+                "artifact": report_artifact if not provider_limit else "",
                 "execution_id": execution_id,
                 "codex_thread_id": codex_thread_id,
             },
@@ -270,12 +283,15 @@ class QualityCodexRunner:
             "summary": summary,
             "returncode": completed.returncode,
             "codex_thread_id": codex_thread_id,
-            "artifacts": [
-                summary_path.relative_to(run_dir).as_posix(),
-                prompt_path.relative_to(run_dir).as_posix(),
-                log_path.relative_to(run_dir).as_posix(),
-                *structured_artifacts,
-            ],
+            "artifacts": _existing_artifacts(
+                run_dir,
+                [
+                    summary_path.relative_to(run_dir).as_posix(),
+                    prompt_path.relative_to(run_dir).as_posix(),
+                    log_path.relative_to(run_dir).as_posix(),
+                    *structured_artifacts,
+                ],
+            ),
         }
 
     def _execute(
@@ -644,6 +660,8 @@ def _fix_request_artifacts(run_dir: Path, work_item_id: str) -> list[str]:
 def _qa_blocking_findings(run_dir: Path, work_item_id: str, status: str) -> list[str]:
     if status == "passed":
         return []
+    if status == "provider_limit":
+        return [f"QA could not run for work item {work_item_id}: provider usage limit reached."]
     fix_json = run_dir / f"10-fix-request-{work_item_id}.json"
     if not fix_json.exists():
         return [f"QA failed for work item {work_item_id}."]
@@ -667,6 +685,8 @@ def _qa_blocking_findings(run_dir: Path, work_item_id: str, status: str) -> list
 def _qa_recommended_next_action(status: str) -> str:
     if status == "passed":
         return "Proceed to the next delivery step."
+    if status == "provider_limit":
+        return "Wait for provider capacity or credits, then rerun QA for the same work item."
     return "Send the exact QA fix request artifacts to the owning implementation agent."
 
 
@@ -730,3 +750,22 @@ def _unique_artifacts(paths: list[str]) -> list[str]:
         seen.add(path)
         unique.append(path)
     return unique
+
+
+def _existing_artifacts(run_dir: Path, paths: list[str]) -> list[str]:
+    return [path for path in paths if (run_dir / path).is_file()]
+
+
+def _is_provider_limit(summary: str) -> bool:
+    normalized = summary.lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "usage limit",
+            "purchase more credits",
+            "quota",
+            "rate limit",
+            "provider limit",
+            "provider_limit",
+        )
+    )

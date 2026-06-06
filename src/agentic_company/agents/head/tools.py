@@ -28,6 +28,7 @@ from agentic_company.platform.runtime_db import (
     artifact_links_for_paths,
     artifact_paths_by_owner,
     artifact_paths_by_type,
+    blocked_work_items,
     count_tool_call_events,
     materialize_planning_items,
     next_sprint_to_run,
@@ -1126,11 +1127,12 @@ def write_history_artifact(state: DeliveryState, history: list[dict[str, Any]]) 
 
 
 def write_head_result(state: DeliveryState, history: list[dict[str, Any]]) -> None:
+    blockers = _db_head_blockers(state)
     result = {
         "status": state.get("status"),
         "stage": state.get("stage"),
         "completed_nodes": state.get("completed_nodes", []),
-        "blockers": state.get("blockers", []),
+        "blockers": blockers,
         "history_artifact": "head/planning-history.json",
     }
     relative_path = "head/result.json"
@@ -1144,6 +1146,22 @@ def write_head_result(state: DeliveryState, history: list[dict[str, Any]]) -> No
         work_item_id="PLAN-04",
     )
     write_head_event(state, "head_agent_completed", {"result": result, "steps": len(history)})
+
+
+def _db_head_blockers(state: DeliveryState) -> list[str]:
+    run_id = str(state["run_id"])
+    blockers: list[str] = []
+    for item in blocked_work_items(run_id):
+        detail = item.blocker.strip()
+        if detail:
+            blockers.append(f"{item.work_item_id}: {detail}")
+        else:
+            blockers.append(f"{item.work_item_id} is blocked.")
+    for sprint_id in sprint_ids(run_id):
+        sprint_state = sprint_completion_state(run_id, sprint_id)
+        if sprint_state.is_blocked:
+            blockers.append(f"{sprint_id} is blocked.")
+    return _unique_paths(blockers)
 
 
 def write_json_artifact(state: DeliveryState, relative_path: str, payload: dict[str, Any]) -> Path:

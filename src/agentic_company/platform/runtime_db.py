@@ -296,6 +296,28 @@ def completed_work_item_ids(run_id: str, sprint_id: str = "") -> list[str]:
     return [str(row["work_item_id"]) for row in rows]
 
 
+def blocked_work_items(run_id: str, sprint_id: str = "") -> list[RuntimeWorkItem]:
+    """Return canonical blocked work items for current DB-backed blocker reporting."""
+
+    repo, db_run_id = _repo_and_run(run_id)
+    params: list[Any] = [db_run_id]
+    clause = "run_id = ? AND status = 'blocked'"
+    if sprint_id:
+        clause += " AND sprint_id = ?"
+        params.append(sprint_id)
+    with repo.connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM work_items
+            WHERE {clause}
+            ORDER BY sprint_id, delivery_order, work_item_id
+            """,
+            tuple(params),
+        ).fetchall()
+    return [_work_item_from_row(row, runtime_run_id=run_id) for row in rows]
+
+
 def count_tool_call_events(
     run_id: str,
     *,
@@ -877,7 +899,18 @@ def _normalize_status(status: str) -> str:
     token = status.strip().lower()
     if token in {"", "pending", "planned", "backlog"}:
         return "todo"
-    if any(value in token for value in ("failed", "blocked", "repair")):
+    if any(
+        value in token
+        for value in (
+            "failed",
+            "blocked",
+            "repair",
+            "provider_limit",
+            "usage_limit",
+            "quota",
+            "rate_limit",
+        )
+    ):
         return "blocked"
     if any(value in token for value in ("completed", "passed", "ready", "done", "deployed")):
         return "done"

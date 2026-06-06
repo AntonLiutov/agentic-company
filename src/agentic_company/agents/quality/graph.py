@@ -269,16 +269,17 @@ def _apply_quality_result(state: QualityAgentGraphState) -> QualityAgentGraphSta
         if work_item_id
         else (result.output_artifacts[0] if result.output_artifacts else "08-qa-report.md")
     )
-    event_data: dict[str, object] = {"artifact": artifact, "status": status}
-    if work_item_id:
-        event_data["work_item_id"] = work_item_id
-    write_event(
-        event_log,
-        delivery_state["run_id"],
-        QUALITY_AGENT_ID,
-        "artifact_written",
-        event_data,
-    )
+    if artifact:
+        event_data: dict[str, object] = {"artifact": artifact, "status": status}
+        if work_item_id:
+            event_data["work_item_id"] = work_item_id
+        write_event(
+            event_log,
+            delivery_state["run_id"],
+            QUALITY_AGENT_ID,
+            "artifact_written",
+            event_data,
+        )
     completion_data: dict[str, object] = {"status": status}
     if work_item_id:
         completion_data["work_item_id"] = work_item_id
@@ -310,6 +311,8 @@ def _apply_quality_result(state: QualityAgentGraphState) -> QualityAgentGraphSta
     if work_item_id:
         if status == "passed":
             updated = _mark_feature_passed(updated, work_item_id)
+        elif status == "provider_limit":
+            updated = _mark_feature_provider_limited(updated, work_item_id, result)
         else:
             updated = _mark_feature_failed(updated, work_item_id)
     return {**state, "delivery_state": updated}
@@ -335,12 +338,16 @@ def _primary_report_artifact(work_item_id: str, artifacts: list[str]) -> str:
     for artifact in artifacts:
         if artifact.lower().endswith(".md") and "qa-report" in artifact.lower():
             return artifact
-    return artifacts[0] if artifacts else f"qa-report-{work_item_id}.md"
+    return artifacts[0] if artifacts else ""
 
 
 def _normalize_qa_status(status: str) -> str:
     normalized = status.removeprefix("qa_").removeprefix("codex_")
-    return "passed" if normalized == "passed" else "failed"
+    if normalized == "passed":
+        return "passed"
+    if any(token in normalized for token in ("provider_limit", "usage_limit", "quota")):
+        return "provider_limit"
+    return "failed"
 
 
 def _mark_feature_passed(state: DeliveryState, work_item_id: str) -> DeliveryState:
@@ -373,6 +380,22 @@ def _mark_feature_failed(state: DeliveryState, work_item_id: str) -> DeliverySta
         ]
     else:
         updated["status"] = "qa_feature_failed_repair_ready"
+    return updated
+
+
+def _mark_feature_provider_limited(
+    state: DeliveryState,
+    work_item_id: str,
+    result: AgentRunResult,
+) -> DeliveryState:
+    updated = {**state}
+    finding = (
+        result.blocking_findings[0]
+        if result.blocking_findings
+        else f"QA could not run for work item {work_item_id}: provider usage limit reached."
+    )
+    updated["status"] = "qa_provider_limit_blocked"
+    updated["blockers"] = [*updated.get("blockers", []), finding]
     return updated
 
 

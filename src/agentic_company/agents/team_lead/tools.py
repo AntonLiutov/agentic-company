@@ -676,13 +676,20 @@ class TeamLeadToolbox:
             try:
                 get_work_item(str(self.delivery_state["run_id"]), work_item_id)
             except ValueError as exc:
-                return self._contract_error_response(tool, work_item_id, str(exc), message)
+                return self._contract_error_response(
+                    tool,
+                    work_item_id,
+                    str(exc),
+                    message,
+                    record_runtime_event=False,
+                )
             return ""
         return self._contract_error_response(
             tool,
             "",
             "work_item_id is required; target/feature/active item Repair is disabled.",
             message or reason,
+            record_runtime_event=False,
         )
 
     def _contract_error_response(
@@ -694,14 +701,17 @@ class TeamLeadToolbox:
         *,
         status: str = "contract_error",
         tool_call_id: str = "",
+        record_runtime_event: bool = True,
     ) -> str:
-        self._record(tool, work_item_id, reason, message, result_status=status)
+        if record_runtime_event:
+            self._record(tool, work_item_id, reason, message, result_status=status)
         return self._tool_response(
             tool,
             f"{tool} contract error: {reason}",
             status_override=status,
             work_item_id=work_item_id,
             tool_call_id=tool_call_id,
+            record_tool_event=record_runtime_event,
         )
 
     def _limit_response(self, tool: str, work_item_id: str, message: str) -> str | None:
@@ -809,6 +819,7 @@ class TeamLeadToolbox:
         status_override: str | None = None,
         work_item_id: str = "",
         tool_call_id: str = "",
+        record_tool_event: bool = True,
     ) -> str:
         status = status_override or str(self.delivery_state.get("status") or "running")
         refs = _response_artifact_refs(
@@ -838,19 +849,20 @@ class TeamLeadToolbox:
                 artifact_links=_tool_artifact_refs(self.delivery_state, refs),
             ),
         )
-        record_tool_call_event(
-            Path(self.delivery_state["run_dir"]),
-            run_id=self.delivery_state["run_id"],
-            agent_id=TEAM_LEAD_AGENT_ID,
-            tool_name=result.tool_name,
-            tool_call_id=result.tool_call_id,
-            status=status,
-            work_item_id=work_item_id or None,
-            input_summary=input_summary or {"work_item_id": work_item_id},
-            output_summary=result.to_dict(),
-            duration_ms=duration_ms,
-            failure_mode=result.failure_mode,
-        )
+        if record_tool_event:
+            record_tool_call_event(
+                Path(self.delivery_state["run_dir"]),
+                run_id=self.delivery_state["run_id"],
+                agent_id=TEAM_LEAD_AGENT_ID,
+                tool_name=result.tool_name,
+                tool_call_id=result.tool_call_id,
+                status=status,
+                work_item_id=work_item_id or None,
+                input_summary=input_summary or {"work_item_id": work_item_id},
+                output_summary=result.to_dict(),
+                duration_ms=duration_ms,
+                failure_mode=result.failure_mode,
+            )
         checkpoint_delivery_state(self.delivery_state)
         return result.to_json()
 
