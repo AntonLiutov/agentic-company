@@ -409,6 +409,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         run = repo.latest_run_for_project(project.id, user.id)
         if run:
             runtime_cache_from_env().set_stop_requested(run.run_uid)
+            repo.request_console_process_stop(run.id, process_name="codex_execution")
             request_codex_execution_stop(Path(run.run_dir))
             repo.update_run_status(run.id, "stopped")
         repo.update_project_status(project.id, "stopped")

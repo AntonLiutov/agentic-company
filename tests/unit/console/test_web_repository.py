@@ -313,6 +313,44 @@ def test_raw_log_events_are_append_only_and_filterable(tmp_path):
     assert scoped[0].agent_id == "business-analyst-agent"
 
 
+def test_console_process_state_tracks_status_stop_and_env_keys(tmp_path):
+    repo = ConsoleRepository(tmp_path / "console.db")
+    repo.init_schema()
+    user = repo.create_user(email="process@example.test", username="process", password="password-1")
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Process Project",
+        request_text="Build",
+        mode="simple_prototype",
+        complexity="simple",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="process-run",
+        run_dir=tmp_path / "process-run",
+        status="running",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+
+    repo.upsert_console_process_state(
+        run.id,
+        process_name="codex_execution",
+        status="running",
+        thread_name="codex-thread",
+        env_keys=["CODEX_API_KEY", "OPENAI_API_KEY"],
+    )
+    repo.request_console_process_stop(run.id, process_name="codex_execution")
+
+    state = repo.get_console_process_state(run.id, "codex_execution")
+
+    assert state is not None
+    assert state.status == "stop_requested"
+    assert state.thread_name == "codex-thread"
+    assert state.env_keys == ["CODEX_API_KEY", "OPENAI_API_KEY"]
+    assert state.stop_requested_at
+
+
 def test_delete_private_project_removes_project_and_runs(tmp_path):
     repo = ConsoleRepository(tmp_path / "console.db")
     repo.init_schema()

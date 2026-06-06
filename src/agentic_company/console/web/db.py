@@ -136,6 +136,20 @@ class RawLogEvent:
     created_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class ConsoleProcessState:
+    id: int
+    run_id: int
+    process_name: str
+    status: str
+    thread_name: str
+    env_keys: list[str]
+    stop_requested_at: str
+    error: str
+    created_at: str
+    updated_at: str
+
+
 def default_db_path() -> Path:
     configured = os.getenv("AGENTIC_CONSOLE_DB_PATH", "").strip()
     if configured:
@@ -436,6 +450,20 @@ class ConsoleRepository:
                     UNIQUE(run_id, agent_id, tool_call_id, seq)
                 );
 
+                CREATE TABLE IF NOT EXISTS console_processes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                    process_name TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT '',
+                    thread_name TEXT NOT NULL DEFAULT '',
+                    env_keys TEXT NOT NULL DEFAULT '[]',
+                    stop_requested_at TEXT NOT NULL DEFAULT '',
+                    error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(run_id, process_name)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_runs_project_created
                     ON runs(project_id, created_at DESC, id DESC);
                 CREATE INDEX IF NOT EXISTS idx_projects_owner_updated
@@ -466,6 +494,8 @@ class ConsoleRepository:
                     ON agent_messages(run_id, to_agent, created_at, id);
                 CREATE INDEX IF NOT EXISTS idx_agent_messages_run_correlation
                     ON agent_messages(run_id, correlation_id, created_at, id);
+                CREATE INDEX IF NOT EXISTS idx_console_processes_run_name
+                    ON console_processes(run_id, process_name);
                 """
             )
             self._ensure_artifact_metadata_columns(conn)
@@ -868,6 +898,94 @@ class ConsoleRepository:
                 """,
                 (str(target_project_dir), utc_now(), run_id),
             )
+
+    def upsert_console_process_state(
+        self,
+        run_id: int,
+        *,
+        process_name: str,
+        status: str = "",
+        thread_name: str = "",
+        env_keys: list[str] | None = None,
+        stop_requested_at: str = "",
+        error: str = "",
+    ) -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT env_keys, stop_requested_at
+                FROM console_processes
+                WHERE run_id = ? AND process_name = ?
+                """,
+                (run_id, process_name),
+            ).fetchone()
+            env_payload = json.dumps(env_keys if env_keys is not None else [], sort_keys=True)
+            if existing is not None and env_keys is None:
+                env_payload = str(existing["env_keys"] or "[]")
+            stop_value = stop_requested_at
+            if existing is not None and not stop_value:
+                stop_value = str(existing["stop_requested_at"] or "")
+            conn.execute(
+                """
+                INSERT INTO console_processes (
+                    run_id, process_name, status, thread_name, env_keys,
+                    stop_requested_at, error, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, process_name) DO UPDATE SET
+                    status = excluded.status,
+                    thread_name = excluded.thread_name,
+                    env_keys = excluded.env_keys,
+                    stop_requested_at = excluded.stop_requested_at,
+                    error = excluded.error,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    run_id,
+                    process_name,
+                    status,
+                    thread_name,
+                    env_payload,
+                    stop_value,
+                    error,
+                    now,
+                    now,
+                ),
+            )
+
+    def request_console_process_stop(self, run_id: int, *, process_name: str) -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO console_processes (
+                    run_id, process_name, status, stop_requested_at,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, 'stop_requested', ?, ?, ?)
+                ON CONFLICT(run_id, process_name) DO UPDATE SET
+                    status = excluded.status,
+                    stop_requested_at = excluded.stop_requested_at,
+                    updated_at = excluded.updated_at
+                """,
+                (run_id, process_name, now, now, now),
+            )
+
+    def get_console_process_state(
+        self,
+        run_id: int,
+        process_name: str,
+    ) -> ConsoleProcessState | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM console_processes
+                WHERE run_id = ? AND process_name = ?
+                """,
+                (run_id, process_name),
+            ).fetchone()
+        return _console_process_state(row) if row else None
 
     def get_run_by_uid(self, run_uid: str) -> Run | None:
         with self.connect() as conn:
@@ -1966,6 +2084,21 @@ def _raw_log_event(row: Any) -> RawLogEvent:
         stream=str(row["stream"] or ""),
         message=str(row["message"]),
         created_at=str(row["created_at"]),
+    )
+
+
+def _console_process_state(row: Any) -> ConsoleProcessState:
+    return ConsoleProcessState(
+        id=int(row["id"]),
+        run_id=int(row["run_id"]),
+        process_name=str(row["process_name"]),
+        status=str(row["status"] or ""),
+        thread_name=str(row["thread_name"] or ""),
+        env_keys=_json_column(row["env_keys"], default=[]),
+        stop_requested_at=str(row["stop_requested_at"] or ""),
+        error=str(row["error"] or ""),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
     )
 
 

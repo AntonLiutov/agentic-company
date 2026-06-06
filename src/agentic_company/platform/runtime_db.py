@@ -593,6 +593,17 @@ def artifact_paths_by_type(run_id: str, artifact_types: set[str]) -> list[str]:
     ]
 
 
+def stop_requested(run_id: str) -> bool:
+    """Return whether the console process model has a durable stop flag."""
+
+    try:
+        repo, db_run_id = _repo_and_run(run_id)
+    except ValueError:
+        return False
+    state = repo.get_console_process_state(db_run_id, "codex_execution")
+    return bool(state and state.stop_requested_at)
+
+
 def _repo_and_run(run_id: str):
     from agentic_company.console.web.db import ConsoleRepository
 

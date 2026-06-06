@@ -1010,7 +1010,10 @@ def test_stop_project_marks_latest_run_stopped(tmp_path):
     assert response.status_code == 303
     assert repo.get_run(run.id).status == "stopped"
     assert repo.get_project_for_user(project.id, user.id).status == "stopped"
-    assert (run_dir / ".codex-execution.stop").exists()
+    process_state = repo.get_console_process_state(run.id, "codex_execution")
+    assert process_state is not None
+    assert process_state.status == "stop_requested"
+    assert process_state.stop_requested_at
 
 
 def test_promote_and_demote_project_from_workspace(tmp_path):

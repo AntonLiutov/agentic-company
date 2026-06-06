@@ -28,6 +28,9 @@ DEFAULT_ENV_VALUES = {
 }
 DEFAULT_SAMPLE_REQUIREMENTS = "multi-service-task-tracker.md"
 AGENT_RUNTIME_ENV_RELATIVE_PATH = Path("delivery") / "agent-runtime.env"
+CODEX_PROCESS = "codex_execution"
+DEPLOYMENT_PROCESS = "azure_deployment"
+AGENT_RUNTIME_ENV_PROCESS = "agent_runtime_env"
 
 
 @dataclass(slots=True)
@@ -172,13 +175,14 @@ def clear_console_runs(output_root: Path | None = None) -> CleanupResult:
 
 
 def start_codex_execution(run_dir: Path) -> int:
-    if _thread_running(_CODEX_THREADS.get(str(run_dir))) or _status_is_terminal(
-        _codex_status_path(run_dir)
+    if _thread_running(_CODEX_THREADS.get(str(run_dir))) or _process_is_terminal(
+        run_dir, CODEX_PROCESS
     ):
         LOGGER.info("Codex execution start skipped run_dir=%s", run_dir)
         return 0
     status_path = _codex_status_path(run_dir)
     status_path.write_text("starting\n", encoding="utf-8")
+    _record_process_state(run_dir, CODEX_PROCESS, "starting")
     thread = threading.Thread(
         target=_run_codex_in_thread,
         args=(run_dir,),
@@ -188,18 +192,20 @@ def start_codex_execution(run_dir: Path) -> int:
     _CODEX_THREADS[str(run_dir)] = thread
     thread.start()
     status_path.write_text(f"running\nthread={thread.name}\n", encoding="utf-8")
+    _record_process_state(run_dir, CODEX_PROCESS, "running", thread_name=thread.name)
     LOGGER.info("Started Codex execution thread=%s run_dir=%s", thread.name, run_dir)
     return thread.ident or 0
 
 
 def start_azure_deployment(run_dir: Path) -> int:
-    if _thread_running(_DEPLOYMENT_THREADS.get(str(run_dir))) or _status_is_terminal(
-        _deployment_status_path(run_dir)
+    if _thread_running(_DEPLOYMENT_THREADS.get(str(run_dir))) or _process_is_terminal(
+        run_dir, DEPLOYMENT_PROCESS
     ):
         LOGGER.info("Deployment start skipped run_dir=%s", run_dir)
         return 0
     status_path = _deployment_status_path(run_dir)
     status_path.write_text("starting\n", encoding="utf-8")
+    _record_process_state(run_dir, DEPLOYMENT_PROCESS, "starting")
     thread = threading.Thread(
         target=_run_deployment_in_thread,
         args=(run_dir,),
@@ -209,6 +215,7 @@ def start_azure_deployment(run_dir: Path) -> int:
     _DEPLOYMENT_THREADS[str(run_dir)] = thread
     thread.start()
     status_path.write_text(f"running\nthread={thread.name}\n", encoding="utf-8")
+    _record_process_state(run_dir, DEPLOYMENT_PROCESS, "running", thread_name=thread.name)
     LOGGER.info("Started deployment thread=%s run_dir=%s", thread.name, run_dir)
     return thread.ident or 0
 
@@ -216,6 +223,8 @@ def start_azure_deployment(run_dir: Path) -> int:
 def request_codex_execution_stop(run_dir: Path) -> Path:
     path = run_dir / ".codex-execution.stop"
     path.write_text("stop\n", encoding="utf-8")
+    (run_dir / ".stop-requested").write_text("stop\n", encoding="utf-8")
+    _request_process_stop(run_dir, CODEX_PROCESS)
     return path
 
 
@@ -234,6 +243,12 @@ def write_target_env(run_dir: Path, values: dict[str, str]) -> Path:
     env_path.write_text(
         "\n".join(f"{key}={value}" for key, value in sorted(merged.items())) + "\n",
         encoding="utf-8",
+    )
+    _record_process_state(
+        run_dir,
+        AGENT_RUNTIME_ENV_PROCESS,
+        "written",
+        env_keys=sorted(merged),
     )
     LOGGER.info("Wrote agent runtime env keys=%s run_dir=%s", sorted(merged), run_dir)
     return env_path
@@ -296,12 +311,15 @@ def _run_codex_in_thread(run_dir: Path) -> None:
     status_path = _codex_status_path(run_dir)
     try:
         status_path.write_text("running\n", encoding="utf-8")
+        _record_process_state(run_dir, CODEX_PROCESS, "running")
         LOGGER.info("Console execution graph thread running run_dir=%s", run_dir)
         _run_console_execution_graph(run_dir)
         status_path.write_text("completed\n", encoding="utf-8")
+        _record_process_state(run_dir, CODEX_PROCESS, "completed")
         LOGGER.info("Console execution graph thread completed run_dir=%s", run_dir)
     except Exception as exc:  # pragma: no cover - surfaced in local run artifacts
         status_path.write_text(f"failed\nerror={exc}\n", encoding="utf-8")
+        _record_process_state(run_dir, CODEX_PROCESS, "failed", error=str(exc))
         LOGGER.exception("Console execution graph thread failed run_dir=%s", run_dir)
 
 
@@ -309,6 +327,7 @@ def _run_deployment_in_thread(run_dir: Path) -> None:
     status_path = _deployment_status_path(run_dir)
     try:
         status_path.write_text("running\n", encoding="utf-8")
+        _record_process_state(run_dir, DEPLOYMENT_PROCESS, "running")
         LOGGER.info("Console deployment graph thread running run_dir=%s", run_dir)
         DeliveryGraphRuntime(node_order=CONSOLE_DEPLOYMENT_NODE_ORDER).start(
             run_dir,
@@ -316,9 +335,11 @@ def _run_deployment_in_thread(run_dir: Path) -> None:
             target_project_dir=_target_project_dir(run_dir),
         )
         status_path.write_text("completed\n", encoding="utf-8")
+        _record_process_state(run_dir, DEPLOYMENT_PROCESS, "completed")
         LOGGER.info("Console deployment graph thread completed run_dir=%s", run_dir)
     except Exception as exc:  # pragma: no cover - surfaced in local run artifacts
         status_path.write_text(f"failed\nerror={exc}\n", encoding="utf-8")
+        _record_process_state(run_dir, DEPLOYMENT_PROCESS, "failed", error=str(exc))
         LOGGER.exception("Console deployment graph thread failed run_dir=%s", run_dir)
 
 
@@ -353,11 +374,70 @@ def _thread_running(thread: threading.Thread | None) -> bool:
     return bool(thread and thread.is_alive())
 
 
-def _status_is_terminal(path: Path) -> bool:
-    if not path.exists():
-        return False
-    status = path.read_text(encoding="utf-8").strip().lower()
-    return status.startswith(("completed", "failed"))
+def _process_is_terminal(run_dir: Path, process_name: str) -> bool:
+    state = _process_state(run_dir, process_name)
+    return bool(state and state.status.lower() in {"completed", "failed"})
+
+
+def _record_process_state(
+    run_dir: Path,
+    process_name: str,
+    status: str,
+    *,
+    thread_name: str = "",
+    env_keys: list[str] | None = None,
+    error: str = "",
+) -> None:
+    run_id = _db_run_id_for_run_dir(run_dir)
+    if run_id is None:
+        return
+    from agentic_company.console.web.db import ConsoleRepository
+
+    repo = ConsoleRepository()
+    repo.init_schema()
+    repo.upsert_console_process_state(
+        run_id,
+        process_name=process_name,
+        status=status,
+        thread_name=thread_name,
+        env_keys=env_keys,
+        error=error,
+    )
+
+
+def _request_process_stop(run_dir: Path, process_name: str) -> None:
+    run_id = _db_run_id_for_run_dir(run_dir)
+    if run_id is None:
+        return
+    from agentic_company.console.web.db import ConsoleRepository
+
+    repo = ConsoleRepository()
+    repo.init_schema()
+    repo.request_console_process_stop(run_id, process_name=process_name)
+
+
+def _process_state(run_dir: Path, process_name: str):
+    run_id = _db_run_id_for_run_dir(run_dir)
+    if run_id is None:
+        return None
+    from agentic_company.console.web.db import ConsoleRepository
+
+    repo = ConsoleRepository()
+    repo.init_schema()
+    return repo.get_console_process_state(run_id, process_name)
+
+
+def _db_run_id_for_run_dir(run_dir: Path) -> int | None:
+    from agentic_company.console.web.db import ConsoleRepository
+
+    repo = ConsoleRepository()
+    repo.init_schema()
+    with repo.connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM runs WHERE run_dir = ? OR run_uid = ?",
+            (str(run_dir), run_dir.name),
+        ).fetchone()
+    return int(row["id"]) if row else None
 
 
 def _run_id(prefix: str = "console") -> str:

@@ -9,6 +9,7 @@ from agentic_company.console.support import (
     saved_env_keys,
     write_target_env,
 )
+from agentic_company.console.web.db import ConsoleRepository
 
 
 def test_console_run_writes_requirements_without_retired_execution_request(tmp_path):
@@ -39,6 +40,37 @@ def test_env_persistence_helpers_round_trip(tmp_path):
 
     assert saved_env_keys(run_dir) == ["OPENAI_API_KEY"]
     assert initial_env_value("MISSING", tmp_path) == ""
+
+
+def test_env_persistence_mirrors_safe_key_metadata_when_run_exists(tmp_path, monkeypatch):
+    db_path = tmp_path / "console.db"
+    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
+    repo = ConsoleRepository(db_path)
+    repo.init_schema()
+    user = repo.create_user(email="env@example.test", username="env", password="password-1")
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Env",
+        request_text="Build",
+        mode="simple_prototype",
+        complexity="simple",
+    )
+    run_dir = tmp_path / "run"
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="run",
+        run_dir=run_dir,
+        status="running",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+
+    write_target_env(run_dir, {"OPENAI_API_KEY": "sk-test", "EMPTY": ""})
+
+    state = repo.get_console_process_state(run.id, "agent_runtime_env")
+    assert state is not None
+    assert state.status == "written"
+    assert state.env_keys == ["OPENAI_API_KEY"]
 
 
 def test_missing_required_env_keys_reads_saved_values(tmp_path, monkeypatch):
