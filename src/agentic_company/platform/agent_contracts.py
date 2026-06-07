@@ -229,11 +229,7 @@ def append_downstream_response(
     correlation_id = (
         parent_message.correlation_id
         if parent_message
-        else str(
-            state.get("agent_call_correlation_id") or default_correlation_id
-            or ""
-        )
-        or None
+        else str(state.get("agent_call_correlation_id") or default_correlation_id or "") or None
     )
 
     append_agent_response(

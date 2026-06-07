@@ -55,9 +55,7 @@ HEAD_WORK_ITEM_BY_NODE: dict[str, str] = {
 def pm_work_items_from_run_dir(run_dir: Path) -> list[dict[str, Any]]:
     """Load PM work items from the PM artifact contract for DB materialization."""
 
-    queue_path = (
-        run_dir / "upstream-planning" / "project-management" / "planned-work-items.json"
-    )
+    queue_path = run_dir / "upstream-planning" / "project-management" / "planned-work-items.json"
     try:
         payload = json.loads(queue_path.read_text(encoding="utf-8-sig"))
     except OSError as exc:
@@ -117,9 +115,7 @@ def pm_work_items_from_run_dir(run_dir: Path) -> list[dict[str, Any]]:
 def pm_sprints_from_run_dir(run_dir: Path) -> list[dict[str, Any]]:
     """Load PM sprint metadata from the PM artifact contract for DB materialization."""
 
-    release_plan_path = (
-        run_dir / "upstream-planning" / "project-management" / "release-plan.json"
-    )
+    release_plan_path = run_dir / "upstream-planning" / "project-management" / "release-plan.json"
     try:
         payload = json.loads(release_plan_path.read_text(encoding="utf-8-sig"))
     except OSError as exc:
@@ -180,4 +176,3 @@ def _string_list(value: Any) -> list[str]:
     if isinstance(value, list | tuple | set):
         return [str(item) for item in value]
     return [str(value)]
-

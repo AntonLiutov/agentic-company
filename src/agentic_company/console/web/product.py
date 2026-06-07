@@ -601,9 +601,8 @@ def delivery_overview_from_work_items(
         "failed"
         if blockers
         else "passed"
-        if work_items and all(
-            str(getattr(item, "status", "") or "").lower() == "done" for item in work_items
-        )
+        if work_items
+        and all(str(getattr(item, "status", "") or "").lower() == "done" for item in work_items)
         else "review"
         if any(str(getattr(item, "status", "") or "").lower() == "review" for item in work_items)
         else "pending"
@@ -686,9 +685,7 @@ def _board_card_from_work_item(
         sprint=sprint,
         status=work_status_label(status),
         column=(
-            lane
-            if lane in {column for column, _ in BOARD_COLUMNS}
-            else _board_column(lane, status)
+            lane if lane in {column for column, _ in BOARD_COLUMNS} else _board_column(lane, status)
         ),
         artifact_count=artifact_count,
         active=bool(getattr(item, "active", False)),

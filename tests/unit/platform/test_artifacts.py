@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 
 from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.platform.artifacts import (

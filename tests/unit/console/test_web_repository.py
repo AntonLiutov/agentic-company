@@ -1,4 +1,4 @@
-﻿from agentic_company.console.web.db import CONSOLE_SCHEMA_VERSION, ConsoleRepository
+from agentic_company.console.web.db import CONSOLE_SCHEMA_VERSION, ConsoleRepository
 from agentic_company.platform.artifact_registry import artifact_id_for, register_artifact
 from agentic_company.platform.run_trace import ModelCallEvent, ToolCallEvent
 

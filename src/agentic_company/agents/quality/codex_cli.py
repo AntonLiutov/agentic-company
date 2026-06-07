@@ -341,9 +341,7 @@ def build_quality_codex_prompt(
     """Build the QA Codex Agent prompt without predefined QA checks."""
 
     work_item_id = str(work_item["work_item_id"])
-    criteria = "\n".join(
-        f"- {criterion}" for criterion in work_item.get("acceptance_criteria", [])
-    )
+    criteria = "\n".join(f"- {criterion}" for criterion in work_item.get("acceptance_criteria", []))
     completed = ", ".join(request.completed_work_item_ids) or "none"
     input_artifacts = "\n".join(f"- {artifact}" for artifact in request.input_artifacts)
     expected_outputs = "\n".join(f"- {artifact}" for artifact in request.expected_outputs)

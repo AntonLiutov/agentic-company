@@ -1363,8 +1363,7 @@ def _sprint_status_context(state: DeliveryState, sprint_id: str) -> dict[str, An
         "status": state.get("status"),
         "sprint_db_state": completion.to_dict(),
         "work_items": [
-            item.to_dict()
-            for item in list_sprint_work_items(str(state["run_id"]), sprint_id)
+            item.to_dict() for item in list_sprint_work_items(str(state["run_id"]), sprint_id)
         ],
         "next_work_item": next_work_item_for_state(state, sprint_id),
         "completed_work_item_ids": completed_work_item_ids(str(state["run_id"]), sprint_id),

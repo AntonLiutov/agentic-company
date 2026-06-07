@@ -8,8 +8,7 @@ from agentic_company.platform.tool_contracts import (
 def test_completed_after_repair_is_success_not_blocked() -> None:
     assert dashboard_status_from_runtime_status("completed_after_repair") == "done"
     assert (
-        dashboard_status_from_runtime_status("project_management_completed_after_repair")
-        == "done"
+        dashboard_status_from_runtime_status("project_management_completed_after_repair") == "done"
     )
     assert _normalize_work_item_status("completed_after_repair") == "done"
     assert _normalize_work_item_status("project_management_completed_after_repair") == "done"

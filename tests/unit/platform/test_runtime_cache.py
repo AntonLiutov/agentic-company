@@ -50,7 +50,5 @@ def test_runtime_cache_uses_redis_client_when_url_is_configured(monkeypatch):
     cache.publish_run_event("run-1", '{"type":"work_item_updated"}')
     cache.set_stop_requested("run-1", ttl_seconds=10)
 
-    assert fake_client.published == [
-        ("events:run:run-1", '{"type":"work_item_updated"}')
-    ]
+    assert fake_client.published == [("events:run:run-1", '{"type":"work_item_updated"}')]
     assert cache.stop_requested("run-1")

@@ -36,6 +36,7 @@ IMPLEMENTATION_ARTIFACT_EXCLUDED_FILENAMES = {
 }
 IMPLEMENTATION_ARTIFACT_MAX_BYTES = 512_000
 
+
 def read_json_artifact(path: Path, *, normalize_bom: bool = False) -> object:
     """Read a JSON artifact while tolerating UTF-8 BOM output from external tools."""
 

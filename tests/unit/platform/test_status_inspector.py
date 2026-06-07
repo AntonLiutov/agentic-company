@@ -70,9 +70,7 @@ def test_status_inspector_runner_writes_and_reads_status_json(tmp_path, monkeypa
     assert result.result_artifact.startswith("team-lead/status-inspections/")
 
 
-def test_status_inspector_runner_reads_and_normalizes_utf8_bom_status_json(
-    tmp_path, monkeypatch
-):
+def test_status_inspector_runner_reads_and_normalizes_utf8_bom_status_json(tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     _create_run(tmp_path, monkeypatch, run_dir, "run")

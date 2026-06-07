@@ -1,4 +1,4 @@
-﻿import json
+import json
 
 from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.orchestration.graphs import (

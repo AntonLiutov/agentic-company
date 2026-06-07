@@ -15,8 +15,10 @@ from agentic_company.console.web.db import ConsoleRepository
 def test_console_run_writes_requirements_without_retired_execution_request(tmp_path):
     run_dir = create_console_run("Project type: UI/web app\nBuild a chat app.", tmp_path / "runs")
 
-    assert (run_dir / "00-requirements.md").read_text(encoding="utf-8").startswith(
-        "Project type: UI/web app"
+    assert (
+        (run_dir / "00-requirements.md")
+        .read_text(encoding="utf-8")
+        .startswith("Project type: UI/web app")
     )
     assert not (run_dir / "delivery" / "execution-request.json").exists()
 

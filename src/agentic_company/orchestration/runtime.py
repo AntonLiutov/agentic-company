@@ -126,7 +126,7 @@ class DeliveryGraphRuntime:
             event_log,
             final_state["run_id"],
             GRAPH_AGENT_ID,
-                "delivery_graph_completed",
+            "delivery_graph_completed",
             {
                 "node_order": node_order,
                 "stage": final_state["stage"],

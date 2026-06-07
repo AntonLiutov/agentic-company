@@ -1,4 +1,4 @@
-﻿import json
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -1412,9 +1412,7 @@ def test_artifact_view_resolves_registry_id(tmp_path):
     )
     record = register_artifact(
         run_dir,
-        artifact_id=artifact_id_for(
-            run.run_uid, "handoff/project/final/release-report.html"
-        ),
+        artifact_id=artifact_id_for(run.run_uid, "handoff/project/final/release-report.html"),
         relative_path="handoff/project/final/release-report.html",
         run_id=run.run_uid,
         owner_agent="documentation-handoff-agent",

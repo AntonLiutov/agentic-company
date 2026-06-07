@@ -93,10 +93,8 @@ class LangChainTeamLeadExecutor:
                 message="Executor failed before completing the sprint.",
             )
 
-        if (
-            not toolbox.tool_calls_made()
-            and "team_lead_sprint_handoff_ready"
-            not in str(toolbox.delivery_state.get("status") or "")
+        if not toolbox.tool_calls_made() and "team_lead_sprint_handoff_ready" not in str(
+            toolbox.delivery_state.get("status") or ""
         ):
             toolbox.block_sprint(
                 reason="Team Lead AgentExecutor completed without calling any tool.",

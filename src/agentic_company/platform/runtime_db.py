@@ -612,8 +612,7 @@ def record_artifact_link(
     artifact_path = resolve_run_artifact_path(run_dir, request.relative_path)
     if not artifact_path.is_file():
         raise ValueError(
-            "Artifact registration requires an existing run-local file: "
-            f"{request.relative_path}"
+            f"Artifact registration requires an existing run-local file: {request.relative_path}"
         )
     record = register_artifact(
         run_dir,
@@ -748,9 +747,7 @@ def _record_work_item_transition_conn(
     )
     lane = _lane_for_status(effective_status)
     effective_owner = (
-        from_owner
-        if from_status == "done" and effective_status == "done"
-        else record.owner_agent
+        from_owner if from_status == "done" and effective_status == "done" else record.owner_agent
     )
     conn.execute(
         """

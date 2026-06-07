@@ -1546,11 +1546,7 @@ class ConsoleRepository:
         if agent_id:
             clauses.append("agent_id = ?")
             params.append(agent_id)
-        sql = (
-            "SELECT * FROM raw_log_events WHERE "
-            + " AND ".join(clauses)
-            + " ORDER BY id"
-        )
+        sql = "SELECT * FROM raw_log_events WHERE " + " AND ".join(clauses) + " ORDER BY id"
         if limit is not None:
             sql += " LIMIT ?"
             params.append(limit)

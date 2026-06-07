@@ -168,8 +168,9 @@ def test_team_lead_executor_blocks_if_runtime_stops_after_contract_error(tmp_pat
     )
 
     assert result.delivery_state["status"] == "team_lead_sprint_blocked"
-    assert "Team Lead AgentExecutor completed without calling any tool." in (
-        result.delivery_state["blockers"][-1]
+    assert (
+        "Team Lead AgentExecutor completed without calling any tool."
+        in (result.delivery_state["blockers"][-1])
     )
     assert sprint_completion_state("run", "sprint-01").status == "blocked"
     assert get_work_item("run", "PLAN-04").status == "blocked"
@@ -402,9 +403,7 @@ def test_head_codex_review_uses_selected_codex_model(tmp_path, monkeypatch):
     assert reviewer.last_request.model == "gpt-5.4"
 
 
-def test_pm_materialization_marks_last_sprint_final_when_pm_omits_final_flag(
-    tmp_path, monkeypatch
-):
+def test_pm_materialization_marks_last_sprint_final_when_pm_omits_final_flag(tmp_path, monkeypatch):
     _repo, _run, _state = _setup_runtime(tmp_path, monkeypatch)
 
     assert not sprint_is_final("run", "sprint-01")
@@ -427,9 +426,7 @@ def test_complete_sprint_rejects_pending_db_work_items(tmp_path, monkeypatch):
     assert sprint_completion_state("run", "sprint-01").status == "running"
 
 
-def test_team_lead_rejects_second_active_sprint_work_item_before_request(
-    tmp_path, monkeypatch
-):
+def test_team_lead_rejects_second_active_sprint_work_item_before_request(tmp_path, monkeypatch):
     repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
     _add_work_item(repo, "US-1B", sprint_id="sprint-01", delivery_order=2)
     record_work_item_transition(
@@ -461,9 +458,7 @@ def test_team_lead_rejects_second_active_sprint_work_item_before_request(
     assert not (tmp_path / "run" / "team-lead" / "requests").exists()
 
 
-def test_team_lead_worker_without_correlated_response_blocks_work_item(
-    tmp_path, monkeypatch
-):
+def test_team_lead_worker_without_correlated_response_blocks_work_item(tmp_path, monkeypatch):
     _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
     toolbox = TeamLeadToolbox(
         delivery_state=state,
@@ -479,9 +474,7 @@ def test_team_lead_worker_without_correlated_response_blocks_work_item(
     assert get_work_item("run", "US-1").status == "blocked"
 
 
-def test_team_lead_worker_records_external_reference_in_tool_call(
-    tmp_path, monkeypatch
-):
+def test_team_lead_worker_records_external_reference_in_tool_call(tmp_path, monkeypatch):
     repo, run, state = _setup_runtime(tmp_path, monkeypatch)
     toolbox = TeamLeadToolbox(
         delivery_state=state,

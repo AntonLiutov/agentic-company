@@ -1050,17 +1050,17 @@ def _db_sprint_ids(run_id: str) -> list[str]:
 def _delivery_status_artifact_refs(state: DeliveryState) -> list[str]:
     return _unique_paths(
         [
-        "00-requirements.md",
-        "head/planning-history.json",
-        "upstream-planning/project-management/release-plan.md",
-        "upstream-planning/project-management/release-plan.json",
-        "upstream-planning/project-management/planned-work-items.json",
-        "upstream-planning/project-management/roadmap.csv",
-        "upstream-planning/project-management/risks-and-dependencies.md",
-        *artifact_paths_by_type(
-            str(state["run_id"]),
-            {"handoff", "release_report", "deployment_summary", "qa_report"},
-        ),
+            "00-requirements.md",
+            "head/planning-history.json",
+            "upstream-planning/project-management/release-plan.md",
+            "upstream-planning/project-management/release-plan.json",
+            "upstream-planning/project-management/planned-work-items.json",
+            "upstream-planning/project-management/roadmap.csv",
+            "upstream-planning/project-management/risks-and-dependencies.md",
+            *artifact_paths_by_type(
+                str(state["run_id"]),
+                {"handoff", "release_report", "deployment_summary", "qa_report"},
+            ),
         ]
     )
 
