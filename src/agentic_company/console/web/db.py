@@ -2283,6 +2283,8 @@ def _normalize_work_item_status(status: str) -> str:
         )
     ):
         return "blocked"
+    if "deployment_deployed" in token:
+        return "review"
     if any(value in token for value in ("completed", "passed", "ready", "done", "deployed")):
         return "done"
     if "qa" in token or "review" in token or "implemented" in token or "inspect" in token:

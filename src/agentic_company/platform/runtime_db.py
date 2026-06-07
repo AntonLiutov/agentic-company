@@ -741,7 +741,9 @@ def _record_work_item_transition_conn(
     requested_status = _normalize_status(record.status)
     effective_status = _effective_transition_status(
         current_status=from_status,
+        raw_requested_status=record.status,
         requested_status=requested_status,
+        owner_agent=record.owner_agent,
         tool_name=record.tool_name,
     )
     lane = _lane_for_status(effective_status)
@@ -1043,15 +1045,25 @@ def _lane_for_status(status: str) -> str:
 def _effective_transition_status(
     *,
     current_status: str,
+    raw_requested_status: str,
     requested_status: str,
+    owner_agent: str,
     tool_name: str,
 ) -> str:
-    """Prevent read-only inspections from downgrading completed cards."""
+    """Apply tool semantics that cannot be inferred from status text alone."""
 
     current = _normalize_status(current_status)
     requested = _normalize_status(requested_status)
     if current == "done" and tool_name == "inspect_sprint_status":
         return current
+    raw = raw_requested_status.strip().lower()
+    if (
+        "deployed" in raw
+        and requested == "done"
+        and owner_agent == "deployment-agent"
+        and tool_name in {"codex_exec", "run_deployment"}
+    ):
+        return "review"
     return requested
 
 

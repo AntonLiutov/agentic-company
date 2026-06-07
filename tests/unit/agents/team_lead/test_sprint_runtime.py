@@ -10,6 +10,7 @@ from agentic_company.agents.team_lead.tools import (
     TeamLeadExecutorResult,
     TeamLeadToolbox,
     TeamLeadWorkers,
+    _status_for_tool_result,
     apply_team_lead_result,
 )
 from agentic_company.console.web.db import ConsoleRepository
@@ -85,6 +86,55 @@ def test_complete_sprint_clears_resolved_stale_blockers(tmp_path, monkeypatch):
 
     assert payload["status"] == "team_lead_sprint_handoff_ready"
     assert toolbox.delivery_state["blockers"] == []
+
+
+def test_deployment_success_moves_work_item_to_review_until_qa_passes(tmp_path, monkeypatch):
+    _repo, _run, _state = _setup_runtime(tmp_path, monkeypatch)
+
+    record_work_item_transition(
+        ToolExecutionRecord(
+            run_id="run",
+            work_item_id="US-1",
+            sprint_id="sprint-01",
+            owner_agent="deployment-agent",
+            tool_name="codex_exec",
+            tool_call_id="run:deployment:US-1",
+            attempt_id="1",
+            status="deployment_deployed",
+            activity_message="Deployment published US-1.",
+        )
+    )
+
+    deployed_item = get_work_item("run", "US-1")
+    assert deployed_item.status == "review"
+    assert deployed_item.lane == "qa"
+    assert deployed_item.owner_agent == "deployment-agent"
+    assert deployed_item.active is True
+
+    record_work_item_transition(
+        ToolExecutionRecord(
+            run_id="run",
+            work_item_id="US-1",
+            sprint_id="sprint-01",
+            owner_agent="qa-agent",
+            tool_name="run_post_deploy_qa",
+            tool_call_id="run:post-deploy-qa:US-1",
+            attempt_id="1",
+            status="qa_passed",
+            activity_message="Post-deploy QA passed US-1.",
+        )
+    )
+
+    reviewed_item = get_work_item("run", "US-1")
+    assert reviewed_item.status == "done"
+    assert reviewed_item.lane == "done"
+    assert reviewed_item.owner_agent == "qa-agent"
+    assert reviewed_item.active is False
+
+
+def test_team_lead_deployment_tool_result_stays_in_review_before_qa():
+    assert _status_for_tool_result("run_deployment", "deployment_deployed") == "review"
+    assert _status_for_tool_result("run_post_deploy_qa", "qa_passed") == "done"
 
 
 def test_apply_team_lead_result_omits_resolved_stale_blockers(tmp_path, monkeypatch):

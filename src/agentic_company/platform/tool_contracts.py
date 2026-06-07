@@ -440,6 +440,8 @@ def dashboard_status_from_runtime_status(status: str) -> DashboardStatus:
     normalized = status.strip().lower()
     if any(token in normalized for token in ("blocked", "failed", "precondition", "needs_repair")):
         return "blocked"
+    if "deployment_deployed" in normalized:
+        return "review"
     if any(token in normalized for token in ("ready", "done", "completed", "deployed")):
         return "done"
     if any(token in normalized for token in ("qa", "review", "inspect")):

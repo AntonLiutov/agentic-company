@@ -1285,7 +1285,7 @@ def _status_for_tool_result(tool: str, runtime_status: str) -> str:
     normalized = runtime_status.lower()
     if any(token in normalized for token in ("failed", "blocked", "repair", "error")):
         return "blocked"
-    if tool in {"run_qa", "run_deployment", "run_handoff", "run_post_deploy_qa"}:
+    if tool in {"run_qa", "run_handoff", "run_post_deploy_qa"}:
         return "done"
     return "review"
 
