@@ -1,0 +1,48 @@
+schema_version: 1
+skill_id: deployment-check
+version: "1.0"
+status: active
+trust_level: system
+selection:
+  applies_to_agents: [deployment-agent]
+  default_for_agents: [deployment-agent]
+  stages: [deployment, publish, post_deploy]
+  trigger_keywords: [deploy, publish, URL, container, ingress, deployment evidence]
+  negative_triggers: [requirements, architecture, implementation-only, release report]
+contracts:
+  required_tools: [codex_exec]
+  allowed_tools: [codex_exec]
+  consumes_artifacts: [execution_summary, qa_report]
+  produces_artifacts:
+    - artifact_type: deployment_summary
+      visibility: release
+      required: true
+      dashboard_label: Deployment summary
+      external_reference_type: work_item
+    - artifact_type: qa_report
+      visibility: qa_evidence
+      required: false
+      dashboard_label: Post-deploy check
+      external_reference_type: work_item
+dashboard:
+  status: in_progress
+  work_item_stage: deployment
+  external_systems_supported: [internal, github, jira, azure_devops, linear]
+  comment_template: deployment-update
+  labels: [agentic-delivery, deployment]
+governance:
+  risk_level: high
+  requires_human_approval: false
+  max_repair_attempts: 2
+  checkpoint_before: true
+  checkpoint_after: true
+validation:
+  eval_prompts:
+    - Deploy a generated app and capture a reachable public URL.
+  success_signals:
+    - deployment_summary artifact exists
+    - deployment URL or blocker is explicit
+    - no secrets are present in output
+examples:
+  - input: Generated app and deployment target
+    output: Deployment summary with URL or blocker

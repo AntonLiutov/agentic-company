@@ -1,0 +1,43 @@
+schema_version: 1
+skill_id: architecture-design
+version: "1.0"
+status: active
+trust_level: system
+selection:
+  applies_to_agents: [architect-agent]
+  default_for_agents: [architect-agent]
+  stages: [architecture, solution_design]
+  trigger_keywords: [architecture, technical approach, data model, integration, deployment shape]
+  negative_triggers: [requirements only, implementation, QA, release report]
+contracts:
+  required_tools: [codex_exec]
+  allowed_tools: [codex_exec]
+  consumes_artifacts: [requirements_brief]
+  produces_artifacts:
+    - artifact_type: architecture_report
+      visibility: business
+      required: true
+      dashboard_label: Architecture report
+      external_reference_type: work_item
+dashboard:
+  status: in_progress
+  work_item_stage: planning
+  external_systems_supported: [internal, github, jira, azure_devops, linear]
+  comment_template: architecture-update
+  labels: [agentic-delivery, architecture]
+governance:
+  risk_level: medium
+  requires_human_approval: false
+  max_repair_attempts: 1
+  checkpoint_before: false
+  checkpoint_after: true
+validation:
+  eval_prompts:
+    - Design the technical approach for a shared task tracker prototype.
+  success_signals:
+    - architecture_report artifact exists
+    - deployment assumptions are explicit
+    - QA validation points are present
+examples:
+  - input: Requirements brief
+    output: Architecture report with risks and validation points

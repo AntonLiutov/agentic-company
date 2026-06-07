@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import NotRequired, Protocol, TypedDict, cast
 
+from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.platform.agent_contracts import (
     append_downstream_response,
     artifact_refs,
@@ -27,6 +28,7 @@ from agentic_company.platform.state import (
     codex_resume_thread_id,
     mark_node_completed,
 )
+from agentic_company.platform.tool_contracts import WorkItemExecutionPacket
 
 ARCHITECT_AGENT_ID = "architect-agent"
 ARCHITECT_AGENT_GRAPH_NODE_ORDER = AGENT_EXECUTOR_GRAPH_NODE_ORDER
@@ -37,7 +39,7 @@ ARCHITECTURE_JSON = f"{ARCHITECTURE_DIR}/architecture.json"
 ARCHITECTURE_MMD = f"{ARCHITECTURE_DIR}/architecture.mmd"
 BUSINESS_ANALYSIS_MD = f"{ARCHITECTURE_DIR}/business-analysis.md"
 BUSINESS_ANALYSIS_JSON = f"{ARCHITECTURE_DIR}/business-analysis.json"
-DEFAULT_ARCHITECT_MODEL = "gpt-5.3-codex"
+DEFAULT_ARCHITECT_MODEL = DEFAULT_CODEX_MODEL
 
 ARCHITECT_AGENT_SYSTEM_PROMPT = """
 You are the Architect Agent for agentic-company.
@@ -144,7 +146,7 @@ def _prepare_context(state: ArchitectAgentGraphState) -> ArchitectAgentGraphStat
     request_path.parent.mkdir(parents=True, exist_ok=True)
     request_path.write_text(json.dumps(request, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     write_event(
-        run_dir / "events.jsonl",
+        run_dir,
         delivery_state["run_id"],
         ARCHITECT_AGENT_ID,
         "architecture_started",
@@ -170,6 +172,18 @@ def _run_agent_executor(
                 runner=runner,
                 run_dir=Path(state["run_dir"]),
                 delivery_state=state["delivery_state"],
+                packet=WorkItemExecutionPacket(
+                    run_id=str(state["delivery_state"]["run_id"]),
+                    work_item_id="PLAN-02",
+                    sprint_id="planning",
+                    owner_agent=ARCHITECT_AGENT_ID,
+                    tool_name="run_architect",
+                    tool_call_id=str(
+                        state["delivery_state"].get("agent_execution_id") or "PLAN-02"
+                    ),
+                    attempt_id="1",
+                    status="in_progress",
+                ),
             )
         )
         return {**state, "result": result}
@@ -220,7 +234,7 @@ def _apply_result(state: ArchitectAgentGraphState) -> ArchitectAgentGraphState:
         else "architecture_blocked"
     )
     write_event(
-        Path(updated["run_dir"]) / "events.jsonl",
+        Path(updated["run_dir"]),
         updated["run_id"],
         ARCHITECT_AGENT_ID,
         completed_event,

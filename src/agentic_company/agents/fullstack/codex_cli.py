@@ -15,7 +15,10 @@ from agentic_company.integrations.codex import (
     stream_codex_exec_to_log,
     write_structured_codex_artifacts,
 )
-from agentic_company.platform.artifacts import load_execution_request, read_text_artifact
+from agentic_company.platform.artifacts import (
+    load_execution_request,
+    read_text_artifact,
+)
 from agentic_company.platform.events import write_event
 from agentic_company.platform.executions import (
     build_agent_execution_id,
@@ -55,17 +58,17 @@ class CodexCliRunner:
 
     def run(self, run_dir: Path) -> AgentRunResult:
         request = load_execution_request(run_dir)
-        event_log = run_dir / "events.jsonl"
+        event_log = run_dir
         target_dir = Path(request.target_project_dir)
-        active_feature_id = _active_feature_id(request)
-        execution_id = _execution_id(request, active_feature_id)
+        work_item_id = _work_item_id(request)
+        execution_id = _execution_id(request, work_item_id)
         codex_execution_id = build_codex_execution_id(
             execution_id=execution_id,
             codex_agent_id=request.agent_id,
         )
         paths = _execution_paths(
             run_dir=run_dir,
-            active_feature_id=active_feature_id,
+            work_item_id=work_item_id,
             execution_id=request.execution_id,
             summary_filename=self.summary_filename,
             prompt_filename=self.prompt_filename,
@@ -117,7 +120,7 @@ class CodexCliRunner:
                 "execution_id": execution_id,
                 "codex_execution_id": codex_execution_id,
                 "codex_resume_thread_id": resume_thread_id,
-                **_feature_event_data(active_feature_id),
+                "work_item_id": work_item_id,
             },
         )
 
@@ -128,6 +131,10 @@ class CodexCliRunner:
                 log_path,
                 raw_events_path,
                 codex_execution_id=codex_execution_id,
+                run_dir=run_dir,
+                run_id=request.run_id,
+                agent_id=request.agent_id,
+                work_item_id=work_item_id,
             )
         except FileNotFoundError as exc:
             LOGGER.exception("Codex CLI missing run_id=%s", request.run_id)
@@ -142,7 +149,7 @@ class CodexCliRunner:
                     "artifact": summary_filename,
                     "target_project_dir": request.target_project_dir,
                     "status": "codex_cli_missing",
-                    **_feature_event_data(active_feature_id),
+                    "work_item_id": work_item_id,
                 },
             )
             raise RuntimeError(
@@ -175,7 +182,7 @@ class CodexCliRunner:
                     "target_project_dir": request.target_project_dir,
                     "status": "codex_failed",
                     "returncode": completed.returncode,
-                    **_feature_event_data(active_feature_id),
+                    "work_item_id": work_item_id,
                 },
             )
             return AgentRunResult(
@@ -210,20 +217,22 @@ class CodexCliRunner:
                 "execution_id": execution_id,
                 "codex_execution_id": codex_execution_id,
                 "codex_thread_id": codex_thread_id,
-                **_feature_event_data(active_feature_id),
+                "work_item_id": work_item_id,
             },
         )
         LOGGER.info("Codex execution completed run_id=%s", request.run_id)
-        return AgentRunResult(
-            agent_id=request.agent_id,
-            status="codex_completed",
-            output_artifacts=[
+        output_artifacts = _unique_artifacts(
+            [
                 summary_filename,
                 prompt_filename,
                 log_filename,
                 *structured_artifacts,
-                *request.expected_outputs,
-            ],
+            ]
+        )
+        return AgentRunResult(
+            agent_id=request.agent_id,
+            status="codex_completed",
+            output_artifacts=output_artifacts,
             summary=summary,
             execution_id=execution_id,
             codex_thread_id=codex_thread_id,
@@ -253,6 +262,10 @@ class CodexCliRunner:
         raw_events_path: Path,
         *,
         codex_execution_id: str,
+        run_dir: Path,
+        run_id: int | str,
+        agent_id: str,
+        work_item_id: str | None,
     ) -> subprocess.CompletedProcess[str]:
         if self.command_executor:
             return self.command_executor(
@@ -266,6 +279,10 @@ class CodexCliRunner:
             log_path,
             raw_events_path,
             codex_execution_id=codex_execution_id,
+            trace_run_dir=run_dir,
+            trace_run_id=run_id,
+            trace_agent_id=agent_id,
+            trace_work_item_id=work_item_id,
         )
 
 
@@ -351,7 +368,13 @@ Workspace ownership:
   creating duplicate run-level reports.
 
 Credential handling:
-- If `{request.target_project_dir}\\.env` already exists, preserve it.
+- Treat platform/provider keys as agent runtime secrets. They are available to
+  tools through the process environment; they must not be copied into the
+  generated application folder.
+- If `{request.target_project_dir}\\.env` is needed, it may contain only
+  app-owned runtime variables from `.env.example` with empty placeholders or
+  safe defaults. Never store OpenAI, Codex, Gemini, Azure, platform, or user
+  account secrets there.
 - Do not print secret values in generated files, logs, summaries, or comments.
 - Keep `.env.example` limited to empty placeholders or safe defaults.
 - Use ASCII in generated source and documentation unless non-ASCII is explicitly required.
@@ -383,8 +406,8 @@ Environment setup:
 - Keep generated Python dependency constraints stable and minimal. Avoid changing Python
   version requirements or package lower bounds unless the requirements explicitly need it,
   because those changes invalidate Docker dependency cache layers.
-- Document commands like `uv sync`, `uv add`, or `uv run streamlit run app.py`.
-- Mention `pip install` only as a fallback for users without `uv`.
+- Document the framework-native setup and run commands needed for the generated app.
+- Mention `pip install` only for users without `uv`.
 - If Docker Compose is requested or not explicitly listed as a non-goal, include a minimal
   `Dockerfile` and `docker-compose.yml`.
 - Docker Compose should allow this flow: copy or create `.env`, fill credentials, then run
@@ -410,6 +433,20 @@ Cloud/runtime readiness:
   mismatch, repair the generated app accordingly. Examples include persistence support,
   startup initialization, runtime config, health endpoint behavior, container definition,
   and application-owned environment assumptions.
+
+UI delivery honesty:
+- For UI/web features, every visible primary button, menu item, tab, form, and
+  modal control must either work for the current feature scope or be hidden until
+  it is implemented.
+- Show admin/moderation controls only to roles that are allowed to use them by
+  the active acceptance criteria.
+- Do not use demo/static chat data, fake notifications, placeholder files, or
+  future-only controls in a way that looks like delivered functionality.
+- If the acceptance criteria require a visible UI flow, such as private room
+  invitations or joining by invitation, implement the flow in the UI instead of
+  proving it only through API calls.
+- Preserve responsive desktop and mobile usability; avoid overlapping text,
+  clipped controls, and layout states that block the primary chat workflow.
 
 Request context:
 {request_context}
@@ -456,29 +493,29 @@ def _preview_text(text: str, path: Path, limit: int = REQUEST_CONTEXT_PREVIEW_CH
     )
 
 
-def _active_feature_id(request: ExecutionRequest) -> str | None:
-    if not request.active_feature:
-        return None
-    feature_id = request.active_feature.get("id")
-    return str(feature_id) if feature_id else None
+def _work_item_id(request: ExecutionRequest) -> str:
+    work_item_id = str(request.work_item.get("work_item_id") or "").strip()
+    if not work_item_id:
+        raise ValueError("Execution request is missing explicit work_item.work_item_id")
+    return work_item_id
 
 
-def _feature_artifact_filename(filename: str, feature_id: str | None) -> str:
-    if not feature_id:
+def _work_item_artifact_filename(filename: str, work_item_id: str | None) -> str:
+    if not work_item_id:
         return filename
     path = Path(filename)
     if path.parent == Path("."):
-        return f"{path.stem}-{feature_id}{path.suffix}"
-    return str(path.parent / feature_id / path.name).replace("\\", "/")
+        return f"{path.stem}-{work_item_id}{path.suffix}"
+    return str(path.parent / work_item_id / path.name).replace("\\", "/")
 
 
-def _execution_id(request: ExecutionRequest, feature_id: str | None) -> str:
+def _execution_id(request: ExecutionRequest, work_item_id: str | None) -> str:
     if request.execution_id:
         return request.execution_id
     return build_agent_execution_id(
         run_id=request.run_id,
         agent_id=request.agent_id,
-        target=feature_id or "project",
+        correlation_id=work_item_id or "work-item",
         intent=request.execution_intent or "implementation",
     )
 
@@ -486,7 +523,7 @@ def _execution_id(request: ExecutionRequest, feature_id: str | None) -> str:
 def _execution_paths(
     *,
     run_dir: Path,
-    active_feature_id: str | None,
+    work_item_id: str | None,
     execution_id: str,
     summary_filename: str,
     prompt_filename: str,
@@ -495,15 +532,15 @@ def _execution_paths(
 ) -> dict[str, str]:
     if not execution_id:
         return {
-            "summary": _feature_artifact_filename(summary_filename, active_feature_id),
-            "prompt": _feature_artifact_filename(prompt_filename, active_feature_id),
-            "log": _feature_artifact_filename(log_filename, active_feature_id),
-            "raw_events": _feature_artifact_filename(raw_events_filename, active_feature_id),
+            "summary": _work_item_artifact_filename(summary_filename, work_item_id),
+            "prompt": _work_item_artifact_filename(prompt_filename, work_item_id),
+            "log": _work_item_artifact_filename(log_filename, work_item_id),
+            "raw_events": _work_item_artifact_filename(raw_events_filename, work_item_id),
         }
 
     root = run_dir / "codex"
-    if active_feature_id:
-        root = root / active_feature_id
+    if work_item_id:
+        root = root / work_item_id
     artifact_dir = execution_artifact_dir(root=root, execution_id=execution_id)
     relative = artifact_dir.relative_to(run_dir).as_posix()
     return {
@@ -514,23 +551,26 @@ def _execution_paths(
     }
 
 
-def _feature_event_data(feature_id: str | None) -> dict[str, str]:
-    return {"feature_id": feature_id} if feature_id else {}
-
-
 def _render_feature_context(request: ExecutionRequest) -> str:
-    if not request.active_feature:
-        return "- No active feature is scoped for this run; implement the full request."
+    if not request.work_item:
+        return "- No work item is scoped for this run; this is a contract error."
 
-    feature = request.active_feature
-    criteria = "\n".join(f"  - {criterion}" for criterion in feature.get("acceptance_criteria", []))
-    completed = ", ".join(request.completed_feature_ids) or "none"
-    return f"""- Active feature: `{feature.get("id")}` - {feature.get("title")}
-- Active feature acceptance criteria:
-{criteria or "  - None provided."}
-- Completed features before this run: {completed}
-- Implement only the active feature in this Codex run.
-- Preserve behavior for completed features and avoid broad rewrites unless required."""
+    work_item = request.work_item
+    completed = ", ".join(request.completed_work_item_ids) or "none"
+    return f"""- Work item: `{work_item.get("work_item_id")}` - {work_item.get("title")}
+- Sprint: `{work_item.get("sprint_id")}`
+- Completed work items before this run: {completed}
+- Implement only the scoped work item in this Codex run.
+- Preserve behavior for completed work items and avoid broad rewrites unless required."""
+
+
+def _unique_artifacts(paths: Sequence[str]) -> list[str]:
+    unique: list[str] = []
+    for path in paths:
+        normalized = str(path or "").strip().replace("\\", "/")
+        if normalized and normalized not in unique:
+            unique.append(normalized)
+    return unique
 
 
 def _is_failed_summary(summary_path: Path) -> bool:

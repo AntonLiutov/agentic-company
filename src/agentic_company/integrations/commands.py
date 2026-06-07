@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from os import PathLike
 from pathlib import Path
 
@@ -186,7 +186,7 @@ def append_completed_command_log(
 
 
 def timestamp_now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 class _CommandLog:

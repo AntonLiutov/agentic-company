@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
 from agentic_company.integrations.codex import (
+    DEFAULT_CODEX_MODEL,
     build_codex_exec_command,
     build_codex_exec_environment,
     stream_codex_exec_to_log,
 )
+from agentic_company.platform.artifact_registry import artifact_id_for
 from agentic_company.platform.artifacts import read_json_object_artifact, write_json_artifact
 from agentic_company.platform.executions import (
     build_agent_execution_id,
@@ -21,6 +24,9 @@ from agentic_company.platform.executions import (
     execution_artifact_dir,
     extract_codex_thread_id,
 )
+from agentic_company.platform.run_trace import record_model_call_event
+from agentic_company.platform.runtime_db import record_artifact_link
+from agentic_company.platform.tool_contracts import ArtifactRegistrationRequest
 
 CommandExecutor = Callable[
     [Sequence[str], str, int, Path, Path],
@@ -47,7 +53,7 @@ class StatusInspectionRequest:
     status_context: Mapping[str, Any]
     artifact_refs: list[str] = field(default_factory=list)
     correlation_id: str = ""
-    model: str = "gpt-5.3-codex"
+    model: str = DEFAULT_CODEX_MODEL
     execution_id: str = ""
     codex_resume_thread_id: str = ""
 
@@ -80,7 +86,7 @@ class StatusInspectorRunner:
         execution_id = request.execution_id or build_agent_execution_id(
             run_id=request.run_id,
             agent_id=request.requesting_agent,
-            target=request.correlation_id or request.scope,
+            correlation_id=request.correlation_id or request.scope,
             intent="status_inspection",
             message_id=request.purpose,
         )
@@ -114,6 +120,7 @@ class StatusInspectorRunner:
             result_path=result_path,
         )
         prompt_path.write_text(prompt, encoding="utf-8")
+        prompt_artifact = prompt_path.relative_to(request.run_dir).as_posix()
         command = build_codex_exec_command(
             codex_binary=self.codex_binary,
             model=request.model,
@@ -124,6 +131,7 @@ class StatusInspectorRunner:
             force_sandbox=True,
             resume_session_id=request.codex_resume_thread_id,
         )
+        started = time.perf_counter()
         completed = self._execute(
             command,
             prompt,
@@ -131,7 +139,11 @@ class StatusInspectorRunner:
             raw_events_path,
             request.run_dir,
             codex_execution_id=codex_execution_id,
+            run_id=request.run_id,
+            agent_id=request.requesting_agent,
+            work_item_id=request.correlation_id,
         )
+        duration_ms = max(0, int((time.perf_counter() - started) * 1000))
         payload = _load_payload(result_path)
         if not payload:
             payload = {
@@ -148,18 +160,45 @@ class StatusInspectorRunner:
             payload.get("status") or ("inspected" if completed.returncode == 0 else "failed")
         )
         codex_thread_id = extract_codex_thread_id(raw_events_path) or request.codex_resume_thread_id
+        result_artifact = result_path.relative_to(request.run_dir).as_posix()
+        context_artifact = context_path.relative_to(request.run_dir).as_posix()
+        summary_artifact = summary_path.relative_to(request.run_dir).as_posix()
+        log_artifact = log_path.relative_to(request.run_dir).as_posix()
+        raw_events_artifact = raw_events_path.relative_to(request.run_dir).as_posix()
+        _register_status_artifacts(
+            request,
+            [
+                (result_artifact, "debug_trace"),
+                (context_artifact, "tool_request"),
+                (summary_artifact, "execution_summary"),
+                (prompt_artifact, "tool_request"),
+                (log_artifact, "codex_log"),
+                (raw_events_artifact, "debug_trace"),
+            ],
+        )
+        record_model_call_event(
+            request.run_dir,
+            run_id=request.run_id,
+            agent_id=request.requesting_agent,
+            provider="openai",
+            model=request.model,
+            purpose="status_inspection",
+            prompt_ref=prompt_artifact,
+            status=status,
+            duration_ms=duration_ms,
+        )
         return StatusInspectionResult(
             status=status,
             payload=payload,
             artifact_refs=[
                 *request.artifact_refs,
-                context_path.relative_to(request.run_dir).as_posix(),
+                context_artifact,
             ],
-            result_artifact=result_path.relative_to(request.run_dir).as_posix(),
-            summary_artifact=summary_path.relative_to(request.run_dir).as_posix(),
-            prompt_artifact=prompt_path.relative_to(request.run_dir).as_posix(),
-            log_artifact=log_path.relative_to(request.run_dir).as_posix(),
-            raw_events_artifact=raw_events_path.relative_to(request.run_dir).as_posix(),
+            result_artifact=result_artifact,
+            summary_artifact=summary_artifact,
+            prompt_artifact=prompt_artifact,
+            log_artifact=log_artifact,
+            raw_events_artifact=raw_events_artifact,
             execution_id=execution_id,
             codex_thread_id=codex_thread_id,
         )
@@ -173,6 +212,9 @@ class StatusInspectorRunner:
         run_dir: Path,
         *,
         codex_execution_id: str,
+        run_id: int | str,
+        agent_id: str,
+        work_item_id: str | None,
     ) -> subprocess.CompletedProcess[str]:
         if self.command_executor:
             return self.command_executor(
@@ -192,6 +234,10 @@ class StatusInspectorRunner:
             raw_events_path,
             env=env,
             codex_execution_id=codex_execution_id,
+            trace_run_dir=run_dir,
+            trace_run_id=run_id,
+            trace_agent_id=agent_id,
+            trace_work_item_id=work_item_id,
         )
 
 
@@ -229,7 +275,7 @@ Rules:
 - The JSON must include a concise status summary, a task/sprint table or list,
   worker calls observed, status gates, evidence refs when available, blockers,
   and completion booleans.
-- Do not invent feature ids or sprint ids. Use ids from the context/artifacts only.
+- Do not invent work item ids or sprint ids. Use ids from the context/artifacts only.
 - Do not recommend tools, owners, routing, or next actions. The requesting
   coordinator owns routing decisions.
 - Preserve task status from the context unless referenced artifacts prove a more
@@ -259,8 +305,8 @@ def _schema_hint(scope: str) -> str:
                     {
                         "id": "sprint-01",
                         "status": "not_started|running|handoff_ready|complete|blocked",
-                        "done_features": [],
-                        "pending_features": [],
+                        "done_work_items": [],
+                        "pending_work_items": [],
                         "blockers": [],
                     }
                 ],
@@ -331,3 +377,25 @@ def _inspector_agent_id(requesting_agent: str) -> str:
 
 def _inspector_artifact_owner(requesting_agent: str) -> str:
     return requesting_agent.removesuffix("-agent") or "status-inspector"
+
+
+def _register_status_artifacts(
+    request: StatusInspectionRequest,
+    artifacts: list[tuple[str, str]],
+) -> None:
+    for relative_path, artifact_type in artifacts:
+        if not (request.run_dir / relative_path).is_file():
+            continue
+        record_artifact_link(
+            request.run_dir,
+            ArtifactRegistrationRequest(
+                artifact_id=artifact_id_for(request.run_id, relative_path),
+                artifact_type=artifact_type,
+                visibility="developer",
+                owner_agent=request.requesting_agent,
+                source_tool="status_inspection",
+                label=Path(relative_path).name,
+                relative_path=relative_path,
+                run_id=request.run_id,
+            ),
+        )

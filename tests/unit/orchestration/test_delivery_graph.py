@@ -7,7 +7,6 @@ from agentic_company.orchestration.graphs import (
     render_delivery_graph_mermaid,
     run_delivery_graph,
 )
-from agentic_company.platform.artifacts import artifact_ref
 from agentic_company.platform.state import DeliveryState, initial_delivery_state
 
 
@@ -22,15 +21,6 @@ def test_delivery_graph_runs_linear_stage_order(tmp_path):
                 "stage": name,
                 "status": f"{name}_completed",
                 "completed_nodes": [*state["completed_nodes"], name],
-                "artifacts": [
-                    *state["artifacts"],
-                    artifact_ref(
-                        f"{name}.txt",
-                        kind="internal",
-                        owner_agent=f"{name}-agent",
-                        visibility="internal",
-                    ),
-                ],
             }
 
         return run
@@ -53,9 +43,6 @@ def test_delivery_graph_runs_linear_stage_order(tmp_path):
     assert result["completed_nodes"] == DELIVERY_GRAPH_NODE_ORDER
     assert result["stage"] == "head"
     assert result["status"] == "head_completed"
-    assert [artifact["path"] for artifact in result["artifacts"]] == [
-        f"{name}.txt" for name in DELIVERY_GRAPH_NODE_ORDER
-    ]
 
 
 def test_initial_delivery_state_records_graph_defaults(tmp_path):
@@ -69,7 +56,6 @@ def test_initial_delivery_state_records_graph_defaults(tmp_path):
     assert state["status"] == "initialized"
     assert state["repair_attempts"] == 0
     assert state["max_repair_attempts"] == 3
-    assert state["artifacts"] == []
     assert state["blockers"] == []
     assert state["auto_confirmations"] == []
     assert state["completed_nodes"] == []
@@ -115,12 +101,8 @@ def test_delivery_graph_can_run_console_execution_subset(tmp_path):
     assert visited == ["head"]
 
 
-def test_delivery_graph_can_still_run_team_lead_when_explicitly_requested(tmp_path):
+def test_delivery_graph_can_run_team_lead_when_explicitly_requested(tmp_path):
     visited: list[str] = []
-    feature_queue = [
-        {"id": "F1", "title": "Create tasks", "delivery_order": 1},
-        {"id": "F2", "title": "Mark tasks done", "delivery_order": 2},
-    ]
 
     def team_lead(state: DeliveryState) -> DeliveryState:
         visited.append("team_lead")
@@ -129,8 +111,6 @@ def test_delivery_graph_can_still_run_team_lead_when_explicitly_requested(tmp_pa
             "stage": "team_lead",
             "status": "team_lead_sprint_handoff_ready",
             "completed_nodes": [*state["completed_nodes"], "team_lead"],
-            "completed_feature_ids": ["F1", "F2"],
-            "active_feature_id": None,
             "deployment_status": "deployed",
         }
 
@@ -138,9 +118,6 @@ def test_delivery_graph_can_still_run_team_lead_when_explicitly_requested(tmp_pa
         run_id="feature-loop-test",
         run_dir=tmp_path / "runs" / "feature-loop-test",
     )
-    state["feature_queue"] = feature_queue
-    state["active_feature_id"] = "F1"
-
     result = run_delivery_graph(
         state,
         nodes=DeliveryGraphNodes(
@@ -150,8 +127,6 @@ def test_delivery_graph_can_still_run_team_lead_when_explicitly_requested(tmp_pa
     )
 
     assert visited == ["team_lead"]
-    assert result["completed_feature_ids"] == ["F1", "F2"]
-    assert result["active_feature_id"] is None
     assert result["status"] == "team_lead_sprint_handoff_ready"
     assert result["deployment_status"] == "deployed"
 

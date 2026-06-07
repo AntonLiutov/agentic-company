@@ -12,9 +12,11 @@ from agentic_company.agents.business_analysis.graph import (
     BUSINESS_ANALYSIS_MD,
     BUSINESS_ANALYSIS_REQUEST,
 )
+from agentic_company.console.web.db import ConsoleRepository
 
 
-def test_business_analysis_prompt_scopes_codex_to_analysis_artifacts(tmp_path):
+def test_business_analysis_prompt_scopes_codex_to_analysis_artifacts(tmp_path, monkeypatch):
+    _register_run(tmp_path, monkeypatch)
     requirements = tmp_path / "00-requirements.md"
     requirements.write_text(
         "Sprint Alpha\nF1: Build a task tracker for small teams.\n",
@@ -22,7 +24,7 @@ def test_business_analysis_prompt_scopes_codex_to_analysis_artifacts(tmp_path):
     )
     request = {
         "run_id": "run",
-        "model": "gpt-5.3-codex",
+        "model": "gpt-5.5",
         "requirements_artifact": "00-requirements.md",
         "expected_outputs": [BUSINESS_ANALYSIS_MD, BUSINESS_ANALYSIS_JSON],
         "incoming_messages": (
@@ -52,7 +54,7 @@ def test_business_analysis_prompt_scopes_codex_to_analysis_artifacts(tmp_path):
     assert BUSINESS_ANALYSIS_JSON in prompt
     assert "Write only the two allowed business analysis artifacts" in prompt
     assert "Do not modify generated-project files" in prompt
-    assert "Do not create sprint plans, feature queues" in prompt
+    assert "Do not create sprint plans, planned work item contracts" in prompt
     assert "Azure-oriented deployment infrastructure" in prompt
     assert "Azure deployment is a supported platform capability" in prompt
     assert "Scale the depth of analysis to the source request" in prompt
@@ -78,7 +80,7 @@ def test_business_analysis_prompt_scopes_codex_to_analysis_artifacts(tmp_path):
     assert "Do not include tool write policy" in prompt
     assert "agent registry, orchestration routing, or AI-provider details" in prompt
     assert "source_refs" in prompt
-    assert "feature ids, sprint ids, milestones, phases" in prompt
+    assert "work item ids, sprint ids, milestones, phases" in prompt
     assert "Preserve every distinct feature/source label" in prompt
     assert "collapse many features into a smaller fixed set" in prompt
     assert "limit references to examples" in prompt
@@ -94,7 +96,10 @@ def test_business_analysis_prompt_scopes_codex_to_analysis_artifacts(tmp_path):
     assert "Project Manager owns sprint planning" in prompt
 
 
-def test_business_analyst_codex_runner_maps_valid_contract_to_completed_result(tmp_path):
+def test_business_analyst_codex_runner_maps_valid_contract_to_completed_result(
+    tmp_path, monkeypatch
+):
+    _register_run(tmp_path, monkeypatch)
     (tmp_path / "00-requirements.md").write_text(
         "Build a task tracker for small teams.\n",
         encoding="utf-8",
@@ -106,7 +111,7 @@ def test_business_analyst_codex_runner_maps_valid_contract_to_completed_result(t
             {
                 "run_id": "run",
                 "agent_id": "business-analyst-agent",
-                "model": "gpt-5.3-codex",
+                "model": "gpt-5.5",
                 "requirements_artifact": "00-requirements.md",
                 "expected_outputs": [BUSINESS_ANALYSIS_MD, BUSINESS_ANALYSIS_JSON],
                 "codex_resume_thread_id": "",
@@ -162,3 +167,31 @@ def test_business_analyst_codex_runner_maps_valid_contract_to_completed_result(t
         for artifact in result.output_artifacts
     )
     assert result.blocking_findings == []
+
+
+def _register_run(run_dir: Path, monkeypatch) -> None:
+    db_path = run_dir / "console.db"
+    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
+    repo = ConsoleRepository(db_path)
+    repo.init_schema()
+    user = repo.create_user(
+        email="ba@example.test",
+        username="ba-user",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="BA",
+        request_text="Analyze",
+        mode="internal_tool",
+        complexity="simple",
+        status="running",
+    )
+    repo.create_run(
+        project_id=project.id,
+        run_uid="run",
+        run_dir=run_dir,
+        status="running",
+        mode="internal_tool",
+        reasoning="medium",
+    )

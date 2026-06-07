@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from agentic_company.agents.head.contracts import HEAD_TOOLS
+from agentic_company.agents.head.contracts import HEAD_TOOL_CONTRACT_REGISTRY, HEAD_TOOLS
 from agentic_company.agents.head.tools import HeadExecutorResult, HeadToolbox, HeadWorkers
 from agentic_company.agents.registry import agent_by_id
 from agentic_company.platform.agent_runtime import (
@@ -18,9 +18,10 @@ from agentic_company.platform.agent_runtime import (
     LangChainCreateAgentRuntime,
     MissingAgentRuntimeConfig,
     coordinator_quality_review_policy,
-    coordinator_recovery_policy,
+    coordinator_repair_policy,
 )
 from agentic_company.platform.state import DeliveryState
+from agentic_company.platform.tool_contracts import render_tool_docstring
 
 
 class LangChainHeadExecutor:
@@ -62,7 +63,7 @@ class LangChainHeadExecutor:
         except MissingAgentRuntimeConfig:
             toolbox.block_planning(
                 reason="OPENAI_API_KEY is required for Head Agent decisions.",
-                message="Set OPENAI_API_KEY in the repo .env or generated-project/.env.",
+                message="Set OPENAI_API_KEY in Settings or the run-level agent runtime env.",
             )
             return toolbox.result()
         except LangChainAgentRuntimeError as exc:
@@ -78,11 +79,13 @@ class LangChainHeadExecutor:
             )
             return toolbox.result()
 
-        if not toolbox.history:
+        if not toolbox.tool_calls_made():
             toolbox.block_planning(
                 reason="Head Agent executor completed without calling any tool.",
                 message="The Head Agent must use tools to coordinate planning.",
             )
+        elif not toolbox.reached_terminal_state():
+            toolbox.block_incomplete_execution()
         return toolbox.result()
 
 
@@ -93,7 +96,7 @@ def build_head_executor_prompt(*, delivery_state: DeliveryState) -> str:
             "to analyze the raw requirements. Then ask the Architect to create architecture "
             "from the BA artifacts and response. Then ask Project Manager to create a bounded "
             "release/sprint plan from BA and architecture artifacts. Then ask Team Lead to "
-            "execute the Project Manager feature queue through the delivery team."
+            "execute the Project Manager planned work item contract through the delivery team."
         ),
         "delivery_state": _compact_delivery_state(delivery_state),
         "available_tools": list(HEAD_TOOLS),
@@ -108,7 +111,7 @@ def build_head_executor_prompt(*, delivery_state: DeliveryState) -> str:
             ],
             repair_limit=int(delivery_state.get("max_repair_attempts", 5)),
         ),
-        "coordinator_recovery_policy": coordinator_recovery_policy(
+        "coordinator_repair_policy": coordinator_repair_policy(
             coordinator_name="Head Agent",
             downstream_tools=[
                 "run_business_analyst",
@@ -152,7 +155,7 @@ def build_head_executor_prompt(*, delivery_state: DeliveryState) -> str:
                 "features and not split work merely to fill sprint or feature counts."
             ),
             (
-                "Apply coordinator_recovery_policy to Business Analyst, Architect, Project "
+                "Apply coordinator_repair_policy to Business Analyst, Architect, Project "
                 "Manager, and Team Lead tool responses. For example, if any of those agents "
                 "returns failed/blocked/contract-error status, inspect the response and "
                 "artifact refs, call codex_review after meaningful downstream work, then "
@@ -162,8 +165,8 @@ def build_head_executor_prompt(*, delivery_state: DeliveryState) -> str:
             (
                 "After Project Manager completes successfully, call run_team_lead with PM "
                 "artifact refs and a clear sprint-delivery assignment. Use the exact "
-                "canonical sprint_id from PM artifacts as the run_team_lead target; do "
-                "not invent aliases such as Sprint 01, S1, or a default sprint id when "
+                "canonical sprint_id from PM artifacts as the run_team_lead sprint_id; do "
+                "not invent alternate ids such as Sprint 01, S1, or a default sprint id when "
                 "PM provided a concrete id."
             ),
             (
@@ -181,30 +184,30 @@ def build_head_executor_prompt(*, delivery_state: DeliveryState) -> str:
                 "`team_lead_sprint_handoff_ready` means the addressed sprint handoff is "
                 "ready; it does not by itself mean the whole project delivery is complete. "
                 "Before calling complete_delivery, inspect PM's planned sprints, "
-                "candidate_feature_queue, feature_queue, sprint-XX-plan artifacts, and "
+                "planned_work_items, work_items, sprint-XX-plan artifacts, and "
                 "release/deployment gates. If any later sprint, pending feature, or final "
                 "deployment gate remains, call run_team_lead again with the next sprint_id "
-                "as target and a message pointing to that sprint plan. Only call "
+                "and a message pointing to that sprint plan. Only call "
                 "complete_delivery after every PM-planned sprint and the final deployment/"
                 "handoff gate are complete or explicitly out of scope. Never translate one "
                 "sprint handoff into project completion; use release/deployment gates to "
-                "find the next sprint target generically."
+                "find the next sprint_id generically."
             ),
             (
                 "After Team Lead completes successfully or returns "
                 "team_lead_sprint_handoff_ready, review only the artifact refs actually "
-                "returned by Team Lead/Handoff and the artifact registry in delivery_state. "
+                "returned by Team Lead/Handoff and DB artifact metadata. "
                 "Compare them only against the user request, active PM sprint plan, active "
                 "board item, and Team Lead/Handoff contract. Do not invent a separate sprint "
-                "report path, expected folder, alias path, or release-governance gate. "
+                "report path, expected folder, alternate id path, or release-governance gate. "
                 "If Codex Review finds the returned/registered handoff artifacts exist and "
                 "substantially satisfy the PM/board DoD, accept those canonical refs even if "
                 "they live under a different folder than you expected. If another sprint "
-                "remains, call run_team_lead with that sprint target. If no sprint remains, "
+                "remains, call run_team_lead with that sprint_id. If no sprint remains, "
                 "ensure the final project handoff exists through Team Lead and then call "
                 "complete_delivery. Do not rerun the same completed sprint just to republish "
                 "already readable artifacts under a different path. Never require a Team "
-                "Lead wrapper folder, alias report, deliverables pointer, or copied file "
+                "Lead wrapper folder, alternate id report, deliverables pointer, or copied file "
                 "when Handoff-owned canonical refs are already returned or registered."
             ),
             (
@@ -228,7 +231,7 @@ def build_head_executor_prompt(*, delivery_state: DeliveryState) -> str:
             ),
             (
                 "If Team Lead says work is complete but does not return artifact refs, first "
-                "inspect the downstream_response and delivery_state artifact registry for "
+                "inspect the downstream_response and DB artifact metadata for "
                 "handoff artifacts. If refs exist there, use them. If they do not exist, ask "
                 "Team Lead to report or produce missing evidence refs through its normal "
                 "tool response; do not prescribe a new folder or filename."
@@ -249,11 +252,9 @@ def build_head_executor_prompt(*, delivery_state: DeliveryState) -> str:
                 "return artifact refs."
             ),
             (
-                "Block only when a downstream planning/delivery agent cannot complete, "
-                "returned a real non-repairable blocker, or exhausted bounded recovery. "
-                "During normal AgentExecutor decisions, Head has no block tool; report the "
-                "issue through coordinator messages or route the next useful PM-planned "
-                "action instead of stopping delivery from review advice."
+                "Call block_planning only when a downstream planning/delivery agent cannot "
+                "complete, returned a real non-repairable blocker, or exhausted bounded "
+                "Repair. Do not stop delivery from advisory review advice alone."
             ),
         ],
     }
@@ -273,7 +274,7 @@ Current bounded flow:
 - ask Architect to produce product/system architecture from BA output;
 - read the Architect tool response and artifacts;
 - ask Project Manager to produce the smallest reasonable bounded release plan,
-  sprint plans, and Team Lead-compatible candidate feature queue from BA and
+  sprint plans, and Team Lead-compatible planned work item contract from BA and
   architecture output;
 - read the Project Manager tool response and artifacts;
 - call `inspect_delivery_status` once delivery starts and use its JSON readback
@@ -283,14 +284,14 @@ Current bounded flow:
   errors after meaningful downstream work, inspect the response and artifact
   refs, use Codex Review, then ask the owning specialist for bounded repair
   passes when repairable;
-- ask Team Lead to execute sprint delivery from the PM feature queue;
+- ask Team Lead to execute sprint delivery from DB-materialized PM work items;
 - read the Team Lead tool response and artifacts;
 - after each Team Lead result, call `inspect_delivery_status`; it writes a
   status JSON file and the platform reads that file back. Treat the readback as
   status-only evidence; choose the next sprint/tool from PM artifacts and the
   Head workflow;
-- after each successful sprint, continue to the next pending sprint from the PM
-  feature queue or work board; do not rerun a sprint that is already handoff-ready;
+- after each successful sprint, continue to the next pending sprint from the DB
+  work item table; do not rerun a sprint that is already handoff-ready;
 - after the final sprint, let Team Lead produce the project/final handoff, then
   complete the company run only when the latest delivery status inspection says
   `can_complete_delivery=true`;
@@ -318,7 +319,7 @@ For apps, sites, APIs, services, and automations, deployable access is the
 default delivery expectation unless the user explicitly says local-only, no
 deployment, prototype-only without deployment, or similar. Keep deployment in
 the planned delivery path and assign it to Team Lead/Deployment through the PM
-feature queue instead of treating it as optional future scope.
+planned work item contract instead of treating it as optional future scope.
 
 Codex Review is the internal reviewer for coordinator acceptance. Use it after
 meaningful downstream results to verify quality, artifact consistency, contract
@@ -344,25 +345,25 @@ the contract. Do not invent a separate sprint report path or require a report
 under Project Manager folders unless Team Lead actually returned that artifact.
 Do not ask Codex Review to check a suggested Team Lead folder unless that folder
 was returned by Team Lead as an artifact ref. Codex Review should inspect the
-returned refs and the run-local artifact registry first. If it finds readable
+returned refs and DB artifact metadata first. If it finds readable
 handoff artifacts that satisfy the delivery evidence, accept them instead of
 asking Team Lead to duplicate or rename files.
 Handoff-owned refs under `handoff/sprints/...` and `handoff/project/final/...`
 are canonical delivery evidence. Do not require Team Lead to copy them into
-`upstream-planning`, create wrapper deliverables files, or publish alias reports
+`upstream-planning`, create wrapper deliverables files, or publish duplicate reports
 unless a downstream tool explicitly returned that as its own contract.
 If Team Lead's wording says a sprint or project is complete but the direct
-response omits artifact refs, search the tool response and delivery_state
-artifact registry for Handoff-owned refs before asking for repair. A repair
+response omits artifact refs, search the tool response and DB artifact metadata
+for Handoff-owned refs before asking for repair. A repair
 request should ask for missing evidence refs or genuinely missing artifacts, not
 for a different folder layout.
 `team_lead_sprint_handoff_ready` is sprint-level completion evidence unless the
 PM plan shows no later sprint, no pending feature, and no final deployment gate.
 Never translate one sprint handoff into project completion. Use PM's planned
-sprints, candidate_feature_queue, feature_queue, sprint-XX-plan artifacts, and
-release/deployment gates to find the next sprint target generically.
+sprints, planned_work_items, work_items, sprint-XX-plan artifacts, and
+release/deployment gates to find the next sprint_id generically.
 If Team Lead returns `team_lead_sprint_handoff_ready` with sprint handoff
-artifacts and there are no real blockers, inspect the PM feature queue/work board
+artifacts and there are no real blockers, inspect DB work items
 for pending later sprints through `inspect_delivery_status`. If another sprint
 remains, call `run_team_lead` with that sprint id. If no planned sprint remains,
 expect Team Lead to produce a final project handoff and then call
@@ -377,21 +378,42 @@ directly with each other unless their tool contract explicitly allows it.
 
 
 def langchain_tools(toolbox: HeadToolbox) -> list[Callable[..., str]]:
-    def run_business_analyst(target: str = "", reason: str = "", message: str = "") -> str:
+    def run_business_analyst(
+        reason: str = "",
+        message: str = "",
+        artifact_refs: str = "",
+        external_reference: str = "",
+    ) -> str:
         """Delegate raw requirements analysis to the Business Analyst Agent."""
-        return toolbox.run_business_analyst(target or None, reason, message)
+        return toolbox.run_business_analyst(reason, message, artifact_refs, external_reference)
 
-    def run_architect(target: str = "", reason: str = "", message: str = "") -> str:
+    def run_architect(
+        reason: str = "",
+        message: str = "",
+        artifact_refs: str = "",
+        external_reference: str = "",
+    ) -> str:
         """Delegate solution architecture to the Architect Agent after BA completes."""
-        return toolbox.run_architect(target or None, reason, message)
+        return toolbox.run_architect(reason, message, artifact_refs, external_reference)
 
-    def run_project_manager(target: str = "", reason: str = "", message: str = "") -> str:
+    def run_project_manager(
+        reason: str = "",
+        message: str = "",
+        artifact_refs: str = "",
+        external_reference: str = "",
+    ) -> str:
         """Delegate release and sprint planning to the Project Manager Agent after Architect."""
-        return toolbox.run_project_manager(target or None, reason, message)
+        return toolbox.run_project_manager(reason, message, artifact_refs, external_reference)
 
-    def run_team_lead(target: str = "", reason: str = "", message: str = "") -> str:
-        """Delegate one PM-planned sprint to Team Lead with target=sprint-01, sprint-02, etc."""
-        return toolbox.run_team_lead(target or None, reason, message)
+    def run_team_lead(
+        sprint_id: str,
+        reason: str = "",
+        message: str = "",
+        artifact_refs: str = "",
+        external_reference: str = "",
+    ) -> str:
+        """Delegate one PM-planned sprint to Team Lead with an explicit sprint_id."""
+        return toolbox.run_team_lead(sprint_id, reason, message, artifact_refs, external_reference)
 
     def codex_review(
         target_agent: str = "",
@@ -399,7 +421,7 @@ def langchain_tools(toolbox: HeadToolbox) -> list[Callable[..., str]]:
         question: str = "",
         artifact_refs: str = "",
         intent: str = "review_feedback",
-        target: str = "",
+        correlation_id: str = "upstream-planning",
         reason: str = "",
         message: str = "",
     ) -> str:
@@ -410,24 +432,44 @@ def langchain_tools(toolbox: HeadToolbox) -> list[Callable[..., str]]:
             question=question,
             artifact_refs=artifact_refs,
             intent=intent,
-            target=target or None,
+            correlation_id=correlation_id,
             reason=reason,
             message=message,
         )
 
     def inspect_delivery_status(
-        target: str = "",
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
     ) -> str:
         """Run Codex status inspection and read back the delivery status JSON."""
-        return toolbox.inspect_delivery_status(target or None, reason, message)
+        return toolbox.inspect_delivery_status(reason, message, artifact_refs)
 
-    def complete_delivery(target: str = "", reason: str = "", message: str = "") -> str:
+    def complete_delivery(
+        reason: str = "",
+        message: str = "",
+        artifact_refs: str = "",
+    ) -> str:
         """Mark the company delivery run complete after inspector confirms readiness."""
-        return toolbox.complete_delivery(target or None, reason, message)
+        return toolbox.complete_delivery(reason, message, artifact_refs)
 
-    return [
+    def block_planning(
+        reason: str,
+        correlation_id: str = "upstream-planning",
+        message: str = "",
+        artifact_refs: str = "",
+        external_reference: str = "",
+    ) -> str:
+        """Block planning when bounded Repair cannot continue."""
+        return toolbox.block_planning(
+            reason=reason,
+            correlation_id=correlation_id,
+            message=message,
+            artifact_refs=artifact_refs,
+            external_reference=external_reference,
+        )
+
+    tools = [
         run_business_analyst,
         run_architect,
         run_project_manager,
@@ -435,7 +477,13 @@ def langchain_tools(toolbox: HeadToolbox) -> list[Callable[..., str]]:
         codex_review,
         inspect_delivery_status,
         complete_delivery,
+        block_planning,
     ]
+    for tool in tools:
+        contract = HEAD_TOOL_CONTRACT_REGISTRY.maybe_get(tool.__name__)
+        if contract:
+            tool.__doc__ = render_tool_docstring(contract)
+    return tools
 
 
 def _compact_delivery_state(state: DeliveryState) -> dict[str, Any]:
@@ -443,20 +491,12 @@ def _compact_delivery_state(state: DeliveryState) -> dict[str, Any]:
         "run_id",
         "stage",
         "status",
-        "requirements_path",
         "team_lead_sprint_id",
         "completed_nodes",
         "blockers",
-        "candidate_feature_queue",
-        "feature_queue",
-        "work_board",
     ]
     compact = {key: state.get(key) for key in keys if key in state}
-    compact["artifacts"] = [
-        artifact.get("path")
-        for artifact in state.get("artifacts", [])
-        if artifact.get("kind") == "planning"
-    ]
+    compact["source_requirements_ref"] = "00-requirements.md"
     return compact
 
 

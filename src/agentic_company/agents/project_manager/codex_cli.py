@@ -16,12 +16,12 @@ from agentic_company.agents.project_manager.graph import (
     ARCHITECTURE_MMD,
     BUSINESS_ANALYSIS_JSON,
     BUSINESS_ANALYSIS_MD,
-    PROJECT_MANAGEMENT_FEATURE_QUEUE_JSON,
     PROJECT_MANAGEMENT_JSON,
     PROJECT_MANAGEMENT_MD,
     PROJECT_MANAGEMENT_REQUEST,
     PROJECT_MANAGEMENT_RISKS_MD,
     PROJECT_MANAGEMENT_ROADMAP_CSV,
+    PROJECT_MANAGEMENT_WORK_ITEMS_JSON,
     PROJECT_MANAGER_AGENT_ID,
 )
 from agentic_company.integrations.codex import (
@@ -64,7 +64,7 @@ class ProjectManagerCodexRunner:
         execution_id = build_agent_execution_id(
             run_id=str(request["run_id"]),
             agent_id=PROJECT_MANAGER_AGENT_ID,
-            target="project-management",
+            correlation_id="project-management",
             intent="release_sprint_planning",
         )
         codex_execution_id = build_codex_execution_id(
@@ -102,7 +102,7 @@ class ProjectManagerCodexRunner:
             encoding="utf-8",
         )
         write_event(
-            run_dir / "events.jsonl",
+            run_dir,
             str(request["run_id"]),
             PROJECT_MANAGER_AGENT_ID,
             "project_management_codex_started",
@@ -115,6 +115,10 @@ class ProjectManagerCodexRunner:
                 log_path,
                 raw_events_path,
                 codex_execution_id=codex_execution_id,
+                run_dir=run_dir,
+                run_id=str(request["run_id"]),
+                agent_id=PROJECT_MANAGER_AGENT_ID,
+                work_item_id="PLAN-03",
             )
         except FileNotFoundError:
             LOGGER.exception("Project Manager Codex CLI missing run_id=%s", request["run_id"])
@@ -147,7 +151,7 @@ class ProjectManagerCodexRunner:
         output_artifacts = [
             PROJECT_MANAGEMENT_MD,
             PROJECT_MANAGEMENT_JSON,
-            PROJECT_MANAGEMENT_FEATURE_QUEUE_JSON,
+            PROJECT_MANAGEMENT_WORK_ITEMS_JSON,
             PROJECT_MANAGEMENT_RISKS_MD,
             PROJECT_MANAGEMENT_ROADMAP_CSV,
             *_sprint_plan_artifacts(run_dir),
@@ -157,7 +161,7 @@ class ProjectManagerCodexRunner:
             *structured_artifacts,
         ]
         write_event(
-            run_dir / "events.jsonl",
+            run_dir,
             str(request["run_id"]),
             PROJECT_MANAGER_AGENT_ID,
             "project_management_codex_completed",
@@ -191,6 +195,10 @@ class ProjectManagerCodexRunner:
         raw_events_path: Path,
         *,
         codex_execution_id: str,
+        run_dir: Path,
+        run_id: int | str,
+        agent_id: str,
+        work_item_id: str | None,
     ) -> subprocess.CompletedProcess[str]:
         if self.command_executor:
             return self.command_executor(
@@ -207,6 +215,10 @@ class ProjectManagerCodexRunner:
             log_path,
             raw_events_path,
             codex_execution_id=codex_execution_id,
+            trace_run_dir=run_dir,
+            trace_run_id=run_id,
+            trace_agent_id=agent_id,
+            trace_work_item_id=work_item_id,
         )
 
 
@@ -267,7 +279,7 @@ Planning policy:
 ```
 
 Use the policy as a bound, not as a hard-coded product assumption:
-- do not infer a default sprint count, task count, quota, cap, or orientational
+- do not derive a default sprint count, task count, quota, cap, or orientational
   range from platform examples, tests, or previous runs;
 - choose the natural release structure from source complexity, dependencies,
   delivery risk, validation needs, and deployment gates;
@@ -286,7 +298,7 @@ Use the policy as a bound, not as a hard-coded product assumption:
   package for the real source scope;
 - if the source requirements already include feature, milestone, sprint, or
   phase labels, preserve them as source references. Keep those labels as the
-  primary feature ids unless there is a strong planning reason to split them.
+  primary work item ids unless there is a strong planning reason to split them.
 
 Platform context:
 - The current platform path uses Azure-oriented deployment infrastructure.
@@ -349,7 +361,7 @@ Source loading policy:
 Allowed writes:
 - {PROJECT_MANAGEMENT_MD}
 - {PROJECT_MANAGEMENT_JSON}
-- {PROJECT_MANAGEMENT_FEATURE_QUEUE_JSON}
+- {PROJECT_MANAGEMENT_WORK_ITEMS_JSON}
 - {PROJECT_MANAGEMENT_RISKS_MD}
 - {PROJECT_MANAGEMENT_ROADMAP_CSV}
 - `upstream-planning/project-management/sprint-XX-plan.json` for each planned sprint.
@@ -366,31 +378,31 @@ Project management output:
   step. Do not duplicate the full JSON contract in Markdown.
 - `release-plan.json` is the internal platform contract for Head, PM, Team Lead,
   Fullstack, QA, Deployment, Handoff, and future agents.
-- `candidate-feature-queue.json` is the Team Lead compatibility bridge. It must
-  be a JSON array of feature objects that can later be copied into
-  `DeliveryState.feature_queue` for one or more sprints.
+- `planned-work-items.json` is the PM-to-runtime materialization contract.
+  It must be a JSON array of work item objects that the platform writes into
+  DB `work_items` after Project Manager completes.
 - Each `sprint-XX-plan.json` must contain a single sprint package with the
-  sprint id, title, goal, ordered features, exit criteria, deployment policy,
+  sprint id, title, goal, ordered work items, exit criteria, deployment policy,
   and whether it is the final sprint.
-- `risks-and-dependencies.md` should summarize cross-feature dependencies,
+- `risks-and-dependencies.md` should summarize cross-work dependencies,
   blockers, assumptions, open questions, and planning risks.
 - `roadmap.csv` should be an Excel/Sheets-friendly roadmap table with one row
-  per planned feature or milestone. Use simple CSV, not XLSX. Include a header
-  with: sprint_id, feature_id, title, goal, dependencies, owner_agent,
+  per planned work item or milestone. Use simple CSV, not XLSX. Include a header
+  with: sprint_id, work_item_id, title, goal, dependencies, owner_agent,
   qa_focus, deployment_note, status. Keep values concise and escape commas by
   using valid CSV quoting.
 - Do not use fake sprint ids such as `future-p1` for work that is required by
   the current release. Future or deferred ideas belong in JSON roadmap/future
-  scope, not in `candidate-feature-queue.json`. Required Azure deployment from
+  scope, not in `planned-work-items.json`. Required Azure deployment from
   the source requirements belongs in the planned release as a deployment gate,
   not as future scope.
 - Use canonical sprint ids consistently across every PM artifact:
-  zero-padded `sprint-XX` ids. Do not use aliases such as
+  zero-padded `sprint-XX` ids. Do not use alternate ids such as
   `S1`, `S2`, `Sprint 1`, or mixed ids. The `sprint_id` in release-plan JSON,
-  `candidate-feature-queue.json`, `roadmap.csv`, and each `sprint-XX-plan.json`
+  `planned-work-items.json`, `roadmap.csv`, and each `sprint-XX-plan.json`
   must match exactly so Head and Team Lead can route one sprint at a time.
 - In JSON, produce a structured object with these top-level keys:
-  release_goal, planning_policy, sprint_count, sprints, candidate_feature_queue,
+  release_goal, planning_policy, sprint_count, sprints, planned_work_items,
   release_gates, dependencies, risks, open_questions, assumptions, team_lead_contract,
   coordination_notes, source_traceability.
 - `release_gates` must be a machine-readable array. For apps/sites/APIs/services
@@ -401,16 +413,16 @@ Project management output:
 - release_gates must be a machine-readable array; keep it in sync with the
   roadmap and final sprint queue item.
 
-Feature contract for Team Lead compatibility:
-- Use `id` for each feature id, not only `feature_id`.
-- Every feature's `sprint_id` must match one of the canonical sprint ids exactly
+Work item contract for DB materialization:
+- Use `id` for each work item id, not only `work_item_id`.
+- Every work item's `sprint_id` must match one of the canonical sprint ids exactly
   using the `sprint-XX` format. Do not place future-sprint work under a different
-  alias, because Team Lead uses these ids to select the active sprint package.
+  alternate id, because runtime materialization uses exact ids.
 - Use stable ids derived from source labels when useful. If source labels are
-  already F1/F2/etc., prefer preserving them as Team Lead feature ids. If you
+  already F1/F2/etc., prefer preserving them as Team Lead work item ids. If you
   split a source item, use readable child ids such as F1a/F1b or a similarly
   stable pattern and explain why the split is necessary.
-- Every feature must include: id, title, description, acceptance_criteria,
+- Every work item must include: id, title, description, acceptance_criteria,
   dependencies, qa_notes, deployment_notes, delivery_order, status, sprint_id,
   source_refs, and suggested_owner_agent.
 - `status` should start as `pending`.
@@ -433,12 +445,12 @@ Feature contract for Team Lead compatibility:
   If ownership is ambiguous, state the ambiguity in coordination_notes and pick
   the closest current owner from the agent registry.
 - Keep features bounded enough that Fullstack can implement and QA can validate
-  them without guessing, but large enough to represent meaningful user-visible
+  them without unspecified input, but large enough to represent meaningful user-visible
   progress.
 - Deployment is normally a sprint/release gate, not an ordinary product feature.
   Still make it machine-readable and visible to Team Lead/UI: when deployment is
   in scope, include a deployment gate in `release_gates`, add a roadmap row, and
-  include a candidate queue item such as `DEPLOY` with
+  include a planned work item such as `DEPLOY` with
   `suggested_owner_agent: "deployment-agent"` in the final planned sprint. The
   item should not invent a fixed cloud recipe; give Deployment Agent freedom to
   inspect the repo/runtime, use the available Azure integration/resources, create
@@ -449,14 +461,14 @@ Source reference rules:
   goals, features, risks, dependencies, and open questions.
 - Preserve every distinct feature/source label from requirements as traceability.
   Do not collapse many unrelated source features into a smaller fixed set. Also
-  do not split one source feature into multiple feature ids merely to satisfy a
+  do not split one source feature into multiple work item ids merely to satisfy a
   sprint count, feature count, or technical-layer breakdown.
 
 Input artifact previews:
 {artifact_previews}
 
 When finished, summarize the artifacts you wrote, the release shape chosen, the
-feature ids planned, and the highest-risk dependencies or open questions. Do not
+work item ids planned, and the highest-risk dependencies or open questions. Do not
 ask the user for permission to continue.
 """
 
@@ -522,7 +534,7 @@ def _contract_errors(run_dir: Path) -> list[str]:
     errors: list[str] = []
     markdown_path = run_dir / PROJECT_MANAGEMENT_MD
     json_path = run_dir / PROJECT_MANAGEMENT_JSON
-    feature_queue_path = run_dir / PROJECT_MANAGEMENT_FEATURE_QUEUE_JSON
+    work_items_path = run_dir / PROJECT_MANAGEMENT_WORK_ITEMS_JSON
     risks_path = run_dir / PROJECT_MANAGEMENT_RISKS_MD
     roadmap_path = run_dir / PROJECT_MANAGEMENT_ROADMAP_CSV
     if not markdown_path.exists():
@@ -533,8 +545,8 @@ def _contract_errors(run_dir: Path) -> list[str]:
         errors.append(f"Missing required artifact: {PROJECT_MANAGEMENT_ROADMAP_CSV}")
     release_payload = _load_json_file(json_path, PROJECT_MANAGEMENT_JSON, errors)
     queue_payload = _load_json_file(
-        feature_queue_path,
-        PROJECT_MANAGEMENT_FEATURE_QUEUE_JSON,
+        work_items_path,
+        PROJECT_MANAGEMENT_WORK_ITEMS_JSON,
         errors,
     )
     if isinstance(release_payload, dict):
@@ -543,7 +555,7 @@ def _contract_errors(run_dir: Path) -> list[str]:
             "planning_policy",
             "sprint_count",
             "sprints",
-            "candidate_feature_queue",
+            "planned_work_items",
             "release_gates",
             "dependencies",
             "risks",
@@ -558,11 +570,11 @@ def _contract_errors(run_dir: Path) -> list[str]:
             for key in sorted(required.difference(release_payload))
         )
     if not isinstance(queue_payload, list):
-        errors.append(f"{PROJECT_MANAGEMENT_FEATURE_QUEUE_JSON} must be a JSON array.")
+        errors.append(f"{PROJECT_MANAGEMENT_WORK_ITEMS_JSON} must be a JSON array.")
     else:
         for index, feature in enumerate(queue_payload):
             if not isinstance(feature, dict):
-                errors.append(f"Feature queue item {index} must be an object.")
+                errors.append(f"Work item {index} must be an object.")
                 continue
             for key in (
                 "id",
@@ -579,7 +591,7 @@ def _contract_errors(run_dir: Path) -> list[str]:
                 "suggested_owner_agent",
             ):
                 if key not in feature:
-                    errors.append(f"Feature queue item {index} missing key: {key}")
+                    errors.append(f"Work item {index} missing key: {key}")
     if not _sprint_plan_artifacts(run_dir):
         errors.append("Missing sprint plan artifacts: sprint-XX-plan.json")
     return errors

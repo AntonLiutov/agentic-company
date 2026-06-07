@@ -6,7 +6,7 @@ import os
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Annotated
+from typing import Annotated, Any
 
 import uvicorn
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response, status
@@ -15,12 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from agentic_company.console.support import (
-    codex_execution_running,
+    agent_runtime_env_path,
     create_console_run,
-    delivery_overview_for_run,
-    execution_completed,
     read_env_keys,
-    read_events,
     repo_root,
     request_codex_execution_stop,
     start_codex_execution,
@@ -37,30 +34,30 @@ from agentic_company.console.web.product import (
     GEMINI_MODEL_OPTIONS,
     REASONING_OPTIONS,
     GeminiFormatterUnavailable,
-    activity_groups_for_run,
+    activity_groups_from_db_events,
     agent_catalog,
     agent_icon_path,
     artifact_owner_groups,
-    artifact_payload,
+    artifact_payload_for_record,
     artifact_phase_groups,
-    artifacts_for_run,
-    board_cards_for_run,
+    board_cards_from_work_items,
+    board_groups_from_work_items,
+    canonical_artifacts_for_run,
+    delivery_overview_from_work_items,
     format_request_text_with_llm,
     html_report_document,
     project_type_label,
     render_markdown,
-    rendered_log_entries_for_run,
-    run_timing_for_run,
+    rendered_log_entries_from_db_events,
+    run_timing_from_work_items,
     scope_size_label,
-    sprint_board_groups_for_run,
-    sprint_groups_for_run,
+    sprint_board_groups_from_work_items,
     status_label,
     system_checks,
-    task_detail_for_run,
-    task_report_groups_for_run,
+    task_detail_from_work_items,
+    task_report_groups_from_work_items,
     user_facing_blockers,
-    user_friendly_artifact_label,
-    work_plan_groups_for_run,
+    work_plan_groups_from_work_items,
 )
 from agentic_company.console.web.voice import (
     SpeechmaticsTokenError,
@@ -71,7 +68,10 @@ from agentic_company.console.web.voice import (
     speechmatics_configured,
     speechmatics_rt_url,
 )
+from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.platform.logging import configure_logging
+from agentic_company.platform.run_trace import trace_summary
+from agentic_company.platform.runtime_cache import runtime_cache_from_env
 
 COOKIE_NAME = "agentic_console_session"
 
@@ -221,13 +221,14 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         reasoning: Annotated[str, Form()] = "medium",
         agent_provider: Annotated[str, Form()] = "google_gemini",
         agent_model: Annotated[str, Form()] = "gemini-3.1-flash-lite",
-        codex_model: Annotated[str, Form()] = "gpt-5.3-codex",
+        codex_model: Annotated[str, Form()] = DEFAULT_CODEX_MODEL,
         codex_reasoning: Annotated[str, Form()] = "medium",
         service_tier: Annotated[str, Form()] = "standard",
         dictation_language: Annotated[str, Form()] = "en",
     ) -> Response:
         agent_provider = normalize_agent_provider(agent_provider)
         agent_model = normalize_agent_model(agent_provider, agent_model)
+        codex_model = normalize_codex_model(codex_model)
         if not name.strip() or not request_text.strip():
             return render_new_project(
                 request,
@@ -338,6 +339,8 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         user: CurrentUser,
         tab: str = "overview",
     ) -> HTMLResponse:
+        if tab == "logs":
+            tab = "board"
         project = get_visible_project_or_404(request, project_id, user)
         runs = get_repo(request).runs_for_project(project.id, user.id)
         run = runs[0] if runs else None
@@ -407,6 +410,8 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             raise HTTPException(status_code=403)
         run = repo.latest_run_for_project(project.id, user.id)
         if run:
+            runtime_cache_from_env().set_stop_requested(run.run_uid)
+            repo.request_console_process_stop(run.id, process_name="codex_execution")
             request_codex_execution_stop(Path(run.run_dir))
             repo.update_run_status(run.id, "stopped")
         repo.update_project_status(project.id, "stopped")
@@ -423,7 +428,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         if not project or project.owner_user_id != user.id:
             raise HTTPException(status_code=404)
         latest_run = repo.latest_run_for_project(project.id, user.id)
-        if not _run_showcase_ready(latest_run):
+        if not _run_showcase_ready(repo, latest_run):
             raise HTTPException(status_code=400, detail="Project is not ready for showcase yet.")
         promoted = repo.set_project_visibility(project_id, user.id, "public_demo")
         if not promoted:
@@ -478,7 +483,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
                 openai_key_configured=bool(user_openai_key(repo, user)),
                 gemini_key_configured=bool(user_or_platform_gemini_key(repo, user)),
             ),
-            agents=agent_catalog(),
+            agents=agent_catalog_for_run(_latest_user_run(repo, user.id)),
             agent_providers=AGENT_PROVIDER_OPTIONS,
             agent_models=AGENT_MODEL_OPTIONS,
             gemini_models=GEMINI_MODEL_OPTIONS,
@@ -523,7 +528,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             request,
             "agents.html",
             user=user,
-            agents=agent_catalog(),
+            agents=agent_catalog_for_run(_latest_user_run(get_repo(request), user.id)),
             agent_providers=AGENT_PROVIDER_OPTIONS,
             agent_models=AGENT_MODEL_OPTIONS,
             gemini_models=GEMINI_MODEL_OPTIONS,
@@ -560,21 +565,27 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             ),
         )
 
-    @app.get("/artifacts/{run_id}/{artifact_path:path}", response_class=HTMLResponse)
-    def artifact_view(
+    @app.get("/artifacts/{run_id}/by-id/{artifact_id}", response_class=HTMLResponse)
+    def artifact_view_by_id(
         request: Request,
         run_id: int,
-        artifact_path: str,
+        artifact_id: str,
         user: CurrentUser,
         raw: bool = False,
     ) -> HTMLResponse:
         run = get_repo(request).get_run_for_user(run_id, user.id)
         if not run:
             raise HTTPException(status_code=404)
+        record = get_repo(request).get_artifact_record(run_id, artifact_id)
+        if record is None:
+            raise HTTPException(status_code=404)
+        content = get_repo(request).get_artifact_content(run_id, artifact_id)
         try:
-            payload = artifact_payload(Path(run.run_dir), artifact_path)
+            payload = artifact_payload_for_record(record, content)
         except (OSError, ValueError):
             raise HTTPException(status_code=404) from None
+        artifact_title = record.label
+        artifact_path = record.relative_path
         if raw and payload["kind"] == "html":
             return HTMLResponse(html_report_document(str(payload["content"])))
         return render(
@@ -583,7 +594,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             user=user,
             run=run,
             artifact_path=artifact_path,
-            artifact_title=user_friendly_artifact_label(Path(artifact_path).name, artifact_path),
+            artifact_title=artifact_title,
             payload=payload,
         )
 
@@ -599,8 +610,21 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         if not run:
             raise HTTPException(status_code=404)
         run_dir = Path(run.run_dir)
-        artifacts = artifacts_for_run(run_dir)[0]
-        detail = task_detail_for_run(run_dir, task_id, artifacts)
+        repo = get_repo(request)
+        work_items = repo.list_work_items(run.id)
+        business_artifacts = canonical_artifacts_for_run(
+            run_dir,
+            repo.list_artifact_records(run.id),
+            work_items,
+        )[0]
+        work_items = repo.list_work_items(run.id)
+        detail = task_detail_from_work_items(
+            task_id,
+            work_items,
+            business_artifacts,
+            repo.list_activity_events(run.id),
+            open_duration_end_at="" if _run_status_running(run.status) else run.updated_at,
+        )
         if detail is None:
             raise HTTPException(status_code=404)
         return render(
@@ -621,26 +645,31 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         run = get_repo(request).get_run_for_user(run_id, user.id)
         if not run:
             raise HTTPException(status_code=404)
-        run_dir = Path(run.run_dir)
-        overview = delivery_overview_for_run(run_dir)
-        if run.status == "stopped":
-            running = False
-            completed = False
-            status_value = "stopped"
-        else:
-            running = codex_execution_running(run_dir)
-            completed = execution_completed(run_dir)
-            status_value = "running" if running else overview.status
-            if completed and not running:
-                status_value = overview.status or "completed"
-            get_repo(request).update_run_status(run.id, status_value)
+        repo = get_repo(request)
+        artifact_records = repo.list_artifact_records(run.id)
+        activity_events = repo.list_activity_events(run.id)
+        status_value = run.status
+        running = _run_status_running(run.status)
+        completed = _run_status_completed(run.status)
+        work_items = repo.list_work_items(run.id)
+        business_artifacts = canonical_artifacts_for_run(
+            Path(run.run_dir), artifact_records, work_items
+        )[0]
+        overview = delivery_overview_from_work_items(
+            run_id=str(run.id),
+            work_items=work_items,
+            artifacts=business_artifacts,
+            status=status_value,
+            published_url=run.generated_app_url,
+        )
         return JSONResponse(
             {
                 "status": status_label(status_value),
                 "stage": status_label(overview.stage),
+                "active_owner": _active_owner_label(overview),
                 "running": running,
                 "completed": completed,
-                "events": len(read_events(run_dir)),
+                "events": len(activity_events),
             }
         )
 
@@ -649,15 +678,44 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         request: Request,
         run_id: int,
         user: CurrentUser,
+        task_id: str = "",
     ) -> JSONResponse:
         run = get_repo(request).get_run_for_user(run_id, user.id)
         if not run:
             raise HTTPException(status_code=404)
-        run_dir = Path(run.run_dir)
+        if not task_id.strip():
+            return JSONResponse({"logs": [], "groups": []})
+        repo = get_repo(request)
+        activity_events = repo.list_activity_events(
+            run.id,
+            work_item_id=task_id,
+        )
         return JSONResponse(
             {
-                "logs": rendered_log_entries_for_run(run_dir),
-                "groups": activity_groups_for_run(run_dir),
+                "logs": rendered_log_entries_from_db_events(activity_events),
+                "groups": activity_groups_from_db_events(activity_events),
+            }
+        )
+
+    @app.get("/api/runs/{run_id}/trace")
+    def run_trace(
+        request: Request,
+        run_id: int,
+        user: CurrentUser,
+    ) -> JSONResponse:
+        repo = get_repo(request)
+        run = repo.get_run_for_user(run_id, user.id)
+        if not run:
+            raise HTTPException(status_code=404)
+        run_events = repo.list_run_events(run.id)
+        tool_call_events = repo.list_tool_call_events(run.id)
+        model_call_events = repo.list_model_call_events(run.id)
+        return JSONResponse(
+            {
+                "run_events": [event.to_dict() for event in run_events],
+                "tool_call_events": [event.to_dict() for event in tool_call_events],
+                "model_call_events": [event.to_dict() for event in model_call_events],
+                "summary": trace_summary(run_events, tool_call_events, model_call_events),
             }
         )
 
@@ -706,7 +764,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             return JSONResponse(
                 {
                     "enabled": False,
-                    "fallback": "browser",
+                    "browser_mode": "browser",
                     "languages": dictation_languages(),
                 }
             )
@@ -716,7 +774,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             return JSONResponse(
                 {
                     "enabled": False,
-                    "fallback": "browser",
+                    "browser_mode": "browser",
                     "languages": dictation_languages(),
                 }
             )
@@ -771,17 +829,14 @@ def get_visible_project_or_404(request: Request, project_id: int, user: User) ->
     return project
 
 
-def _run_showcase_ready(run: Run | None) -> bool:
-    if run is None or run.status == "stopped":
+def _run_showcase_ready(repo: ConsoleRepository, run: Run | None) -> bool:
+    if run is None or not _run_status_completed(run.status):
         return False
-    run_dir = Path(run.run_dir)
-    if codex_execution_running(run_dir) or not execution_completed(run_dir):
-        return False
-    overview = delivery_overview_for_run(run_dir)
-    status_token = f"{overview.status} {overview.stage}".lower()
-    if any(token in status_token for token in ("blocked", "failed", "stopped")):
-        return False
-    return not overview.blockers
+    artifacts = repo.list_artifact_records(run.id)
+    has_release_report = any(
+        str(getattr(record, "artifact_type", "")) == "release_report" for record in artifacts
+    )
+    return bool(run.generated_app_url or has_release_report)
 
 
 def render_workspace(
@@ -809,7 +864,7 @@ def render_workspace(
         "technical_artifacts": [],
         "logs": [],
         "activity_groups": [],
-        "agents": agent_catalog(),
+        "agents": agent_catalog_for_run(run),
         "overview": None,
         "overview_blockers": [],
         "project_request_html": render_markdown(_project_request_text(project, run)),
@@ -822,25 +877,64 @@ def render_workspace(
     }
     if run:
         run_dir = Path(run.run_dir)
-        run_running = codex_execution_running(run_dir)
-        run_completed = execution_completed(run_dir)
-        overview = delivery_overview_for_run(run_dir)
-        business_artifacts = artifacts_for_run(run_dir)[0]
+        repo = get_repo(request)
+        artifact_records = repo.list_artifact_records(run.id)
+        work_items = repo.list_work_items(run.id)
+        activity_events = repo.list_activity_events(run.id)
+        _sync_canonical_run_completion(repo, project, run)
+        business_artifacts = canonical_artifacts_for_run(run_dir, artifact_records, work_items)[0]
+        canonical_status = run.status
+        run_running = _run_status_running(run.status)
+        run_completed = _run_status_completed(run.status)
+        open_duration_end_at = "" if run_running else run.updated_at
+        board = board_cards_from_work_items(
+            work_items,
+            business_artifacts,
+            activity_events,
+            open_duration_end_at=open_duration_end_at,
+        )
+        overview = delivery_overview_from_work_items(
+            run_id=str(run.id),
+            work_items=work_items,
+            artifacts=business_artifacts,
+            status=canonical_status,
+            published_url=project.generated_app_url or run.generated_app_url,
+        )
         context.update(
             {
                 "overview": overview,
                 "overview_blockers": user_facing_blockers(overview.blockers),
-                "board": board_cards_for_run(run_dir),
-                "sprints": sprint_groups_for_run(run_dir),
-                "work_plan_groups": work_plan_groups_for_run(run_dir),
-                "sprint_board_groups": sprint_board_groups_for_run(run_dir),
+                "board": board,
+                "sprints": board_groups_from_work_items(
+                    work_items,
+                    business_artifacts,
+                    activity_events,
+                    open_duration_end_at=open_duration_end_at,
+                ),
+                "work_plan_groups": work_plan_groups_from_work_items(
+                    work_items,
+                    business_artifacts,
+                    activity_events,
+                    open_duration_end_at=open_duration_end_at,
+                ),
+                "sprint_board_groups": sprint_board_groups_from_work_items(
+                    work_items,
+                    business_artifacts,
+                    activity_events,
+                    open_duration_end_at=open_duration_end_at,
+                ),
                 "business_artifacts": business_artifacts,
                 "business_artifact_groups": artifact_owner_groups(business_artifacts),
                 "business_artifact_phase_groups": artifact_phase_groups(business_artifacts),
-                "task_report_groups": task_report_groups_for_run(run_dir, business_artifacts),
+                "task_report_groups": task_report_groups_from_work_items(
+                    work_items,
+                    business_artifacts,
+                    activity_events,
+                    open_duration_end_at=open_duration_end_at,
+                ),
                 "technical_artifacts": [],
-                "logs": rendered_log_entries_for_run(run_dir),
-                "activity_groups": activity_groups_for_run(run_dir),
+                "logs": rendered_log_entries_from_db_events(activity_events),
+                "activity_groups": activity_groups_from_db_events(activity_events),
                 "run_running": run_running,
                 "run_completed": run_completed,
                 "can_restart": (
@@ -848,23 +942,51 @@ def render_workspace(
                     and project.visibility != "public_demo"
                     and not run_running
                 ),
-                "showcase_ready": _run_showcase_ready(run),
-                "run_timing": run_timing_for_run(run_dir),
+                "showcase_ready": _run_showcase_ready(repo, run),
+                "run_timing": run_timing_from_work_items(
+                    work_items,
+                    activity_events,
+                    completed=run_completed,
+                ),
             }
         )
     return render(request, "project_workspace.html", **context)
 
 
-def _project_request_text(project: Project, run: Run | None) -> str:
-    if project.request_text.strip():
-        return project.request_text
-    if run is None:
+def _sync_canonical_run_completion(
+    repo: ConsoleRepository,
+    project: Project,
+    run: Run,
+) -> None:
+    """Mirror canonical run status from the DB run row to the project row."""
+
+    if run.status and project.status != run.status:
+        repo.update_project_status(project.id, run.status)
+
+
+def _run_status_running(status: str) -> bool:
+    return status in {"starting", "running", "initialized"}
+
+
+def _run_status_completed(status: str) -> bool:
+    normalized = status.lower()
+    if normalized in {"stopped", "complete", "completed", "failed", "blocked"}:
+        return True
+    return any(token in normalized for token in ("blocked", "failed", "complete"))
+
+
+def _active_owner_label(overview: Any) -> str:
+    active_id = str(getattr(overview, "active_work_item_id", "") or "")
+    if not active_id:
         return ""
-    requirements_path = Path(run.run_dir) / "00-requirements.md"
-    try:
-        return requirements_path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
+    for feature in getattr(overview, "features", []) or []:
+        if str(getattr(feature, "work_item_id", "") or "") == active_id:
+            return str(getattr(feature, "owner", "") or "")
+    return ""
+
+
+def _project_request_text(project: Project, _run: Run | None) -> str:
+    return project.request_text.strip()
 
 
 def projects_with_display_requests(
@@ -960,7 +1082,7 @@ def new_project_form_values(
     complexity: str = "simple",
     agent_provider: str = "google_gemini",
     agent_model: str = "gemini-3.1-flash-lite",
-    codex_model: str = "gpt-5.3-codex",
+    codex_model: str = DEFAULT_CODEX_MODEL,
     codex_reasoning: str = "medium",
     service_tier: str = "standard",
     dictation_language: str = "en",
@@ -973,7 +1095,7 @@ def new_project_form_values(
         "complexity": complexity,
         "agent_provider": agent_provider,
         "agent_model": normalize_agent_model(agent_provider, agent_model),
-        "codex_model": codex_model,
+        "codex_model": normalize_codex_model(codex_model),
         "codex_reasoning": codex_reasoning,
         "service_tier": service_tier,
         "dictation_language": normalize_language_code(dictation_language),
@@ -988,6 +1110,52 @@ def normalize_agent_model(provider: str, model: str) -> str:
     if provider == "google_gemini":
         return model if model in GEMINI_MODEL_OPTIONS else "gemini-3.1-flash-lite"
     return model if model in AGENT_MODEL_OPTIONS else "gpt-4.1"
+
+
+def normalize_codex_model(model: str) -> str:
+    normalized = str(model or "").strip()
+    if normalized in CODEX_MODEL_OPTIONS:
+        return normalized
+    allowed = ", ".join(CODEX_MODEL_OPTIONS)
+    raise ValueError(
+        f"Unsupported Codex model '{normalized or '<empty>'}'. Choose one of: {allowed}."
+    )
+
+
+def agent_catalog_for_run(run: Run | None) -> list[dict[str, str]]:
+    env = _run_env(run)
+    agent_provider = normalize_agent_provider(env.get("AGENT_LLM_PROVIDER", "google_gemini"))
+    agent_model = normalize_agent_model(
+        agent_provider,
+        env.get("AGENT_LLM_MODEL", "gemini-3.1-flash-lite"),
+    )
+    env_codex_model = (
+        env.get("AGENT_CODEX_MODEL")
+        or env.get("FULLSTACK_CODEX_MODEL")
+        or env.get("BUSINESS_ANALYST_CODEX_MODEL")
+        or DEFAULT_CODEX_MODEL
+    )
+    try:
+        codex_model = normalize_codex_model(env_codex_model)
+    except ValueError:
+        codex_model = f"unsupported: {env_codex_model}"
+    return agent_catalog(
+        agent_provider=agent_provider,
+        agent_model=agent_model,
+        codex_model=codex_model,
+        codex_reasoning=env.get("AGENTIC_CODEX_REASONING_EFFORT", "medium"),
+    )
+
+
+def _latest_user_run(repo: ConsoleRepository, user_id: int) -> Run | None:
+    latest: Run | None = None
+    for project in repo.list_projects_for_user(user_id):
+        run = repo.latest_run_for_project(project.id, user_id)
+        if run is None:
+            continue
+        if latest is None or run.created_at > latest.created_at:
+            latest = run
+    return latest
 
 
 def user_openai_key(repo: ConsoleRepository, user: User) -> str:
@@ -1046,6 +1214,7 @@ def prepare_run_environment(
 ) -> Path:
     agent_provider = normalize_agent_provider(agent_provider)
     agent_model = normalize_agent_model(agent_provider, agent_model)
+    codex_model = normalize_codex_model(codex_model)
     values = {
         "OPENAI_API_KEY": api_key,
         "CODEX_API_KEY": api_key,
@@ -1082,7 +1251,7 @@ def restart_run_settings(repo: ConsoleRepository, project: Project, user: User) 
         latest_env.get("AGENT_CODEX_MODEL")
         or latest_env.get("FULLSTACK_CODEX_MODEL")
         or latest_env.get("BUSINESS_ANALYST_CODEX_MODEL")
-        or "gpt-5.3-codex"
+        or DEFAULT_CODEX_MODEL
     )
     saved_agent_model = latest_env.get("AGENT_LLM_MODEL", "")
     saved_agent_provider = latest_env.get("AGENT_LLM_PROVIDER", "")
@@ -1094,7 +1263,7 @@ def restart_run_settings(repo: ConsoleRepository, project: Project, user: User) 
         "agent_provider": saved_agent_provider or "google_gemini",
         "agent_model": saved_agent_model or "gemini-3.1-flash-lite",
         "agent_reasoning": agent_reasoning,
-        "codex_model": codex_model,
+        "codex_model": normalize_codex_model(codex_model),
         "codex_reasoning": latest_env.get("AGENTIC_CODEX_REASONING_EFFORT", "medium"),
         "service_tier": latest_env.get("AGENTIC_CODEX_SERVICE_TIER", "standard"),
     }
@@ -1103,7 +1272,7 @@ def restart_run_settings(repo: ConsoleRepository, project: Project, user: User) 
 def _run_env(run: Run | None) -> dict[str, str]:
     if run is None:
         return {}
-    return read_env_keys(Path(run.run_dir) / "generated-project" / ".env")
+    return read_env_keys(agent_runtime_env_path(Path(run.run_dir)))
 
 
 def redirect(url: str) -> RedirectResponse:
@@ -1145,6 +1314,7 @@ def main() -> None:
         port=port,
         reload=False,
         factory=True,
+        access_log=False,
     )
 
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import shutil
 import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -71,7 +70,7 @@ class HandoffCodexRunner:
     def run(self, run_dir: Path) -> AgentRunResult:
         request = load_execution_request(run_dir)
         contract_paths = handoff_contract_paths(request, run_dir)
-        event_log = run_dir / "events.jsonl"
+        event_log = run_dir
         execution_id = _execution_id(request)
         write_event(
             event_log,
@@ -211,7 +210,7 @@ class HandoffCodexRunner:
             encoding="utf-8",
         )
         write_event(
-            run_dir / "events.jsonl",
+            run_dir,
             request.run_id,
             HANDOFF_CODEX_AGENT_ID,
             "handoff_codex_attempt_started",
@@ -228,6 +227,10 @@ class HandoffCodexRunner:
                 log_path,
                 raw_events_path,
                 codex_execution_id=codex_execution_id,
+                run_dir=run_dir,
+                run_id=request.run_id,
+                agent_id=HANDOFF_CODEX_AGENT_ID,
+                work_item_id=str(request.work_item.get("work_item_id") or ""),
             )
         except FileNotFoundError:
             LOGGER.exception("Handoff Codex CLI missing run_id=%s", request.run_id)
@@ -247,7 +250,7 @@ class HandoffCodexRunner:
         )
         codex_thread_id = extract_codex_thread_id(raw_events_path) or request.codex_resume_thread_id
         write_event(
-            run_dir / "events.jsonl",
+            run_dir,
             request.run_id,
             HANDOFF_CODEX_AGENT_ID,
             "handoff_codex_attempt_completed",
@@ -280,6 +283,10 @@ class HandoffCodexRunner:
         raw_events_path: Path,
         *,
         codex_execution_id: str,
+        run_dir: Path,
+        run_id: int | str,
+        agent_id: str,
+        work_item_id: str | None,
     ) -> subprocess.CompletedProcess[str]:
         if self.command_executor:
             return self.command_executor(
@@ -296,6 +303,10 @@ class HandoffCodexRunner:
             log_path,
             raw_events_path,
             codex_execution_id=codex_execution_id,
+            trace_run_dir=run_dir,
+            trace_run_id=run_id,
+            trace_agent_id=agent_id,
+            trace_work_item_id=work_item_id,
         )
 
 
@@ -309,10 +320,8 @@ def build_handoff_codex_prompt(
 ) -> str:
     """Build the Handoff Codex Agent prompt without templating the report."""
 
-    target_dir = Path(request.target_project_dir)
     contract_paths = handoff_contract_paths(request, run_dir)
     html_path = run_dir / contract_paths.html
-    fallback_html_path = target_dir / contract_paths.html
     upstream_messages = render_incoming_messages_for_prompt(
         run_dir,
         to_agent="documentation-handoff-agent",
@@ -357,13 +366,14 @@ Handoff scope contract:
 {json.dumps(request.handoff_expected_outputs, indent=2)}
 
 Release context:
-- Feature queue and acceptance criteria are in upstream planning artifacts and
-  the current delivery execution request.
+- Work item and acceptance criteria are in upstream planning artifacts and the
+  current delivery execution request.
 - Fullstack summaries and Codex logs describe what was built.
 - QA reports/results describe feature validation.
 - Deployment artifacts describe public URLs, cloud resources, risks, and
   post-deploy targets.
-- `.delivery-state.json` is the orchestration state of record.
+- Use the execution request and explicit DB work-item packet as the runtime contract.
+- Structured trace and the artifact registry are the product source of truth.
 
 Upstream agent messages:
 {upstream_messages}
@@ -416,9 +426,6 @@ Workspace ownership:
   - `{html_path}`
 - Handoff-owned helper files, screenshots, transcripts, or source evidence
   belong under `{run_dir}\\handoff`.
-- If the sandbox only allows writing inside the generated project, mirror the
-  same handoff package under the generated project at this exact path:
-  - `{fallback_html_path}`
 - Do not modify product implementation files.
 - Do not write QA or deployment artifacts. Those belong to other agents.
 - Do not print or expose secret values.
@@ -433,9 +440,6 @@ Minimal output contract:
 - The report must be print-friendly HTML.
 - Do not write a Markdown handoff summary.
 - Do not write a JSON handoff evidence file.
-- If the exact planning-run path is blocked by sandbox policy, write an
-  equivalent HTML file under the generated project at the fallback path listed
-  above. The platform will recover that fallback artifact.
 - End your final message with a short status when useful, for example
   `HANDOFF_STATUS: ready`, `HANDOFF_STATUS: blocked`,
   `HANDOFF_STATUS: failed`, or `HANDOFF_STATUS: unknown`.
@@ -468,7 +472,6 @@ def read_handoff_contract(
     contract_paths = paths or HandoffContractPaths(
         html=HANDOFF_REPORT_HTML,
     )
-    _recover_misplaced_handoff_contract_artifacts(run_dir, target_dir, paths=contract_paths)
     errors: list[str] = []
 
     if not (run_dir / contract_paths.html).exists():
@@ -485,21 +488,6 @@ def read_handoff_contract(
     }
 
 
-def _recover_misplaced_handoff_contract_artifacts(
-    run_dir: Path,
-    target_dir: Path,
-    *,
-    paths: HandoffContractPaths,
-) -> None:
-    for source, destination in _handoff_recovery_candidates(target_dir, run_dir, paths):
-        if not source.exists():
-            continue
-        if destination.exists() and source.stat().st_mtime <= destination.stat().st_mtime:
-            continue
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
-
-
 def _parse_status(summary: str) -> str | None:
     match = HANDOFF_STATUS_PATTERN.search(summary)
     return match.group(1).lower() if match else None
@@ -511,7 +499,7 @@ def _execution_id(request: ExecutionRequest) -> str:
     return build_agent_execution_id(
         run_id=request.run_id,
         agent_id=HANDOFF_CODEX_AGENT_ID,
-        target=(
+        correlation_id=(
             request.handoff_sprint_id
             if request.handoff_scope == SPRINT_HANDOFF_SCOPE
             else FINAL_PROJECT_REPORT_SCOPE
@@ -554,21 +542,6 @@ def _write_contract_failure_artifacts(
         encoding="utf-8",
     )
     return f"{report}\nHANDOFF_STATUS: failed\n"
-
-
-def _handoff_recovery_candidates(
-    target_dir: Path,
-    run_dir: Path,
-    paths: HandoffContractPaths,
-) -> list[tuple[Path, Path]]:
-    scoped = [
-        (target_dir / paths.html, run_dir / paths.html),
-    ]
-    legacy = [
-        (target_dir / "handoff" / "release-report.html", run_dir / paths.html),
-        (target_dir / HANDOFF_REPORT_HTML, run_dir / paths.html),
-    ]
-    return scoped + legacy
 
 
 def _unique_artifacts(paths: list[str]) -> list[str]:

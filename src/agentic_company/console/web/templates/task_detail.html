@@ -22,9 +22,9 @@
 
   <section class="task-detail-layout">
     <article class="panel task-activity-panel">
-      <h2>Activity</h2>
+      <h2>Card Log</h2>
       {% if detail.activity_groups %}
-        <div class="activity-owner-list">
+        <div class="activity-owner-list" data-live-logs-run="{{ run.id }}" data-live-task-id="{{ detail.card.id }}">
           {% for group in detail.activity_groups %}
             <details class="activity-owner-group" data-detail-key="activity-{{ group.owner }}" open>
               <summary><span class="agent-label"><img src="{{ group.owner|agent_icon }}" alt="" loading="lazy">{{ group.owner }}</span> <span class="activity-owner-count">{{ group.count }}</span></summary>
@@ -37,7 +37,9 @@
           {% endfor %}
         </div>
       {% else %}
-        <p class="empty">Activity will appear here when this item is active.</p>
+        <div class="activity-owner-list" data-live-logs-run="{{ run.id }}" data-live-task-id="{{ detail.card.id }}">
+          <p class="empty">Card log entries will appear here when this item is active.</p>
+        </div>
       {% endif %}
     </article>
     <article class="panel task-reports-panel">
@@ -45,7 +47,7 @@
       {% if detail.reports %}
         <div class="artifact-list compact">
           {% for artifact in detail.reports %}
-            <a class="artifact-row" href="/artifacts/{{ run.id }}/{{ artifact.path }}">
+            <a class="artifact-row" href="/artifacts/{{ run.id }}{% if artifact.artifact_id %}/by-id/{{ artifact.artifact_id }}{% else %}/{{ artifact.path }}{% endif %}">
               <span>{{ artifact.label }}</span>
               <small><span class="agent-label"><img src="{{ artifact.business_agent|agent_icon }}" alt="" loading="lazy">{{ artifact.business_agent }}</span> &middot; {{ artifact.kind }}</small>
             </a>

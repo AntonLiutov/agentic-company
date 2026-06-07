@@ -6,7 +6,10 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from agentic_company.agents.team_lead.contracts import TEAM_LEAD_TOOLS
+from agentic_company.agents.team_lead.contracts import (
+    TEAM_LEAD_TOOL_CONTRACT_REGISTRY,
+    TEAM_LEAD_TOOLS,
+)
 from agentic_company.agents.team_lead.tools import (
     TeamLeadExecutorResult,
     TeamLeadToolbox,
@@ -21,9 +24,12 @@ from agentic_company.platform.agent_runtime import (
     LangChainCreateAgentRuntime,
     MissingAgentRuntimeConfig,
     coordinator_quality_review_policy,
-    coordinator_recovery_policy,
+    coordinator_repair_policy,
 )
 from agentic_company.platform.state import DeliveryState
+from agentic_company.platform.tool_contracts import render_tool_docstring
+
+TEAM_LEAD_COORDINATION_WORK_ITEM_ID = "PLAN-04"
 
 
 class LangChainTeamLeadExecutor:
@@ -70,25 +76,33 @@ class LangChainTeamLeadExecutor:
         except MissingAgentRuntimeConfig:
             toolbox.block_sprint(
                 reason="OPENAI_API_KEY is required for Team Lead AgentExecutor decisions.",
-                message="Set OPENAI_API_KEY in the repo .env or generated-project/.env.",
+                work_item_id=TEAM_LEAD_COORDINATION_WORK_ITEM_ID,
+                message="Set OPENAI_API_KEY in Settings or the run-level agent runtime env.",
             )
             return toolbox.result()
         except LangChainAgentRuntimeError as exc:
             toolbox.block_sprint(
                 reason=f"LangChain Team Lead AgentExecutor dependencies are missing: {exc}",
+                work_item_id=TEAM_LEAD_COORDINATION_WORK_ITEM_ID,
                 message="Install langchain and langchain-openai.",
             )
         except Exception as exc:  # pragma: no cover - exercised through integration runs
             toolbox.block_sprint(
                 reason=f"Team Lead AgentExecutor failed: {exc}",
+                work_item_id=TEAM_LEAD_COORDINATION_WORK_ITEM_ID,
                 message="Executor failed before completing the sprint.",
             )
 
-        if not toolbox.history:
+        if not toolbox.tool_calls_made() and "team_lead_sprint_handoff_ready" not in str(
+            toolbox.delivery_state.get("status") or ""
+        ):
             toolbox.block_sprint(
                 reason="Team Lead AgentExecutor completed without calling any tool.",
+                work_item_id=TEAM_LEAD_COORDINATION_WORK_ITEM_ID,
                 message="The Team Lead must use tools to coordinate the sprint.",
             )
+        elif not toolbox.reached_terminal_state():
+            toolbox.block_incomplete_execution()
         return toolbox.result()
 
 
@@ -121,7 +135,7 @@ def build_team_lead_executor_prompt(
             ],
             repair_limit=int(delivery_state.get("max_repair_attempts", 5)),
         ),
-        "coordinator_recovery_policy": coordinator_recovery_policy(
+        "coordinator_repair_policy": coordinator_repair_policy(
             coordinator_name="Team Lead",
             downstream_tools=[
                 "run_fullstack",
@@ -144,9 +158,8 @@ def build_team_lead_executor_prompt(
                 "artifacts."
             ),
             (
-                "Treat the sprint feature queue as a work board. Pick the next sprint item "
-                "from PM artifacts or state, assign it to the appropriate owner tool with a "
-                "clear message, then move it through owner work, QA/review, and done."
+                "Treat DB work_items as the sprint board. Pick the next sprint item from "
+                "the canonical DB rows and call each specialist with explicit work_item_id."
             ),
             (
                 "Use PM suggested_owner_agent as the default owner, but apply real delivery "
@@ -204,7 +217,7 @@ def build_team_lead_executor_prompt(
             (
                 "After meaningful downstream results, do a lightweight coordinator sanity "
                 "review before moving on: confirm the expected artifacts/summary exist, the "
-                "response matches the requested sprint/feature, and there is no obvious "
+                "response matches the requested sprint/work item, and there is no obvious "
                 "blocked/failed/mismatched status. Do not redo specialist work or QA in this "
                 "review."
             ),
@@ -221,7 +234,7 @@ def build_team_lead_executor_prompt(
                 "environment/config defect, route to Deployment."
             ),
             (
-                "Apply coordinator_recovery_policy to Fullstack, QA, Deployment, post-deploy "
+                "Apply coordinator_repair_policy to Fullstack, QA, Deployment, post-deploy "
                 "QA, and Handoff tool responses. Inspect failed/blocked/precondition responses "
                 "and artifact refs, call codex_review after meaningful downstream work, then "
                 "rerun the owning specialist tool with concrete repair advice when repairable. "
@@ -252,7 +265,7 @@ def build_team_lead_executor_prompt(
                 "handoff is accepted. That project/final handoff must also return artifact_refs. "
                 "Only call complete_sprint after actual "
                 "Handoff-owned sprint/project evidence refs are available and accepted. "
-                "Do not create or request wrapper folders, alias paths, duplicate reports, "
+                "Do not create or request wrapper folders, alternate id paths, duplicate reports, "
                 "or copied files when the Handoff Agent already returned readable refs. "
                 "Head Agent will decide whether to start another sprint or complete the "
                 "company run."
@@ -283,13 +296,13 @@ You own sprint execution by calling tools. You do not write product code, run QA
 directly, deploy directly, or create handoff directly; you delegate to specialist
 agents through the tools available to you.
 
-Before delegating feature work, orient yourself with upstream planning context
+Before delegating work-item work, orient yourself with upstream planning context
 when available. Always call `inspect_sprint_status` first; it writes a sprint
 status JSON file and the platform reads that file back. Treat it as status-only
-evidence, not routing advice; you decide the next worker from the sprint plan,
-work-board state, and workflow order. Use `codex_review` as a read-only helper
-to inspect BA, architecture, Project Manager, roadmap, sprint plan, and feature
-queue artifacts when the status or artifact meaning is unclear. Then execute
+evidence, not routing advice; you decide the next worker from the DB sprint board
+and workflow order. Use `codex_review` as a read-only helper
+to inspect BA, architecture, Project Manager, roadmap, and sprint artifacts when
+the status or artifact meaning is unclear. Then execute
 the selected sprint through specialist tools.
 
 Codex Review is a lightweight read-only helper for Team Lead acceptance of
@@ -303,8 +316,8 @@ validation, or a second implementation agent.
 
 Operate like a real team lead:
 - review upstream planning artifacts when they are available;
-- treat the active sprint package as a work board;
-- select or target the next sprint work item;
+- treat the active sprint package as a DB work item table;
+- select the next sprint work item by explicit work_item_id;
 - ask the owning specialist to do the work;
 - use PM's suggested owner by default, but correct obvious ownership mistakes
   using the current agent registry and role boundaries: Fullstack implements
@@ -326,10 +339,13 @@ Operate like a real team lead:
   configuration issues go back to Deployment with concrete repair instructions.
   After the owner repair, rerun the relevant QA/deployment gate instead of
   treating the first failed deploy or live-QA finding as terminal;
-- repeat bounded repair loops until every active sprint feature passed QA;
+- repeat bounded repair loops until every active sprint work item passed QA;
 - inspect PM roadmap, sprint policy, and actual delivery state before choosing
   the release gate;
 - deploy and run post-deploy QA when the current sprint/release calls for it;
+- post-deploy QA must validate the deployed URL itself, including behavior,
+  CSS/static asset loading, and obvious layout/style regressions; HTTP 200 alone
+  is not enough for handoff;
 - for the final planned sprint of an app/site/API/service, assume the normal
   target is a deployed working product URL unless PM/source artifacts explicitly
   say local-only/no-deployment. If PM provides release_gates, roadmap deployment
@@ -355,7 +371,7 @@ Operate like a real team lead:
   handoff is accepted, require returned
   artifact_refs for that project handoff, then accept that project handoff too;
 - use actual Handoff-owned artifact refs as the contract. Do not request
-  duplicate Team Lead wrapper folders, alias reports, or copied files merely to
+  duplicate Team Lead wrapper folders, alternate id reports, or copied files merely to
   match an expected path;
 - call `complete_sprint` only after the required handoff evidence refs are
   present and accepted and the latest `inspect_sprint_status` readback says
@@ -378,7 +394,7 @@ message may summarize, prioritize, or ask questions, but it must not silently
 add stricter acceptance criteria, exact status codes, feature scope, deployment
 gates, or QA gates that are not present in the PM work item or cited artifacts.
 
-Use the `codex_review` tool for read-only artifact sanity checks and recovery
+Use the `codex_review` tool for read-only artifact sanity checks and Repair
 advice when needed. It must not replace the specialist agent that owns
 implementation, QA, deployment, or handoff artifacts.
 
@@ -408,27 +424,68 @@ until the sprint is completed or truly blocked.
 
 
 def langchain_tools(toolbox: TeamLeadToolbox) -> list[Callable[..., str]]:
-    def run_fullstack(target: str = "", reason: str = "", message: str = "") -> str:
+    def run_fullstack(
+        work_item_id: str,
+        reason: str = "",
+        message: str = "",
+        artifact_refs: str = "",
+        external_reference: str = "",
+    ) -> str:
         """Delegate feature implementation, or repair after QA returns findings, to Fullstack."""
-        return toolbox.run_fullstack(target or None, reason, message)
+        return toolbox.run_fullstack(
+            work_item_id,
+            reason,
+            message,
+            artifact_refs,
+            external_reference,
+        )
 
-    def run_qa(target: str = "", reason: str = "", message: str = "") -> str:
-        """Delegate QA/review for the targeted sprint work item to the QA Agent."""
-        return toolbox.run_qa(target or None, reason, message)
+    def run_qa(
+        work_item_id: str,
+        reason: str = "",
+        message: str = "",
+        artifact_refs: str = "",
+        external_reference: str = "",
+    ) -> str:
+        """Delegate QA/review for the explicit sprint work item to the QA Agent."""
+        return toolbox.run_qa(work_item_id, reason, message, artifact_refs, external_reference)
 
-    def run_deployment(target: str = "", reason: str = "", message: str = "") -> str:
+    def run_deployment(
+        work_item_id: str,
+        reason: str = "",
+        message: str = "",
+        artifact_refs: str = "",
+        external_reference: str = "",
+    ) -> str:
         """Delegate sprint deployment to the Deployment Agent."""
-        return toolbox.run_deployment(target or None, reason, message)
+        return toolbox.run_deployment(
+            work_item_id,
+            reason,
+            message,
+            artifact_refs,
+            external_reference,
+        )
 
-    def run_post_deploy_qa(target: str = "", reason: str = "", message: str = "") -> str:
+    def run_post_deploy_qa(
+        work_item_id: str,
+        reason: str = "",
+        message: str = "",
+        artifact_refs: str = "",
+        external_reference: str = "",
+    ) -> str:
         """Delegate post-deployment release QA to the QA Agent."""
-        return toolbox.run_post_deploy_qa(target or None, reason, message)
+        return toolbox.run_post_deploy_qa(
+            work_item_id, reason, message, artifact_refs, external_reference
+        )
 
     def run_handoff(
+        work_item_id: str,
         handoff_scope: str,
         sprint_id: str = "",
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
+        external_reference: str = "",
     ) -> str:
         """Delegate handoff packaging using an explicit scope contract.
 
@@ -436,7 +493,15 @@ def langchain_tools(toolbox: TeamLeadToolbox) -> list[Callable[..., str]]:
         Use handoff_scope="final_project_report" with empty sprint_id for the
         final project report.
         """
-        return toolbox.run_handoff(handoff_scope, sprint_id, reason, message)
+        return toolbox.run_handoff(
+            work_item_id,
+            handoff_scope,
+            sprint_id,
+            reason,
+            message,
+            artifact_refs,
+            external_reference,
+        )
 
     def codex_review(
         target_agent: str = "",
@@ -444,7 +509,7 @@ def langchain_tools(toolbox: TeamLeadToolbox) -> list[Callable[..., str]]:
         question: str = "",
         artifact_refs: str = "",
         intent: str = "review_feedback",
-        target: str = "",
+        work_item_id: str = "",
         reason: str = "",
         message: str = "",
     ) -> str:
@@ -459,28 +524,50 @@ def langchain_tools(toolbox: TeamLeadToolbox) -> list[Callable[..., str]]:
             question=question,
             artifact_refs=artifact_refs,
             intent=intent,
-            target=target or None,
+            work_item_id=work_item_id,
             reason=reason,
             message=message,
         )
 
     def inspect_sprint_status(
-        target: str = "",
+        work_item_id: str,
         reason: str = "",
         message: str = "",
+        sprint_id: str = "",
+        artifact_refs: str = "",
     ) -> str:
         """Run Codex status inspection and read back the sprint status JSON."""
-        return toolbox.inspect_sprint_status(target or None, reason, message)
+        return toolbox.inspect_sprint_status(
+            work_item_id, reason, message, sprint_id, artifact_refs
+        )
 
-    def complete_sprint(target: str = "", reason: str = "", message: str = "") -> str:
+    def complete_sprint(
+        work_item_id: str,
+        reason: str = "",
+        message: str = "",
+        sprint_id: str = "",
+        artifact_refs: str = "",
+    ) -> str:
         """Mark the sprint complete after inspector confirms readiness."""
-        return toolbox.complete_sprint(target or None, reason, message)
+        return toolbox.complete_sprint(work_item_id, reason, message, sprint_id, artifact_refs)
 
-    def block_sprint(reason: str, target: str = "", message: str = "") -> str:
+    def block_sprint(
+        reason: str,
+        work_item_id: str,
+        message: str = "",
+        artifact_refs: str = "",
+        external_reference: str = "",
+    ) -> str:
         """Block the sprint when progress is impossible or unsafe."""
-        return toolbox.block_sprint(reason, target or None, message)
+        return toolbox.block_sprint(
+            reason,
+            work_item_id,
+            message,
+            artifact_refs,
+            external_reference,
+        )
 
-    return [
+    tools = [
         run_fullstack,
         run_qa,
         run_deployment,
@@ -491,6 +578,11 @@ def langchain_tools(toolbox: TeamLeadToolbox) -> list[Callable[..., str]]:
         complete_sprint,
         block_sprint,
     ]
+    for tool in tools:
+        contract = TEAM_LEAD_TOOL_CONTRACT_REGISTRY.maybe_get(tool.__name__)
+        if contract:
+            tool.__doc__ = render_tool_docstring(contract)
+    return tools
 
 
 def _compact_delivery_state(state: DeliveryState) -> dict[str, Any]:
@@ -498,10 +590,6 @@ def _compact_delivery_state(state: DeliveryState) -> dict[str, Any]:
         "run_id",
         "stage",
         "status",
-        "active_feature_id",
-        "completed_feature_ids",
-        "feature_statuses",
-        "feature_repair_attempts",
         "qa_status",
         "deployment_status",
         "post_deploy_qa_status",
@@ -510,8 +598,6 @@ def _compact_delivery_state(state: DeliveryState) -> dict[str, Any]:
         "public_urls",
         "blockers",
         "max_repair_attempts",
-        "candidate_feature_queue",
-        "feature_queue",
     ]
     return {key: state.get(key) for key in keys if key in state}
 
@@ -520,8 +606,7 @@ def _upstream_planning_context(state: DeliveryState) -> dict[str, Any]:
     refs = _upstream_artifact_refs(state)
     return {
         "artifact_refs": refs,
-        "has_project_manager_queue": bool(state.get("candidate_feature_queue")),
-        "active_feature_queue_count": len(list(state.get("feature_queue", []))),
+        "board_source": "db.work_items",
         "guidance": (
             "Use PM artifacts as the execution package, BA artifacts as product scope, "
             "and architecture artifacts as technical constraints."

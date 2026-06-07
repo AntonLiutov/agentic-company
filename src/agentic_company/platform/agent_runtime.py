@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -11,9 +12,37 @@ from typing import Any, Protocol
 
 from langgraph.graph import END, START, StateGraph
 
+from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
+from agentic_company.platform.artifact_registry import (
+    artifact_id_for,
+    tool_artifact_refs_from_records,
+)
+from agentic_company.platform.artifacts import discover_implementation_artifacts
 from agentic_company.platform.messages import AgentMessage, AgentMessageStore
 from agentic_company.platform.models import AgentRunResult
+from agentic_company.platform.run_trace import (
+    record_model_call_event,
+    record_run_event,
+    record_tool_call_event,
+)
+from agentic_company.platform.runtime_db import artifact_links_for_paths, record_artifact_link
+from agentic_company.platform.skills import (
+    SkillSelection,
+    render_skill_instructions,
+    select_skills_for_agent,
+    selected_skill_trace_data,
+)
 from agentic_company.platform.state import DeliveryState, record_codex_thread
+from agentic_company.platform.tool_contracts import (
+    CODEX_EXEC_TOOL_CONTRACT,
+    ArtifactRegistrationRequest,
+    ToolCallResult,
+    ToolDashboardUpdate,
+    WorkItemExecutionPacket,
+    dashboard_status_from_runtime_status,
+    failure_mode_from_status,
+    render_tool_docstring,
+)
 
 AGENT_EXECUTOR_GRAPH_NODE_ORDER: tuple[str, str, str] = (
     "prepare_context",
@@ -82,6 +111,7 @@ class LangChainAgentRequest:
     model_env_keys: tuple[str, ...] = ("AGENT_LLM_MODEL",)
     default_reasoning_effort: str | None = DEFAULT_AGENT_REASONING_EFFORT
     reasoning_effort_env_keys: tuple[str, ...] = (AGENT_REASONING_EFFORT_ENV,)
+    selected_skills: tuple[SkillSelection, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,12 +126,14 @@ class SpecialistAgentRequest:
     runner: CodexRunner
     run_dir: Path
     delivery_state: DeliveryState
+    packet: WorkItemExecutionPacket
     max_steps: int = 4
     max_codex_tool_calls: int = DEFAULT_CODEX_TOOL_CALL_LIMIT
     default_model: str = DEFAULT_AGENT_LLM_MODEL
     model_env_keys: tuple[str, ...] = ("AGENT_LLM_MODEL",)
     default_reasoning_effort: str | None = DEFAULT_SPECIALIST_AGENT_REASONING_EFFORT
     reasoning_effort_env_keys: tuple[str, ...] = (SPECIALIST_AGENT_REASONING_EFFORT_ENV,)
+    selected_skills: tuple[SkillSelection, ...] = ()
 
 
 class LangChainCreateAgentRuntime:
@@ -119,6 +151,24 @@ class LangChainCreateAgentRuntime:
     def invoke(self, request: LangChainAgentRequest) -> Any:
         """Build and invoke a LangChain `create_agent` instance."""
 
+        selected_skills = _selected_skills_for_request(request)
+        skill_prompt = _selected_skill_prompt(
+            agent_id=request.agent_id,
+            stage=request.stage,
+            delivery_state=request.delivery_state,
+            selections=selected_skills,
+        )
+        system_prompt = (
+            request.system_prompt.rstrip() + "\n\n" + skill_prompt
+            if skill_prompt
+            else request.system_prompt
+        )
+        _record_selected_skills(
+            request.delivery_state,
+            agent_id=request.agent_id,
+            stage=request.stage,
+            selected_skills=selected_skills,
+        )
         provider = _agent_llm_provider(request.delivery_state)
         api_key = _agent_provider_api_key(provider, request.delivery_state)
         if not api_key:
@@ -144,7 +194,7 @@ class LangChainCreateAgentRuntime:
             api_key,
             reasoning_effort,
         )
-        agent = self.create_agent_factory(model, list(request.tools), request.system_prompt)
+        agent = self.create_agent_factory(model, list(request.tools), system_prompt)
         return agent.invoke(
             {"messages": [{"role": "user", "content": request.user_prompt}]},
             config={"recursion_limit": request.max_steps * 2 + 8},
@@ -160,17 +210,71 @@ class LangChainSpecialistAgentExecutor:
     def run(self, request: SpecialistAgentRequest) -> AgentRunResult:
         """Expose `codex_exec` to create_agent and return the Codex tool result."""
 
+        request = _specialist_request_with_selected_skills(request)
+        request.packet.validate()
         tool_result: AgentRunResult | None = None
         tool_call_count = 0
 
-        def codex_exec(reason: str = "", message: str = "") -> str:
+        def codex_exec(reason: str = "", message: str = "", artifact_refs: str = "") -> str:
             """Run the specialist Codex worker for this assigned task."""
 
             nonlocal tool_call_count, tool_result
+            try:
+                explicit_refs = _validated_artifact_refs(
+                    str(request.delivery_state.get("run_id") or request.run_dir.name),
+                    artifact_refs,
+                )
+            except ValueError as exc:
+                return _codex_exec_contract_error_response(
+                    request=request,
+                    reason=reason,
+                    message=message,
+                    artifact_refs=artifact_refs,
+                    error=str(exc),
+                    tool_call_count=tool_call_count,
+                )
+            if tool_result is not None and _agent_run_result_successful(tool_result):
+                record_run_event(
+                    request.run_dir,
+                    run_id=str(request.delivery_state.get("run_id") or request.run_dir.name),
+                    agent_id=request.agent_id,
+                    event_type="duplicate_execution_suppressed",
+                    status="suppressed",
+                    message=(
+                        "Duplicate codex_exec call suppressed after a successful specialist "
+                        "result; returning cached evidence."
+                    ),
+                    work_item_id=request.packet.work_item_id,
+                    data={
+                        "stage": request.stage,
+                        "execution_id": tool_result.execution_id,
+                        "codex_thread_id": tool_result.codex_thread_id,
+                        "codex_tool_call": tool_call_count,
+                        "reason": reason,
+                        "message": message,
+                        "artifact_refs": explicit_refs,
+                    },
+                )
+                return _codex_exec_tool_response(
+                    request=request,
+                    result=tool_result,
+                    reason=reason,
+                    message=message,
+                    explicit_artifact_refs=explicit_refs,
+                    tool_call_count=tool_call_count,
+                    duration_ms=0,
+                    cached=True,
+                )
             if tool_call_count >= request.max_codex_tool_calls:
                 return json.dumps(
                     {
+                        "tool_name": "codex_exec",
                         "status": tool_result.status if tool_result else "tool_call_limit_reached",
+                        "business_summary": (
+                            tool_result.summary
+                            if tool_result
+                            else "codex_exec was not run before the tool-call limit."
+                        ),
                         "summary": (
                             tool_result.summary
                             if tool_result
@@ -181,6 +285,21 @@ class LangChainSpecialistAgentExecutor:
                             "upstream or block with the latest findings."
                         ),
                         "max_codex_tool_calls": request.max_codex_tool_calls,
+                        "developer_diagnostics": {
+                            "codex_tool_call": tool_call_count,
+                            "max_codex_tool_calls": request.max_codex_tool_calls,
+                        },
+                        "output_artifacts": (tool_result.output_artifacts if tool_result else []),
+                        "dashboard_update": {
+                            "status": "blocked",
+                            "summary": "Codex tool call limit reached.",
+                            "comment": (
+                                "codex_exec tool-call limit reached. Return the latest "
+                                "result upstream or block with the latest findings."
+                            ),
+                            "artifact_links": [],
+                            "labels": ["tool-limit"],
+                        },
                     },
                     sort_keys=True,
                 )
@@ -189,31 +308,29 @@ class LangChainSpecialistAgentExecutor:
                 request,
                 reason=reason,
                 message=message,
+                artifact_refs=explicit_refs,
                 previous_result=tool_result,
                 attempt=tool_call_count,
             )
+            started = time.perf_counter()
             tool_result = request.runner.run(request.run_dir)
+            duration_ms = int((time.perf_counter() - started) * 1000)
             record_codex_thread(
                 request.delivery_state,
                 tool_result.agent_id or request.agent_id,
                 tool_result.codex_thread_id,
             )
-            return json.dumps(
-                {
-                    "status": tool_result.status,
-                    "summary": tool_result.summary,
-                    "output_artifacts": tool_result.output_artifacts,
-                    "blocking_findings": tool_result.blocking_findings,
-                    "fix_request_artifacts": tool_result.fix_request_artifacts,
-                    "recommended_next_action": tool_result.recommended_next_action,
-                    "reason": reason,
-                    "message": message,
-                    "codex_tool_call": tool_call_count,
-                    "remaining_codex_tool_calls": (request.max_codex_tool_calls - tool_call_count),
-                    "repair_guidance": _repair_guidance(tool_result, request),
-                },
-                sort_keys=True,
+            return _codex_exec_tool_response(
+                request=request,
+                result=tool_result,
+                reason=reason,
+                message=message,
+                explicit_artifact_refs=explicit_refs,
+                tool_call_count=tool_call_count,
+                duration_ms=duration_ms,
             )
+
+        codex_exec.__doc__ = render_tool_docstring(CODEX_EXEC_TOOL_CONTRACT)
 
         agent_output = self.runtime.invoke(
             LangChainAgentRequest(
@@ -228,6 +345,7 @@ class LangChainSpecialistAgentExecutor:
                 model_env_keys=request.model_env_keys,
                 default_reasoning_effort=request.default_reasoning_effort,
                 reasoning_effort_env_keys=request.reasoning_effort_env_keys,
+                selected_skills=request.selected_skills,
             )
         )
         if tool_result is None:
@@ -272,11 +390,86 @@ def _specialist_system_prompt(request: SpecialistAgentRequest) -> str:
     )
 
 
+def _specialist_request_with_selected_skills(
+    request: SpecialistAgentRequest,
+) -> SpecialistAgentRequest:
+    if request.selected_skills:
+        return request
+    selection = select_skills_for_agent(
+        agent_id=request.agent_id,
+        stage=request.stage,
+        delivery_state=request.delivery_state,
+    )
+    return replace(request, selected_skills=selection.selections)
+
+
+def _selected_skills_for_request(request: LangChainAgentRequest) -> tuple[SkillSelection, ...]:
+    if request.selected_skills:
+        return request.selected_skills
+    return select_skills_for_agent(
+        agent_id=request.agent_id,
+        stage=request.stage,
+        delivery_state=request.delivery_state,
+    ).selections
+
+
+def _selected_skill_prompt(
+    *,
+    agent_id: str,
+    stage: str,
+    delivery_state: DeliveryState,
+    selections: tuple[SkillSelection, ...],
+) -> str:
+    if not selections:
+        return ""
+    catalog_selection = select_skills_for_agent(
+        agent_id=agent_id,
+        stage=stage,
+        delivery_state=delivery_state,
+    )
+    selected_ids = {selection.skill_id for selection in selections}
+    descriptors = tuple(
+        descriptor
+        for descriptor in catalog_selection.descriptors
+        if descriptor.skill_id in selected_ids
+    )
+    return render_skill_instructions(descriptors)
+
+
+def _record_selected_skills(
+    delivery_state: DeliveryState,
+    *,
+    agent_id: str,
+    stage: str,
+    selected_skills: tuple[SkillSelection, ...],
+) -> None:
+    if not selected_skills:
+        return
+    run_dir_value = delivery_state.get("run_dir")
+    run_id = str(delivery_state.get("run_id") or "")
+    if not run_dir_value or not run_id:
+        return
+    record_run_event(
+        Path(str(run_dir_value)),
+        run_id=run_id,
+        agent_id=agent_id,
+        event_type="skills_selected",
+        status="selected",
+        message=f"Selected {len(selected_skills)} runtime skill(s).",
+        work_item_id=str(delivery_state.get("agent_call_correlation_id") or "") or None,
+        data={
+            "stage": stage,
+            "selected_skills": selected_skill_trace_data(selected_skills),
+        },
+    )
+
+
 def _append_agent_executor_feedback(
     request: SpecialistAgentRequest,
     *,
     reason: str,
     message: str,
+    artifact_refs: list[str],
     previous_result: AgentRunResult | None,
     attempt: int,
 ) -> None:
@@ -289,7 +482,12 @@ def _append_agent_executor_feedback(
             to_agent=request.agent_id,
             intent="agent_executor_feedback",
             content=content,
-            artifact_refs=previous_result.output_artifacts if previous_result else [],
+            artifact_refs=_unique_paths(
+                [
+                    *(previous_result.output_artifacts if previous_result else []),
+                    *artifact_refs,
+                ]
+            ),
             correlation_id=request.stage or request.agent_id,
             parent_execution_id=previous_result.execution_id if previous_result else None,
         )
@@ -305,6 +503,7 @@ def _append_agent_executor_feedback(
                 "attempt": attempt,
                 "reason": reason,
                 "message": message,
+                "artifact_refs": artifact_refs,
                 "previous_result": previous_result.to_dict() if previous_result else None,
             },
             indent=2,
@@ -312,6 +511,23 @@ def _append_agent_executor_feedback(
         )
         + "\n",
         encoding="utf-8",
+    )
+    runtime_run_id = str(request.delivery_state.get("run_id") or request.run_dir.name)
+    relative_path = feedback_path.relative_to(request.run_dir).as_posix()
+    record_artifact_link(
+        request.run_dir,
+        ArtifactRegistrationRequest(
+            artifact_id=artifact_id_for(runtime_run_id, relative_path),
+            artifact_type="agent_feedback",
+            visibility="internal",
+            owner_agent=request.agent_id,
+            source_tool="agent_executor_feedback",
+            label=f"Agent feedback: {feedback_path.name}",
+            relative_path=relative_path,
+            run_id=runtime_run_id,
+            work_item_id=request.packet.work_item_id,
+            task_scoped=True,
+        ),
     )
 
 
@@ -360,6 +576,311 @@ def _repair_guidance(result: AgentRunResult, request: SpecialistAgentRequest) ->
     return (
         "Inspect the status and summary before deciding whether another codex_exec call is useful."
     )
+
+
+def _agent_run_result_successful(result: AgentRunResult) -> bool:
+    status = result.status.strip().lower()
+    if not status:
+        return False
+    if any(value in status for value in ("failed", "blocked", "precondition", "limit")):
+        return False
+    return (
+        status.endswith("_completed")
+        or any(value in status for value in ("passed", "ready", "implemented", "deployed"))
+        or status in {"completed", "done", "success", "succeeded"}
+    )
+
+
+def _codex_exec_tool_response(
+    *,
+    request: SpecialistAgentRequest,
+    result: AgentRunResult,
+    reason: str,
+    message: str,
+    explicit_artifact_refs: list[str],
+    tool_call_count: int,
+    duration_ms: int | None = None,
+    cached: bool = False,
+) -> str:
+    """Return a structured codex_exec response for the explicit work-item packet."""
+
+    remaining = request.max_codex_tool_calls - tool_call_count
+    failure_mode = failure_mode_from_status(result.status, result.blocking_findings)
+    dashboard_status = dashboard_status_from_runtime_status(result.status)
+    runtime_run_id = str(request.delivery_state.get("run_id") or request.run_dir.name)
+    artifact_records = [
+        record_artifact_link(
+            request.run_dir,
+            _artifact_registration_request(
+                request=request,
+                runtime_run_id=runtime_run_id,
+                relative_path=path,
+            ),
+        )
+        for path in result.output_artifacts
+    ]
+    if request.stage.strip().lower() == "fullstack":
+        _register_implementation_inventory(
+            request=request,
+            runtime_run_id=runtime_run_id,
+        )
+    output_artifacts = tool_artifact_refs_from_records(artifact_records)
+    tool_result = ToolCallResult(
+        tool_name="codex_exec",
+        status=result.status,
+        business_summary=result.summary,
+        tool_call_id=f"{request.run_dir.name}:{request.agent_id}:codex_exec:{tool_call_count}",
+        developer_diagnostics={
+            "agent_id": request.agent_id,
+            "agent_name": request.agent_name,
+            "stage": request.stage,
+            "execution_id": result.execution_id,
+            "codex_thread_id": result.codex_thread_id,
+            "codex_tool_call": tool_call_count,
+            "remaining_codex_tool_calls": remaining,
+            "blocking_findings": result.blocking_findings,
+            "fix_request_artifacts": result.fix_request_artifacts,
+            "reason": reason,
+            "message": message,
+            "explicit_artifact_refs": explicit_artifact_refs,
+            "cached_successful_result": cached,
+        },
+        output_artifacts=output_artifacts,
+        failure_mode=failure_mode,
+        recommended_next_action=result.recommended_next_action,
+        dashboard_update=ToolDashboardUpdate(
+            status=dashboard_status,
+            summary=result.summary,
+            comment=result.summary,
+            artifact_links=output_artifacts,
+            labels=(failure_mode,) if failure_mode else (),
+        ),
+    )
+    payload = {
+        **tool_result.to_dict(),
+        "summary": result.summary,
+        "blocking_findings": result.blocking_findings,
+        "fix_request_artifacts": result.fix_request_artifacts,
+        "recommended_next_action": result.recommended_next_action,
+        "reason": reason,
+        "message": message,
+        "explicit_artifact_refs": explicit_artifact_refs,
+        "codex_tool_call": tool_call_count,
+        "remaining_codex_tool_calls": remaining,
+        "cached_successful_result": cached,
+        "repair_guidance": _repair_guidance(result, request),
+    }
+    artifact_ids = [ref.artifact_id for ref in output_artifacts if getattr(ref, "artifact_id", "")]
+    record_tool_call_event(
+        request.run_dir,
+        run_id=str(request.delivery_state.get("run_id") or request.run_dir.name),
+        agent_id=request.agent_id,
+        tool_name="codex_exec",
+        tool_call_id=tool_result.tool_call_id,
+        work_item_id=request.packet.work_item_id,
+        input_summary={
+            "reason": reason,
+            "message": message,
+            "artifact_refs": explicit_artifact_refs,
+            "stage": request.stage,
+            "agent_name": request.agent_name,
+            "selected_skills": selected_skill_trace_data(request.selected_skills),
+            "cached_successful_result": cached,
+        },
+        output_summary=tool_result.to_dict(),
+        artifact_ids=artifact_ids,
+        status=result.status,
+        failure_mode=failure_mode,
+        duration_ms=duration_ms,
+    )
+    record_model_call_event(
+        request.run_dir,
+        run_id=str(request.delivery_state.get("run_id") or request.run_dir.name),
+        agent_id=result.agent_id or request.agent_id,
+        provider="openai",
+        model=agent_env_value(
+            f"{request.agent_id.upper().replace('-', '_')}_CODEX_MODEL",
+            request.delivery_state,
+        )
+        or agent_env_value("AGENT_CODEX_MODEL", request.delivery_state)
+        or DEFAULT_CODEX_MODEL,
+        purpose="codex_exec",
+        prompt_ref=_prompt_artifact_link(result.output_artifacts),
+        status=result.status,
+        duration_ms=duration_ms,
+    )
+    return json.dumps(payload, sort_keys=True)
+
+
+def _codex_exec_contract_error_response(
+    *,
+    request: SpecialistAgentRequest,
+    reason: str,
+    message: str,
+    artifact_refs: str,
+    error: str,
+    tool_call_count: int,
+) -> str:
+    tool_call_id = f"{request.run_dir.name}:{request.agent_id}:codex_exec:contract-error"
+    payload = {
+        "tool_name": "codex_exec",
+        "tool_call_id": tool_call_id,
+        "status": "contract_error",
+        "business_summary": "codex_exec contract error: " + error,
+        "summary": "codex_exec contract error: " + error,
+        "message": error,
+        "reason": reason,
+        "input_artifact_refs": artifact_refs,
+        "codex_tool_call": tool_call_count,
+        "remaining_codex_tool_calls": request.max_codex_tool_calls - tool_call_count,
+        "developer_diagnostics": {
+            "agent_id": request.agent_id,
+            "agent_name": request.agent_name,
+            "stage": request.stage,
+            "work_item_id": request.packet.work_item_id,
+            "sprint_id": request.packet.sprint_id,
+            "error": error,
+        },
+        "output_artifacts": [],
+        "failure_mode": "contract_error",
+        "recommended_next_action": "Retry codex_exec with registered artifact refs only.",
+        "dashboard_update": {
+            "status": "blocked",
+            "summary": "codex_exec contract error.",
+            "comment": error,
+            "artifact_links": [],
+            "labels": ["contract-error"],
+        },
+    }
+    record_tool_call_event(
+        request.run_dir,
+        run_id=str(request.delivery_state.get("run_id") or request.run_dir.name),
+        agent_id=request.agent_id,
+        tool_name="codex_exec",
+        tool_call_id=tool_call_id,
+        work_item_id=request.packet.work_item_id,
+        input_summary={
+            "reason": reason,
+            "message": message,
+            "artifact_refs": artifact_refs,
+            "stage": request.stage,
+            "agent_name": request.agent_name,
+        },
+        output_summary=payload,
+        artifact_ids=[],
+        status="contract_error",
+        failure_mode="contract_error",
+        duration_ms=0,
+    )
+    return json.dumps(payload, sort_keys=True)
+
+
+def _prompt_artifact_link(output_artifacts: list[str]) -> str:
+    for artifact in output_artifacts:
+        normalized = artifact.lower()
+        if "prompt" in normalized and normalized.endswith((".md", ".txt", ".json")):
+            return artifact
+    return ""
+
+
+def _artifact_registration_request(
+    *,
+    request: SpecialistAgentRequest,
+    runtime_run_id: str,
+    relative_path: str,
+) -> ArtifactRegistrationRequest:
+    artifact_type, visibility, label_prefix = _artifact_contract_for_stage(
+        request.stage,
+        relative_path,
+    )
+    return ArtifactRegistrationRequest(
+        artifact_id=artifact_id_for(runtime_run_id, relative_path),
+        artifact_type=artifact_type,
+        visibility=visibility,
+        owner_agent=request.agent_id,
+        source_tool="codex_exec",
+        label=f"{label_prefix}: {Path(relative_path).name}",
+        relative_path=relative_path,
+        run_id=runtime_run_id,
+        work_item_id=request.packet.work_item_id,
+        task_scoped=True,
+    )
+
+
+def _artifact_contract_for_stage(stage: str, relative_path: str) -> tuple[str, str, str]:
+    if _is_internal_execution_artifact(relative_path):
+        return "codex_output", "internal", "Codex output"
+    normalized = stage.strip().lower()
+    if normalized in {"business_analysis", "architecture", "project_management"}:
+        return f"{normalized}_deliverable", "business", "Planning report"
+    if normalized == "fullstack":
+        return "execution_summary", "business", "Build summary"
+    if normalized == "qa":
+        return "qa_evidence", "qa_evidence", "Quality evidence"
+    if normalized == "deployment":
+        return "deployment_evidence", "release", "Deployment evidence"
+    if normalized == "handoff":
+        return "release_report", "release", "Release report"
+    return "codex_output", "internal", "Codex output"
+
+
+def _register_implementation_inventory(
+    *,
+    request: SpecialistAgentRequest,
+    runtime_run_id: str,
+) -> None:
+    target_project_dir = str(request.delivery_state.get("target_project_dir") or "").strip()
+    if not target_project_dir:
+        return
+    for relative_path in discover_implementation_artifacts(
+        run_dir=request.run_dir,
+        target_project_dir=target_project_dir,
+    ):
+        record_artifact_link(
+            request.run_dir,
+            ArtifactRegistrationRequest(
+                artifact_id=artifact_id_for(runtime_run_id, relative_path),
+                artifact_type="implementation_artifact",
+                visibility="developer",
+                owner_agent=request.agent_id,
+                source_tool="implementation_inventory",
+                label=f"Implementation file: {Path(relative_path).name}",
+                relative_path=relative_path,
+                run_id=runtime_run_id,
+                work_item_id=request.packet.work_item_id,
+                task_scoped=True,
+            ),
+        )
+
+
+def _is_internal_execution_artifact(relative_path: str) -> bool:
+    name = Path(relative_path).name.lower()
+    return name in {"prompt.md", "execution.log", "events.jsonl"}
+
+
+def _validated_artifact_refs(run_id: str, artifact_refs: str) -> list[str]:
+    refs = _split_artifact_refs(artifact_refs)
+    if refs:
+        artifact_links_for_paths(run_id, refs)
+    return refs
+
+
+def _split_artifact_refs(value: str) -> list[str]:
+    refs: list[str] = []
+    for raw in value.replace(";", ",").replace("\n", ",").split(","):
+        item = raw.strip()
+        if item and item not in refs:
+            refs.append(item)
+    return refs
+
+
+def _unique_paths(paths: Sequence[str]) -> list[str]:
+    unique: list[str] = []
+    for path in paths:
+        normalized = str(path or "").strip()
+        if normalized and normalized not in unique:
+            unique.append(normalized)
+    return unique
 
 
 def _agent_executor_summary(agent_output: Any) -> str:
@@ -426,13 +947,13 @@ def build_agent_executor_graph(
     return graph.compile()
 
 
-def coordinator_recovery_policy(
+def coordinator_repair_policy(
     *,
     coordinator_name: str,
     downstream_tools: Sequence[str],
     repair_limit: int = DEFAULT_CODEX_TOOL_CALL_LIMIT,
 ) -> list[str]:
-    """Return the standard recovery policy for coordinator AgentExecutors."""
+    """Return the standard Repair policy for coordinator AgentExecutors."""
 
     tools = ", ".join(f"`{tool}`" for tool in downstream_tools)
     bounded_limit = max(1, int(repair_limit))
@@ -462,7 +983,7 @@ def coordinator_recovery_policy(
             "advice when available."
         ),
         (
-            "Keep recovery bounded: do not loop forever, do not retry the same downstream "
+            "Keep Repair bounded: do not loop forever, do not retry the same downstream "
             "tool without new evidence, and do not exceed the run's configured repair limit "
             f"or {bounded_limit} repair attempt(s) by default."
         ),
@@ -498,7 +1019,7 @@ def coordinator_quality_review_policy(
             "is failed/blocked/preconditioned."
         ),
         (
-            "When using `codex_review`, ask for a concise artifact sanity check and recovery "
+            "When using `codex_review`, ask for a concise artifact sanity check and Repair "
             "advice. It should confirm expected artifacts and summaries exist, status is "
             "clear, and the result matches the requested sprint/feature. It should not run "
             "QA, deployment checks, implementation work, or deep report editing."
@@ -662,13 +1183,10 @@ def _default_create_agent_factory(
 
 def _run_env_candidate_paths(delivery_state: DeliveryState) -> list[Path]:
     paths: list[Path] = []
-    target_dir = delivery_state.get("target_project_dir")
-    if target_dir:
-        paths.append(Path(str(target_dir)) / ".env")
     run_dir = delivery_state.get("run_dir")
     if run_dir:
         run_path = Path(str(run_dir))
-        paths.append(run_path / "generated-project" / ".env")
+        paths.append(run_path / "delivery" / "agent-runtime.env")
     return _unique_existing_or_candidate_paths(paths)
 
 

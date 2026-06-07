@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import shutil
 import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -54,7 +53,7 @@ CommandExecutor = Callable[
 class DeploymentCodexRunner:
     """Run deployment as a Codex-owned specialist execution.
 
-    The platform does not infer topology, choose Azure commands, or decide which
+    The platform does not derive topology, choose Azure commands, or decide which
     containers exist. The Deployment Codex Agent inspects the generated project
     and owns those decisions. This runner only captures evidence and validates
     the output contract.
@@ -68,7 +67,7 @@ class DeploymentCodexRunner:
 
     def run(self, run_dir: Path) -> AgentRunResult:
         request = load_execution_request(run_dir)
-        event_log = run_dir / "events.jsonl"
+        event_log = run_dir
         execution_id = _execution_id(request)
         write_event(
             event_log,
@@ -214,7 +213,7 @@ class DeploymentCodexRunner:
             encoding="utf-8",
         )
         write_event(
-            run_dir / "events.jsonl",
+            run_dir,
             request.run_id,
             DEPLOYMENT_CODEX_AGENT_ID,
             "deployment_codex_attempt_started",
@@ -231,6 +230,10 @@ class DeploymentCodexRunner:
                 log_path,
                 raw_events_path,
                 codex_execution_id=codex_execution_id,
+                run_dir=run_dir,
+                run_id=request.run_id,
+                agent_id=DEPLOYMENT_CODEX_AGENT_ID,
+                work_item_id="DEPLOY",
             )
         except FileNotFoundError:
             LOGGER.exception("Deployment Codex CLI missing run_id=%s", request.run_id)
@@ -250,7 +253,7 @@ class DeploymentCodexRunner:
         )
         codex_thread_id = extract_codex_thread_id(raw_events_path) or request.codex_resume_thread_id
         write_event(
-            run_dir / "events.jsonl",
+            run_dir,
             request.run_id,
             DEPLOYMENT_CODEX_AGENT_ID,
             "deployment_codex_attempt_completed",
@@ -283,6 +286,10 @@ class DeploymentCodexRunner:
         raw_events_path: Path,
         *,
         codex_execution_id: str,
+        run_dir: Path,
+        run_id: int | str,
+        agent_id: str,
+        work_item_id: str | None,
     ) -> subprocess.CompletedProcess[str]:
         if self.command_executor:
             return self.command_executor(
@@ -299,6 +306,10 @@ class DeploymentCodexRunner:
             log_path,
             raw_events_path,
             codex_execution_id=codex_execution_id,
+            trace_run_dir=run_dir,
+            trace_run_id=run_id,
+            trace_agent_id=agent_id,
+            trace_work_item_id=work_item_id,
         )
 
 
@@ -315,16 +326,9 @@ def build_deployment_codex_prompt(
     release_context = _deployment_release_context(run_dir, request)
     input_artifacts = "\n".join(f"- {artifact}" for artifact in request.input_artifacts)
     expected_outputs = "\n".join(f"- {artifact}" for artifact in request.expected_outputs)
-    completed_features = ", ".join(release_context["completed_feature_ids"]) or "none"
+    completed_features = ", ".join(release_context["completed_work_item_ids"]) or "none"
     release_scope = ", ".join(release_context["release_scope"]) or "none"
-    feature_queue = "\n".join(
-        f"- {feature.get('id')}: {feature.get('title')}"
-        for feature in sorted(
-            request.feature_queue,
-            key=lambda item: int(item.get("delivery_order", 0)),
-        )
-    )
-    target_dir = Path(request.target_project_dir)
+    work_item = request.work_item
     upstream_messages = render_incoming_messages_for_prompt(run_dir, to_agent="deployment-agent")
     result_path = run_dir / DEPLOYMENT_RESULT_JSON
     plan_json_path = run_dir / DEPLOYMENT_PLAN_JSON
@@ -332,8 +336,6 @@ def build_deployment_codex_prompt(
     request_json_path = run_dir / DEPLOYMENT_REQUEST_JSON
     request_markdown_path = run_dir / DEPLOYMENT_REQUEST_MARKDOWN
     summary_markdown_path = run_dir / DEPLOYMENT_SUMMARY_MARKDOWN
-    fallback_result_path = target_dir / DEPLOYMENT_RESULT_JSON
-    fallback_deployment_dir = target_dir / "deployment"
     repair_note = ""
     if attempt > 1:
         contract_error_lines = "\n".join(f"- {error}" for error in (previous_contract_errors or []))
@@ -352,7 +354,7 @@ Previous final message:
 
 Your agent id is `{DEPLOYMENT_CODEX_AGENT_ID}`.
 You are the sole owner of deployment work for this release batch. The platform
-will not infer topology, choose services, choose commands, or run a predefined
+will not derive topology, choose services, choose commands, or run a predefined
 deployment checklist for you.
 
 Generated project directory:
@@ -373,12 +375,12 @@ Input artifacts:
 Expected implementation outputs from planning:
 {expected_outputs or "- None"}
 
-Completed implementation features in this release batch: {completed_features}
+Completed implementation work items in this release batch: {completed_features}
 
 Deployment release scope: {release_scope}
 
-Feature queue:
-{feature_queue or "- None"}
+Deployment work item:
+- {work_item.get("work_item_id")}: {work_item.get("title")}
 
 Upstream agent messages:
 {upstream_messages}
@@ -403,10 +405,6 @@ Workspace ownership:
   - `{summary_markdown_path}`
 - Deployment-owned helper files, scripts, command logs, screenshots, transcripts,
   and cloud/runtime evidence belong under `{run_dir}\\deployment`.
-- If the sandbox only allows writing inside the generated project, mirror the
-  same deployment-owned contract artifacts under `{fallback_deployment_dir}`.
-  At minimum, fallback must include `{fallback_result_path}`. The platform will
-  recover contract artifacts from that fallback directory.
 - You may create or update project-local `.dockerignore` or `.gitignore` files
   inside `{request.target_project_dir}` if deployment packaging needs to exclude
   caches, virtual environments, logs, secrets, or large local-only artifacts.
@@ -438,8 +436,10 @@ Your job:
   suitable for the cloud target.
 - Decide whether this project can be safely deployed to the configured dev
   environment now.
-- If deployable, create any safe runtime `.env` needed from `.env.example` and
-  existing non-secret values, build and start local containers as needed,
+- If deployable, create only app-owned safe runtime `.env` values needed from
+  `.env.example`; never copy OpenAI, Codex, Gemini, Azure, platform, or user
+  account secrets into the generated project or deployment artifacts. Build and
+  start local containers as needed,
   prepare Azure Container Apps resources, deploy the service or services, and
   report public URL(s).
 - If not deployable or a deployment attempt exposes a runtime mismatch, return
@@ -505,8 +505,6 @@ Required output contract:
 - Write `{plan_json_path}` and `{plan_markdown_path}`.
 - Write `{request_json_path}` and `{request_markdown_path}`.
 - Write `{summary_markdown_path}`.
-- If those exact paths are blocked by sandbox policy, write equivalent files
-  under `{fallback_deployment_dir}` and say so explicitly.
 - End your final message with exactly one status line:
   `DEPLOYMENT_STATUS: deployed`, `DEPLOYMENT_STATUS: blocked`,
   `DEPLOYMENT_STATUS: failed`, or `DEPLOYMENT_STATUS: unknown`.
@@ -516,10 +514,10 @@ The result JSON must be valid JSON and include at least:
 {{
   "status": "blocked",
   "target_environment": "azure-container-apps-dev",
-  "topology_summary": "what topology you inferred from project files",
+  "topology_summary": "what topology you derived from project files",
   "deployment_targets": [
     {{
-      "service": "service name inferred from project",
+      "service": "service name derived from project",
       "runtime": "container-app",
       "image": "image name if built or planned",
       "public_url": ""
@@ -562,7 +560,7 @@ evidence and the safest next step. If status is `unknown`, explain which pieces
 of evidence conflict or are missing.
 
 The Markdown artifacts should be operator-readable and explain:
-- inferred topology and why;
+- derived topology and why;
 - deployment strategy and resource naming;
 - cloud-readiness assumptions checked and their result;
 - remediation owner and concrete repair request when deployment cannot proceed;
@@ -579,7 +577,6 @@ def read_deployment_contract(
     target_dir: Path,
     summary: str,
 ) -> dict[str, Any]:
-    _recover_misplaced_deployment_contract_artifacts(run_dir, target_dir)
     status = _parse_status(summary)
     required_paths = [
         DEPLOYMENT_PLAN_JSON,
@@ -623,33 +620,6 @@ def read_deployment_contract(
     }
 
 
-def _recover_misplaced_deployment_contract_artifacts(run_dir: Path, target_dir: Path) -> None:
-    """Recover deployment artifacts when Codex writes inside generated-project."""
-
-    destination_result = run_dir / DEPLOYMENT_RESULT_JSON
-    source_result = target_dir / DEPLOYMENT_RESULT_JSON
-    if source_result.exists() and not _artifact_is_valid_enough(destination_result):
-        _copy_deployment_contract_artifacts(target_dir, run_dir, overwrite=True)
-        return
-
-    for relative_path in [
-        DEPLOYMENT_RESULT_JSON,
-        DEPLOYMENT_PLAN_JSON,
-        DEPLOYMENT_PLAN_MARKDOWN,
-        DEPLOYMENT_REQUEST_JSON,
-        DEPLOYMENT_REQUEST_MARKDOWN,
-        DEPLOYMENT_SUMMARY_MARKDOWN,
-    ]:
-        source = target_dir / relative_path
-        destination = run_dir / relative_path
-        if not source.exists():
-            continue
-        if destination.exists() and _artifact_is_valid_enough(destination):
-            continue
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
-
-
 def public_urls_from_deployment_result(run_dir: Path) -> list[str]:
     result_path = run_dir / DEPLOYMENT_RESULT_JSON
     if not result_path.exists():
@@ -671,7 +641,7 @@ def _execution_id(request: ExecutionRequest) -> str:
     return build_agent_execution_id(
         run_id=request.run_id,
         agent_id=DEPLOYMENT_CODEX_AGENT_ID,
-        target=request.active_feature.get("id") if request.active_feature else "sprint",
+        correlation_id=str(request.work_item.get("work_item_id") or "deployment"),
         intent=request.execution_intent or "deployment",
     )
 
@@ -724,28 +694,12 @@ def _deployment_release_context(
     run_dir: Path,
     request: ExecutionRequest,
 ) -> dict[str, list[str]]:
-    """Return release-scope facts from graph state, falling back to the request.
+    """Return release-scope facts from the explicit execution request contract."""
 
-    The execution request is rewritten feature-by-feature by the Fullstack Agent,
-    so by deployment time it may describe the last feature run rather than the
-    whole QA-passed release batch. The delivery state is the orchestration source
-    of truth for release-batch deployment.
-    """
-
-    state_path = run_dir / ".delivery-state.json"
-    completed = list(request.completed_feature_ids)
-    if state_path.exists():
-        try:
-            state = json.loads(state_path.read_text(encoding="utf-8-sig"))
-        except json.JSONDecodeError:
-            state = {}
-        if isinstance(state, dict):
-            state_completed = _string_list(state.get("completed_feature_ids"))
-            if state_completed:
-                completed = state_completed
-    release_scope = completed or list(request.completed_feature_ids)
+    completed = list(request.completed_work_item_ids)
+    release_scope = completed or [str(request.work_item.get("work_item_id") or "deployment")]
     return {
-        "completed_feature_ids": completed,
+        "completed_work_item_ids": completed,
         "release_scope": release_scope,
     }
 
@@ -754,29 +708,15 @@ def _load_best_deployment_result(
     run_dir: Path,
     target_dir: Path,
 ) -> tuple[dict[str, Any], list[str]]:
-    """Load the best available deployment result contract.
-
-    Prefer a valid run-level contract. If the run-level contract is invalid but
-    Codex wrote a valid fallback inside the generated project, recover and use
-    the fallback. This is the reconciliation layer between agent-written
-    artifacts and platform state.
-    """
+    """Load the explicit run-level deployment result contract."""
 
     run_result = run_dir / DEPLOYMENT_RESULT_JSON
-    fallback_result = target_dir / DEPLOYMENT_RESULT_JSON
     run_payload, run_errors = _load_json_object(run_result)
     if run_payload is not None:
         return run_payload, []
 
-    fallback_payload, fallback_errors = _load_json_object(fallback_result)
-    if fallback_payload is not None:
-        _copy_deployment_contract_artifacts(target_dir, run_dir, overwrite=True)
-        return fallback_payload, []
-
     if run_result.exists():
         return {}, [f"Deployment result JSON is invalid: {'; '.join(run_errors)}."]
-    if fallback_result.exists():
-        return {}, [f"Fallback deployment result JSON is invalid: {'; '.join(fallback_errors)}."]
     return {}, [f"Missing required deployment result JSON: {DEPLOYMENT_RESULT_JSON}."]
 
 
@@ -797,33 +737,6 @@ def _artifact_is_valid_enough(path: Path) -> bool:
         return path.exists() and path.stat().st_size > 0
     payload, _errors = _load_json_object(path)
     return payload is not None
-
-
-def _copy_deployment_contract_artifacts(
-    source_root: Path, destination_root: Path, *, overwrite: bool
-) -> None:
-    for relative_path in [
-        DEPLOYMENT_RESULT_JSON,
-        DEPLOYMENT_PLAN_JSON,
-        DEPLOYMENT_PLAN_MARKDOWN,
-        DEPLOYMENT_REQUEST_JSON,
-        DEPLOYMENT_REQUEST_MARKDOWN,
-        DEPLOYMENT_SUMMARY_MARKDOWN,
-    ]:
-        source = _deployment_artifact_source(source_root, relative_path)
-        destination = destination_root / relative_path
-        if source is None or (destination.exists() and not overwrite):
-            continue
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
-
-
-def _deployment_artifact_source(source_root: Path, relative_path: str) -> Path | None:
-    candidates = [
-        source_root / relative_path,
-        source_root / "deployment" / Path(relative_path).name,
-    ]
-    return next((candidate for candidate in candidates if candidate.exists()), None)
 
 
 def _string_list(value: object) -> list[str]:

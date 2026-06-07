@@ -1,0 +1,43 @@
+schema_version: 1
+skill_id: sprint-planning
+version: "1.0"
+status: active
+trust_level: system
+selection:
+  applies_to_agents: [project-manager-agent]
+  default_for_agents: [project-manager-agent]
+  stages: [project_management, planning]
+  trigger_keywords: [sprint, work items, dependencies, delivery plan, acceptance gates]
+  negative_triggers: [requirements only, architecture only, implementation, QA]
+contracts:
+  required_tools: [codex_exec]
+  allowed_tools: [codex_exec]
+  consumes_artifacts: [requirements_brief, architecture_report]
+  produces_artifacts:
+    - artifact_type: delivery_plan
+      visibility: business
+      required: true
+      dashboard_label: Delivery plan
+      external_reference_type: work_item
+dashboard:
+  status: in_progress
+  work_item_stage: planning
+  external_systems_supported: [internal, github, jira, azure_devops, linear]
+  comment_template: planning-update
+  labels: [agentic-delivery, planning]
+governance:
+  risk_level: medium
+  requires_human_approval: false
+  max_repair_attempts: 1
+  checkpoint_before: false
+  checkpoint_after: true
+validation:
+  eval_prompts:
+    - Plan a small app with two user-visible features and deployment evidence.
+  success_signals:
+    - delivery_plan artifact exists
+    - work items have IDs and acceptance gates
+    - dependencies are explicit
+examples:
+  - input: Requirements and architecture artifacts
+    output: Delivery plan with work items and gates

@@ -15,9 +15,11 @@ from agentic_company.agents.architecture.graph import (
     BUSINESS_ANALYSIS_JSON,
     BUSINESS_ANALYSIS_MD,
 )
+from agentic_company.console.web.db import ConsoleRepository
 
 
-def test_architecture_prompt_scopes_codex_to_architecture_artifacts(tmp_path):
+def test_architecture_prompt_scopes_codex_to_architecture_artifacts(tmp_path, monkeypatch):
+    _register_run(tmp_path, monkeypatch)
     (tmp_path / "00-requirements.md").write_text("F1: Build task tracker.\n", encoding="utf-8")
     (tmp_path / BUSINESS_ANALYSIS_MD).parent.mkdir(parents=True)
     (tmp_path / BUSINESS_ANALYSIS_MD).write_text("# BA\n", encoding="utf-8")
@@ -27,7 +29,7 @@ def test_architecture_prompt_scopes_codex_to_architecture_artifacts(tmp_path):
     )
     request = {
         "run_id": "run",
-        "model": "gpt-5.3-codex",
+        "model": "gpt-5.5",
         "requirements_artifact": "00-requirements.md",
         "input_artifacts": [BUSINESS_ANALYSIS_MD, BUSINESS_ANALYSIS_JSON],
         "expected_outputs": [ARCHITECTURE_MD, ARCHITECTURE_JSON, ARCHITECTURE_MMD],
@@ -51,7 +53,7 @@ def test_architecture_prompt_scopes_codex_to_architecture_artifacts(tmp_path):
     assert ARCHITECTURE_JSON in prompt
     assert ARCHITECTURE_MMD in prompt
     assert "Write only the three allowed architecture artifacts" in prompt
-    assert "Do not create sprint plans, feature queues" in prompt
+    assert "Do not create sprint plans, planned work item contracts" in prompt
     assert "Available agent registry snapshot" in prompt
     assert "architect-agent: Architect Agent" in prompt
     assert "Head Agent coordinates this planning flow" in prompt
@@ -84,7 +86,7 @@ def test_architecture_prompt_scopes_codex_to_architecture_artifacts(tmp_path):
     assert "Use arrows only for meaningful runtime calls" in prompt
     assert "show it as a boundary/environment" in prompt
     assert "Put process notes, QA implications" in prompt
-    assert "sprint plans, feature queues, and delivery sequencing are not" in prompt
+    assert "sprint plans, planned work item contracts, and delivery sequencing are not" in prompt
     assert "quality attributes" in prompt
     assert "technical_decisions" in prompt
     assert "Preserve every distinct feature/source label" in prompt
@@ -92,7 +94,8 @@ def test_architecture_prompt_scopes_codex_to_architecture_artifacts(tmp_path):
     assert "Do not overrule BA non-goals" in prompt
 
 
-def test_architect_codex_runner_maps_valid_contract_to_completed_result(tmp_path):
+def test_architect_codex_runner_maps_valid_contract_to_completed_result(tmp_path, monkeypatch):
+    _register_run(tmp_path, monkeypatch)
     (tmp_path / "00-requirements.md").write_text("Build a task tracker.\n", encoding="utf-8")
     (tmp_path / BUSINESS_ANALYSIS_MD).parent.mkdir(parents=True)
     (tmp_path / BUSINESS_ANALYSIS_MD).write_text("# BA\n", encoding="utf-8")
@@ -106,7 +109,7 @@ def test_architect_codex_runner_maps_valid_contract_to_completed_result(tmp_path
             {
                 "run_id": "run",
                 "agent_id": "architect-agent",
-                "model": "gpt-5.3-codex",
+                "model": "gpt-5.5",
                 "requirements_artifact": "00-requirements.md",
                 "input_artifacts": [BUSINESS_ANALYSIS_MD, BUSINESS_ANALYSIS_JSON],
                 "expected_outputs": [ARCHITECTURE_MD, ARCHITECTURE_JSON, ARCHITECTURE_MMD],
@@ -170,3 +173,31 @@ def test_architect_codex_runner_maps_valid_contract_to_completed_result(tmp_path
         for artifact in result.output_artifacts
     )
     assert result.blocking_findings == []
+
+
+def _register_run(run_dir: Path, monkeypatch) -> None:
+    db_path = run_dir / "console.db"
+    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
+    repo = ConsoleRepository(db_path)
+    repo.init_schema()
+    user = repo.create_user(
+        email="arch@example.test",
+        username="arch-user",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Architecture",
+        request_text="Design",
+        mode="internal_tool",
+        complexity="simple",
+        status="running",
+    )
+    repo.create_run(
+        project_id=project.id,
+        run_uid="run",
+        run_dir=run_dir,
+        status="running",
+        mode="internal_tool",
+        reasoning="medium",
+    )

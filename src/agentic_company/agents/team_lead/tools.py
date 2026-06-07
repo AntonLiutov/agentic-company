@@ -1,9 +1,9 @@
-"""Team Lead tool implementations exposed to the AgentExecutor."""
+"""Team Lead tool implementations backed by explicit DB work-item contracts."""
 
 from __future__ import annotations
 
 import json
-import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,21 +12,13 @@ from uuid import uuid4
 
 from agentic_company.agents.handoff.contracts import (
     FINAL_PROJECT_REPORT_SCOPE,
-    SPRINT_HANDOFF_SCOPE,
     handoff_contract_paths_for_scope,
 )
 from agentic_company.agents.registry import route_for_node
-from agentic_company.agents.team_lead.contracts import (
-    TeamLeadDecision,
-    TeamLeadToolName,
-    env_value,
-)
-from agentic_company.platform.agent_contracts import extend_artifacts
-from agentic_company.platform.artifacts import (
-    EXECUTION_REQUEST_ARTIFACT,
-    artifact_ref,
-    read_json_object_artifact,
-)
+from agentic_company.agents.team_lead.contracts import TeamLeadDecision, TeamLeadToolName
+from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
+from agentic_company.platform.agent_runtime import agent_env_value
+from agentic_company.platform.artifact_registry import artifact_id_for
 from agentic_company.platform.codex_review import (
     CodexReviewRequest,
     CodexReviewResult,
@@ -39,11 +31,23 @@ from agentic_company.platform.messages import (
     AgentMessageStore,
     append_agent_response,
 )
-from agentic_company.platform.sprints import (
-    TeamLeadResult,
-    features_for_sprint,
-    set_work_item_status,
-    sync_work_board,
+from agentic_company.platform.run_trace import record_tool_call_event
+from agentic_company.platform.runtime_db import (
+    artifact_links_for_paths,
+    artifact_paths_by_type,
+    claim_work_item_for_execution,
+    completed_work_item_ids,
+    count_tool_call_events,
+    get_work_item,
+    list_sprint_work_items,
+    mark_sprint_blocked,
+    mark_sprint_done,
+    mark_sprint_started,
+    next_work_item,
+    record_artifact_link,
+    record_work_item_transition,
+    sprint_completion_state,
+    sprint_is_final,
 )
 from agentic_company.platform.state import (
     DeliveryState,
@@ -56,6 +60,15 @@ from agentic_company.platform.status_inspector import (
     StatusInspectionRequest,
     StatusInspectorLike,
     StatusInspectorRunner,
+)
+from agentic_company.platform.tool_contracts import (
+    ArtifactRegistrationRequest,
+    ToolCallResult,
+    ToolDashboardUpdate,
+    ToolExecutionRecord,
+    dashboard_status_from_runtime_status,
+    failure_mode_from_status,
+    normalize_external_reference,
 )
 
 TEAM_LEAD_AGENT_ID = "team-lead-agent"
@@ -89,7 +102,7 @@ class TeamLeadExecutorResult:
 
 @dataclass(slots=True)
 class TeamLeadToolbox:
-    """Stateful tools exposed to the LangChain executor."""
+    """Stateful strict-contract tools exposed to the LangChain executor."""
 
     delivery_state: DeliveryState
     sprint: dict[str, Any]
@@ -98,264 +111,191 @@ class TeamLeadToolbox:
     codex_reviewer: CodexReviewerLike | None = None
     status_inspector: StatusInspectorLike | None = None
     history: list[dict[str, Any]] | None = None
+    initial_tool_call_count: int = 0
 
     def __post_init__(self) -> None:
         if self.history is None:
-            self.history = _read_history_artifact(self.delivery_state, self.sprint_id)
+            self.history = []
+        self.initial_tool_call_count = count_tool_call_events(
+            str(self.delivery_state["run_id"]),
+            agent_id=TEAM_LEAD_AGENT_ID,
+        )
+        try:
+            mark_sprint_started(str(self.delivery_state["run_id"]), self.sprint_id)
+        except ValueError:
+            pass
+
+    @property
+    def sprint_id(self) -> str:
+        return str(self.sprint.get("sprint_id") or self.sprint.get("id") or "sprint-01")
 
     def run_fullstack(
         self,
-        target: str | None = None,
+        work_item_id: str,
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
+        external_reference: str = "",
     ) -> str:
-        feature_id = self._feature_target(target)
-        if not feature_id:
-            self._record(
-                "run_fullstack",
-                target,
-                reason or "Fullstack requested without a valid feature.",
-                message,
-                result_status="team_lead_fullstack_waiting_for_feature",
-            )
-            return self._tool_response(
-                "Fullstack not run because no active sprint feature could be resolved from "
-                "target/message/state."
-            )
-        if self._feature_repair_blocked(feature_id):
-            self._record(
-                "run_fullstack",
-                feature_id,
-                reason or "Fullstack repair requested after QA blocked the feature.",
-                message,
-                result_status="team_lead_repair_blocked",
-            )
-            return self._tool_response(
-                "Fullstack repair not run because this feature is already QA blocked. "
-                "A human/operator must resume or override the blocked feature."
-            )
         return self._run_worker(
-            "run_fullstack", feature_id, reason, message, self.workers.fullstack
+            tool="run_fullstack",
+            node_name="fullstack",
+            work_item_id=work_item_id,
+            reason=reason,
+            message=message,
+            artifact_refs=artifact_refs,
+            external_reference=external_reference,
+            worker=self.workers.fullstack,
         )
 
-    def run_qa(self, target: str | None = None, reason: str = "", message: str = "") -> str:
-        feature_id = self._feature_target(target)
-        if not feature_id:
-            self._record(
-                "run_qa",
-                target,
-                reason or "QA requested without a valid feature.",
-                message,
-                result_status="team_lead_qa_waiting_for_feature",
-            )
-            return self._tool_response(
-                "QA not run because no active sprint feature could be resolved from "
-                "target/message/state."
-            )
-        if self._feature_repair_blocked(feature_id):
-            self._record(
-                "run_qa",
-                feature_id,
-                reason or "QA rerun requested after the feature was blocked.",
-                message,
-                result_status="team_lead_qa_blocked",
-            )
-            return self._tool_response(
-                "QA not run because this feature is already blocked after the allowed repair "
-                "attempts. A human/operator must resume or override the blocked feature."
-            )
-        return self._run_worker("run_qa", feature_id, reason, message, self.workers.qa)
+    def run_qa(
+        self,
+        work_item_id: str,
+        reason: str = "",
+        message: str = "",
+        artifact_refs: str = "",
+        external_reference: str = "",
+    ) -> str:
+        return self._run_worker(
+            tool="run_qa",
+            node_name="qa",
+            work_item_id=work_item_id,
+            reason=reason,
+            message=message,
+            artifact_refs=artifact_refs,
+            external_reference=external_reference,
+            worker=self.workers.qa,
+        )
 
     def run_deployment(
         self,
-        target: str | None = None,
+        work_item_id: str,
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
+        external_reference: str = "",
     ) -> str:
-        if limit_response := self._limit_response(message):
-            return limit_response
         return self._run_worker(
-            "run_deployment",
-            target or self.sprint_id,
-            reason,
-            message,
-            self.workers.deployment,
+            tool="run_deployment",
+            node_name="deployment",
+            work_item_id=work_item_id,
+            reason=reason,
+            message=message,
+            artifact_refs=artifact_refs,
+            external_reference=external_reference,
+            worker=self.workers.deployment,
         )
 
     def run_post_deploy_qa(
         self,
-        target: str | None = None,
+        work_item_id: str,
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
+        external_reference: str = "",
     ) -> str:
-        if limit_response := self._limit_response(message):
-            return limit_response
-        updated = {**self.delivery_state}
-        post_deploy_feature = {
-            "id": "post-deploy",
-            "title": "Post-deployment QA for sprint release",
-            "acceptance_criteria": [
-                "Public deployment targets are reachable.",
-                "Delivered sprint features work against the deployed runtime.",
-                "No release-blocking deployment or runtime issue is visible.",
-            ],
-            "delivery_order": 10_000,
-        }
-        updated["active_feature_id"] = "post-deploy"
-        updated["feature_queue"] = [
-            *[
-                feature
-                for feature in list(updated.get("feature_queue", []))
-                if str(feature.get("id")) != "post-deploy"
-            ],
-            post_deploy_feature,
-        ]
-        outbound = append_agent_call_message(
-            updated,
+        return self._run_worker(
+            tool="run_post_deploy_qa",
             node_name="qa",
-            target="post-deploy",
+            work_item_id=work_item_id,
             reason=reason,
             message=message,
-        )
-        write_request(
-            updated,
-            kind="post_deploy_quality_request",
-            target_agent="qa-agent",
-            payload={
-                "sprint_id": self.sprint_id,
-                "feature": post_deploy_feature,
-                "public_url": updated.get("public_url"),
-                "public_urls": updated.get("public_urls", []),
-                "deployment_status": updated.get("deployment_status"),
-                "message": message,
-                "message_id": outbound.message_id,
-                "message_intent": outbound.intent,
-                "artifact_refs": outbound.artifact_refs,
-            },
-        )
-        write_temporary_execution_feature(updated, post_deploy_feature)
-        write_team_lead_event(
-            updated,
-            "team_lead_post_deploy_qa_started",
-            {"deployment_status": updated.get("deployment_status")},
-        )
-        checked = self.workers.qa(cast(DeliveryState, updated))
-        checked["post_deploy_qa_status"] = checked.get("qa_status")
-        if checked.get("post_deploy_qa_status") == "passed":
-            checked["post_deploy_repair_attempts"] = 0
-        else:
-            attempts = int(checked.get("post_deploy_repair_attempts", 0)) + 1
-            checked["post_deploy_repair_attempts"] = attempts
-            if attempts >= int(checked.get("max_repair_attempts", 5)):
-                checked["blockers"] = [
-                    *checked.get("blockers", []),
-                    f"Post-deployment QA failed after {attempts} attempts.",
-                ]
-        checked["feature_queue"] = [
-            feature
-            for feature in list(checked.get("feature_queue", []))
-            if str(feature.get("id")) != "post-deploy"
-        ]
-        checked["completed_feature_ids"] = [
-            feature_id
-            for feature_id in list(checked.get("completed_feature_ids", []))
-            if feature_id != "post-deploy"
-        ]
-        feature_statuses = dict(checked.get("feature_statuses", {}))
-        feature_statuses.pop("post-deploy", None)
-        checked["feature_statuses"] = feature_statuses
-        if checked.get("active_feature_id") == "post-deploy":
-            checked["active_feature_id"] = None
-        write_team_lead_event(
-            checked,
-            "team_lead_post_deploy_qa_completed",
-            {"status": checked.get("post_deploy_qa_status")},
-        )
-        self.delivery_state = sync_work_board(checked, sprint_id=self.sprint_id)
-        downstream_response = latest_downstream_response(
-            self.delivery_state,
-            from_agent="qa-agent",
-            correlation_id="post-deploy",
-        )
-        self._record("run_post_deploy_qa", target or "post-deploy", reason, message)
-        return self._tool_response(
-            f"Post-deploy QA status: {checked.get('post_deploy_qa_status')}.",
-            downstream_response=downstream_response,
+            artifact_refs=artifact_refs,
+            external_reference=external_reference,
+            worker=self.workers.qa,
         )
 
     def run_handoff(
         self,
+        work_item_id: str,
         handoff_scope: str,
         sprint_id: str = "",
         reason: str = "",
         message: str = "",
+        artifact_refs: str = "",
+        external_reference: str = "",
     ) -> str:
-        if limit_response := self._limit_response(message):
-            return limit_response
+        item_id = _clean_work_item_id(work_item_id)
+        if error := self._contract_error("run_handoff", item_id, reason, message):
+            return error
         try:
-            contract_paths = handoff_contract_paths_for_scope(
-                handoff_scope,
-                sprint_id=sprint_id,
-            )
+            contract_paths = handoff_contract_paths_for_scope(handoff_scope, sprint_id=sprint_id)
         except ValueError as exc:
-            self._record(
+            return self._contract_error_response("run_handoff", item_id, str(exc), message)
+        if handoff_scope == FINAL_PROJECT_REPORT_SCOPE and not _final_project_report_allowed(
+            self.delivery_state,
+            self.sprint_id,
+        ):
+            return self._contract_error_response(
                 "run_handoff",
-                handoff_scope or None,
-                reason or "Handoff requested with an invalid scope contract.",
+                item_id,
+                "Final project report is not allowed before planned sprint completion.",
                 message,
-                result_status="team_lead_handoff_contract_invalid",
+                status="team_lead_final_handoff_not_ready",
             )
-            return self._tool_response(f"Handoff not run: {exc}")
 
-        target = sprint_id if handoff_scope == SPRINT_HANDOFF_SCOPE else FINAL_PROJECT_REPORT_SCOPE
         updated = {**self.delivery_state}
         updated["handoff_scope"] = handoff_scope
         updated["handoff_sprint_id"] = sprint_id
         updated["handoff_output_dir"] = str(Path(contract_paths.html).parent)
         updated["handoff_expected_outputs"] = contract_paths.as_list()
         self.delivery_state = cast(DeliveryState, updated)
-        return self._run_worker("run_handoff", target, reason, message, self.workers.handoff)
+        return self._run_worker(
+            tool="run_handoff",
+            node_name="handoff",
+            work_item_id=item_id,
+            reason=reason,
+            message=message,
+            artifact_refs=artifact_refs,
+            external_reference=external_reference,
+            worker=self.workers.handoff,
+        )
 
     def codex_review(
         self,
+        work_item_id: str,
         target_agent: str = "",
         purpose: str = "",
         question: str = "",
         artifact_refs: str = "",
         intent: str = "review_feedback",
-        target: str | None = None,
         reason: str = "",
         message: str = "",
     ) -> str:
-        if limit_response := self._limit_response(message or question):
+        item_id = _clean_work_item_id(work_item_id)
+        if error := self._contract_error("codex_review", item_id, reason or purpose, message):
+            return error
+        if limit_response := self._limit_response("codex_review", item_id, message or question):
             return limit_response
-        review_item_id = _review_work_item_id(self.delivery_state, target)
-        if review_item_id:
-            self.delivery_state = set_work_item_status(
-                self.delivery_state,
-                review_item_id,
-                "review",
-                active=True,
-                sprint_id=self.sprint_id,
-            )
-            checkpoint_delivery_state(self.delivery_state)
+        started = time.perf_counter()
+        item = get_work_item(str(self.delivery_state["run_id"]), item_id)
         refs = _split_artifact_refs(artifact_refs)
+        self._transition(
+            item_id,
+            "codex_review",
+            TEAM_LEAD_CODEX_REVIEW_AGENT_ID,
+            "review",
+            reason or purpose or "Review requested.",
+        )
         review_request = CodexReviewRequest(
             run_id=self.delivery_state["run_id"],
             run_dir=Path(self.delivery_state["run_dir"]),
             requesting_agent=TEAM_LEAD_AGENT_ID,
             target_agent=target_agent or None,
-            correlation_id=target or self.sprint_id,
+            correlation_id=item.work_item_id,
             purpose=purpose or reason or "Review referenced delivery artifacts.",
             question=question
             or message
             or reason
-            or "Review the referenced artifacts according to the requesting agent's purpose.",
+            or "Review the referenced artifacts against the explicit work item.",
             artifact_refs=refs,
+            model=agent_env_value("TEAM_LEAD_CODEX_REVIEW_MODEL", self.delivery_state)
+            or agent_env_value("AGENT_CODEX_MODEL", self.delivery_state)
+            or DEFAULT_CODEX_MODEL,
             execution_id=build_agent_execution_id(
                 run_id=str(self.delivery_state["run_id"]),
                 agent_id=TEAM_LEAD_AGENT_ID,
-                target=target or self.sprint_id,
+                correlation_id=item.work_item_id,
                 intent="codex_review",
                 message_id=question or message or reason or target_agent,
             ),
@@ -363,8 +303,7 @@ class TeamLeadToolbox:
                 self.delivery_state, TEAM_LEAD_CODEX_REVIEW_AGENT_ID
             ),
         )
-        reviewer = self.codex_reviewer or CodexReviewRunner()
-        result = reviewer.run(review_request)
+        result = (self.codex_reviewer or CodexReviewRunner()).run(review_request)
         record_codex_thread(
             self.delivery_state, TEAM_LEAD_CODEX_REVIEW_AGENT_ID, result.codex_thread_id
         )
@@ -377,19 +316,44 @@ class TeamLeadToolbox:
                     intent=intent or "review_feedback",
                     content=result.content,
                     artifact_refs=refs,
-                    correlation_id=target or self.sprint_id,
+                    correlation_id=item.work_item_id,
                     execution_id=result.execution_id or None,
                 )
             )
-        self._record("codex_review", target_agent or target or self.sprint_id, reason, message)
+        _register_team_lead_tool_artifacts(
+            self.delivery_state,
+            [
+                result.summary_artifact,
+                result.prompt_artifact,
+                result.log_artifact,
+                result.raw_events_artifact,
+            ],
+            artifact_type="review_output",
+            source_tool="codex_review",
+            work_item_id=item.work_item_id,
+        )
+        self._record(
+            "codex_review",
+            item.work_item_id,
+            reason or purpose,
+            message or question,
+            result_status=result.status,
+        )
+        self._transition(
+            item.work_item_id,
+            "codex_review",
+            TEAM_LEAD_AGENT_ID,
+            "review",
+            f"Review {result.status}.",
+        )
         return self._tool_response(
+            "codex_review",
             f"Codex review {result.status}.",
             downstream_response={
                 "from_agent": "codex-review",
                 "intent": "codex_review",
                 "content": result.content,
                 "artifact_refs": [
-                    *refs,
                     result.summary_artifact,
                     result.prompt_artifact,
                     result.log_artifact,
@@ -397,56 +361,76 @@ class TeamLeadToolbox:
                 ],
                 "message_id": sent_message.message_id if sent_message else None,
                 "to_agent": target_agent or None,
-                "correlation_id": target or self.sprint_id,
+                "correlation_id": item.work_item_id,
                 "execution_id": result.execution_id,
                 "codex_thread_id": result.codex_thread_id,
             },
+            duration_ms=int((time.perf_counter() - started) * 1000),
+            work_item_id=item.work_item_id,
         )
 
     def inspect_sprint_status(
         self,
-        target: str | None = None,
+        work_item_id: str,
         reason: str = "",
         message: str = "",
+        sprint_id: str = "",
+        artifact_refs: str = "",
     ) -> str:
-        if limit_response := self._limit_response(message):
+        item_id = _clean_work_item_id(work_item_id)
+        if error := self._contract_error("inspect_sprint_status", item_id, reason, message):
+            return error
+        if sprint_id and sprint_id != self.sprint_id:
+            return self._contract_error_response(
+                "inspect_sprint_status",
+                item_id,
+                f"inspect_sprint_status sprint_id must be {self.sprint_id}.",
+                message or reason,
+            )
+        try:
+            explicit_refs = _validated_artifact_refs(
+                str(self.delivery_state["run_id"]),
+                artifact_refs,
+            )
+        except ValueError as exc:
+            return self._contract_error_response(
+                "inspect_sprint_status",
+                item_id,
+                str(exc),
+                message or reason,
+            )
+        if limit_response := self._limit_response("inspect_sprint_status", item_id, message):
             return limit_response
-        refs = _sprint_status_artifact_refs(self.delivery_state, self.sprint_id)
-        inspection_request = StatusInspectionRequest(
+        started = time.perf_counter()
+        item = get_work_item(str(self.delivery_state["run_id"]), item_id)
+        refs = _unique_paths(
+            [*_sprint_status_artifact_refs(self.delivery_state, self.sprint_id), *explicit_refs]
+        )
+        request = StatusInspectionRequest(
             run_id=self.delivery_state["run_id"],
             run_dir=Path(self.delivery_state["run_dir"]),
             requesting_agent=TEAM_LEAD_AGENT_ID,
             scope="sprint",
-            purpose=(
-                reason
-                or "Inspect the active sprint work board, worker calls, gates, evidence, "
-                "blockers, and completion readiness. Do not choose Team Lead routing."
-            ),
-            status_context=_sprint_status_context(
-                self.delivery_state,
-                self.sprint,
-                self.sprint_id,
-                self.history or [],
-            ),
+            purpose=reason or "Inspect explicit DB work items, blockers, and handoff readiness.",
+            status_context=_sprint_status_context(self.delivery_state, self.sprint_id),
             artifact_refs=refs,
-            correlation_id=target or self.sprint_id,
-            model=env_value("TEAM_LEAD_STATUS_INSPECTOR_CODEX_MODEL", self.delivery_state)
-            or env_value("AGENT_CODEX_MODEL", self.delivery_state)
-            or "gpt-5.3-codex",
+            correlation_id=item.work_item_id,
+            model=agent_env_value("TEAM_LEAD_STATUS_INSPECTOR_CODEX_MODEL", self.delivery_state)
+            or agent_env_value("AGENT_CODEX_MODEL", self.delivery_state)
+            or DEFAULT_CODEX_MODEL,
             execution_id=build_agent_execution_id(
                 run_id=str(self.delivery_state["run_id"]),
                 agent_id=TEAM_LEAD_AGENT_ID,
-                target=target or self.sprint_id,
+                correlation_id=item.work_item_id,
                 intent="inspect_sprint_status",
-                message_id=message or reason or target or "sprint-status",
+                message_id=message or reason or item.work_item_id,
             ),
             codex_resume_thread_id=codex_resume_thread_id(
                 self.delivery_state,
                 TEAM_LEAD_STATUS_INSPECTOR_AGENT_ID,
             ),
         )
-        inspector = self.status_inspector or StatusInspectorRunner()
-        result = inspector.run(inspection_request)
+        result = (self.status_inspector or StatusInspectorRunner()).run(request)
         self.delivery_state["last_sprint_status_inspection"] = result.payload
         self.delivery_state["last_sprint_status_inspection_artifacts"] = [
             ref
@@ -459,6 +443,19 @@ class TeamLeadToolbox:
             ]
             if ref
         ]
+        _register_team_lead_tool_artifacts(
+            self.delivery_state,
+            [
+                result.result_artifact,
+                result.summary_artifact,
+                result.prompt_artifact,
+                result.log_artifact,
+                result.raw_events_artifact,
+            ],
+            artifact_type="status_inspection",
+            source_tool="inspect_sprint_status",
+            work_item_id=item.work_item_id,
+        )
         record_codex_thread(
             self.delivery_state,
             TEAM_LEAD_STATUS_INSPECTOR_AGENT_ID,
@@ -466,662 +463,709 @@ class TeamLeadToolbox:
         )
         self._record(
             "inspect_sprint_status",
-            target or self.sprint_id,
+            item.work_item_id,
             reason,
             message,
             result_status=str(result.payload.get("sprint_status") or result.status),
         )
+        self._transition(
+            item.work_item_id,
+            "inspect_sprint_status",
+            TEAM_LEAD_AGENT_ID,
+            "review",
+            f"Sprint status inspection {result.status}.",
+        )
         return self._tool_response(
+            "inspect_sprint_status",
             f"Sprint status inspection {result.status}.",
             downstream_response={
                 "from_agent": "codex-status-inspector",
                 "intent": "inspect_sprint_status",
                 "content": result.payload,
                 "artifact_refs": [
-                    *result.artifact_refs,
                     result.result_artifact,
                     result.summary_artifact,
                     result.prompt_artifact,
                     result.log_artifact,
                     result.raw_events_artifact,
                 ],
-                "correlation_id": target or self.sprint_id,
+                "correlation_id": item.work_item_id,
                 "execution_id": result.execution_id,
                 "codex_thread_id": result.codex_thread_id,
+            },
+            duration_ms=int((time.perf_counter() - started) * 1000),
+            work_item_id=item.work_item_id,
+            input_summary={
+                "work_item_id": item.work_item_id,
+                "sprint_id": self.sprint_id,
+                "reason": reason,
+                "message": message,
+                "artifact_refs": explicit_refs,
             },
         )
 
     def complete_sprint(
         self,
-        target: str | None = None,
+        work_item_id: str,
         reason: str = "",
         message: str = "",
+        sprint_id: str = "",
+        artifact_refs: str = "",
     ) -> str:
-        if limit_response := self._limit_response(message):
-            return limit_response
+        item_id = _clean_work_item_id(work_item_id)
+        if error := self._contract_error("complete_sprint", item_id, reason, message):
+            return error
+        if sprint_id and sprint_id != self.sprint_id:
+            return self._contract_error_response(
+                "complete_sprint",
+                item_id,
+                f"complete_sprint sprint_id must be {self.sprint_id}.",
+                message or reason,
+            )
+        try:
+            explicit_refs = _validated_artifact_refs(
+                str(self.delivery_state["run_id"]),
+                artifact_refs,
+            )
+        except ValueError as exc:
+            return self._contract_error_response("complete_sprint", item_id, str(exc), message)
+        completion = sprint_completion_state(str(self.delivery_state["run_id"]), self.sprint_id)
+        if not completion.has_items:
+            return self._contract_error_response(
+                "complete_sprint",
+                item_id,
+                f"Sprint {self.sprint_id} has no DB work items.",
+                message or reason,
+                status="sprint_empty",
+            )
+        if not completion.is_complete:
+            return self._contract_error_response(
+                "complete_sprint",
+                item_id,
+                f"Sprint {self.sprint_id} still has pending or blocked DB work items.",
+                message or reason,
+                status="sprint_not_complete",
+            )
         self.delivery_state = mark_node_completed(
             self.delivery_state,
             node_name="team_lead",
             stage="team_lead",
             status="team_lead_sprint_handoff_ready",
         )
+        self.delivery_state["blockers"] = []
         write_team_lead_event(
             self.delivery_state,
             "team_lead_complete_sprint_requested",
-            {"reason": reason, "message": message},
+            {"reason": reason, "message": message, "work_item_id": item_id},
         )
-        self._record("complete_sprint", target or self.sprint_id, reason, message)
+        mark_sprint_done(str(self.delivery_state["run_id"]), self.sprint_id)
+        final_status = (
+            "done"
+            if sprint_is_final(str(self.delivery_state["run_id"]), self.sprint_id)
+            else "in_progress"
+        )
+        self._transition(
+            item_id,
+            "complete_sprint",
+            TEAM_LEAD_AGENT_ID,
+            final_status,
+            reason or "Sprint completed.",
+        )
+        self._record("complete_sprint", item_id, reason, message)
         return self._tool_response(
+            "complete_sprint",
             "Sprint completed.",
-            artifact_refs=_team_lead_completion_artifact_refs(self.delivery_state, self.sprint_id),
+            artifact_refs=_unique_paths(
+                [
+                    *_team_lead_completion_artifact_refs(self.delivery_state, self.sprint_id),
+                    *explicit_refs,
+                ]
+            ),
+            work_item_id=item_id,
+            input_summary={
+                "work_item_id": item_id,
+                "sprint_id": self.sprint_id,
+                "reason": reason,
+                "message": message,
+                "artifact_refs": explicit_refs,
+            },
         )
 
     def block_sprint(
         self,
         reason: str,
-        target: str | None = None,
+        work_item_id: str,
         message: str = "",
+        artifact_refs: str = "",
+        external_reference: str = "",
     ) -> str:
-        self.delivery_state = mark_node_completed(
-            self.delivery_state,
-            node_name="team_lead",
-            stage="team_lead",
-            status="team_lead_sprint_blocked",
+        item_id = _clean_work_item_id(work_item_id)
+        if error := self._contract_error("block_sprint", item_id, reason, message):
+            return error
+        try:
+            explicit_refs = _validated_artifact_refs(
+                str(self.delivery_state["run_id"]),
+                artifact_refs,
+            )
+        except ValueError as exc:
+            return self._contract_error_response("block_sprint", item_id, str(exc), message)
+        try:
+            external_ref = normalize_external_reference(external_reference)
+        except ValueError as exc:
+            return self._contract_error_response("block_sprint", item_id, str(exc), message)
+        blockers = [*self.delivery_state.get("blockers", []), reason]
+        self.delivery_state = cast(
+            DeliveryState,
+            {
+                **self.delivery_state,
+                "status": "team_lead_sprint_blocked",
+                "blockers": blockers,
+            },
         )
-        self.delivery_state["blockers"] = [*self.delivery_state.get("blockers", []), reason]
         write_team_lead_event(
             self.delivery_state,
             "team_lead_blocked_sprint",
-            TeamLeadDecision("block_sprint", reason, target, message).to_dict(),
+            {"reason": reason, "message": message, "work_item_id": item_id},
         )
-        self._record("block_sprint", target, reason, message)
-        return self._tool_response("Sprint blocked: " + reason)
-
-    @property
-    def sprint_id(self) -> str:
-        return str(
-            self.sprint.get("sprint_id")
-            or self.delivery_state.get("team_lead_sprint_id")
-            or "sprint-01"
+        mark_sprint_blocked(str(self.delivery_state["run_id"]), self.sprint_id)
+        self._transition(item_id, "block_sprint", TEAM_LEAD_AGENT_ID, "blocked", reason)
+        self._record("block_sprint", item_id, reason, message, result_status="blocked")
+        return self._tool_response(
+            "block_sprint",
+            f"Sprint blocked: {reason}",
+            artifact_refs=explicit_refs,
+            status_override="blocked",
+            work_item_id=item_id,
+            input_summary=_input_summary(
+                work_item_id=item_id,
+                sprint_id=self.sprint_id,
+                reason=reason,
+                message=message,
+                artifact_refs=explicit_refs,
+                external_reference=external_ref,
+            ),
         )
 
     def result(self) -> TeamLeadExecutorResult:
         write_history_artifact(self.delivery_state, self.sprint_id, self.history or [])
-        checkpoint_delivery_state(self.delivery_state)
-        return TeamLeadExecutorResult(self.delivery_state, list(self.history or []))
+        return TeamLeadExecutorResult(self.delivery_state, self.history or [])
 
-    def _feature_target(self, target: str | None) -> str | None:
-        feature_ids = {
-            str(feature.get("id"))
-            for feature in features_for_sprint(self.delivery_state, self.sprint_id)
-            if feature.get("id")
-        }
-        candidates = [
-            _extract_feature_id(str(target or ""), feature_ids),
-            str(self.delivery_state.get("active_feature_id") or ""),
-        ]
-        next_feature = next_feature_for_state(self.delivery_state, self.sprint_id)
-        if next_feature:
-            candidates.append(str(next_feature["id"]))
-        for feature_id in candidates:
-            feature = feature_by_id(self.delivery_state, feature_id)
-            if feature_id and feature and self._feature_in_current_sprint(feature):
-                return feature_id
-        return None
+    def tool_calls_made(self) -> bool:
+        return (
+            count_tool_call_events(str(self.delivery_state["run_id"]), agent_id=TEAM_LEAD_AGENT_ID)
+            > self.initial_tool_call_count
+        )
 
-    def _feature_in_current_sprint(self, feature: dict[str, Any]) -> bool:
-        current_ids = {
-            str(item.get("id"))
-            for item in features_for_sprint(self.delivery_state, self.sprint_id)
-            if item.get("id")
+    def reached_terminal_state(self) -> bool:
+        if self.delivery_state.get("blockers"):
+            return True
+        status = str(self.delivery_state.get("status") or "")
+        sprint_state = sprint_completion_state(str(self.delivery_state["run_id"]), self.sprint_id)
+        return status == "team_lead_sprint_handoff_ready" or sprint_state.status in {
+            "done",
+            "blocked",
         }
-        return str(feature.get("id")) in current_ids
+
+    def block_incomplete_execution(self) -> None:
+        sprint_state = sprint_completion_state(str(self.delivery_state["run_id"]), self.sprint_id)
+        next_item = (
+            f" Next DB work item still pending: {sprint_state.next_work_item_id}."
+            if sprint_state.next_work_item_id
+            else ""
+        )
+        status = str(self.delivery_state.get("status") or "")
+        self.block_sprint(
+            reason=(
+                "Team Lead AgentExecutor stopped before reaching a terminal sprint state."
+                + next_item
+                + f" Current status: {status or 'unknown'}."
+            ),
+            work_item_id="PLAN-04",
+            message="Team Lead must continue explicit DB work-item routing or block with evidence.",
+        )
 
     def _run_worker(
         self,
+        *,
         tool: TeamLeadToolName,
-        target: str,
+        node_name: str,
+        work_item_id: str,
         reason: str,
         message: str,
         worker: TeamLeadWorker,
+        artifact_refs: str = "",
+        external_reference: str = "",
     ) -> str:
-        if limit_response := self._limit_response(message):
+        item_id = _clean_work_item_id(work_item_id)
+        if error := self._contract_error(tool, item_id, reason, message):
+            return error
+        try:
+            external_ref = normalize_external_reference(external_reference)
+        except ValueError as exc:
+            return self._contract_error_response(tool, item_id, str(exc), message)
+        try:
+            explicit_refs = _validated_artifact_refs(
+                str(self.delivery_state["run_id"]),
+                artifact_refs,
+            )
+        except ValueError as exc:
+            return self._contract_error_response(tool, item_id, str(exc), message)
+        if limit_response := self._limit_response(tool, item_id, message):
             return limit_response
-        updated = {**self.delivery_state}
-        if target != self.sprint_id:
-            if tool == "run_fullstack":
-                updated = set_work_item_status(
-                    cast(DeliveryState, updated),
-                    target,
-                    "in_progress",
-                    active=True,
-                    sprint_id=self.sprint_id,
-                )
-            elif tool == "run_qa":
-                updated = set_work_item_status(
-                    cast(DeliveryState, updated),
-                    target,
-                    "in_qa",
-                    active=True,
-                    sprint_id=self.sprint_id,
-                )
-        self.delivery_state = cast(DeliveryState, updated)
-        node_name = tool.removeprefix("run_")
+        started = time.perf_counter()
+        item = get_work_item(str(self.delivery_state["run_id"]), item_id)
+        target_agent = target_agent_id(node_name)
+        tool_call_id = _new_tool_call_id(self.delivery_state, tool)
+        claim = self._claim_worker_start(
+            item.work_item_id,
+            tool,
+            target_agent,
+            reason or message or f"{tool} started {item.work_item_id}.",
+            tool_call_id=tool_call_id,
+        )
+        if not claim.claimed:
+            return self._contract_error_response(
+                tool,
+                item.work_item_id,
+                claim.reason or "Work item execution precondition failed.",
+                message or reason,
+                status="work_item_precondition_failed",
+                tool_call_id=tool_call_id,
+            )
         outbound = append_agent_call_message(
-            updated,
+            self.delivery_state,
             node_name=node_name,
-            target=target,
+            work_item_id=item.work_item_id,
             reason=reason,
             message=message,
-        )
-        target_agent = outbound.to_agent
-        execution_id = outbound.execution_id or ""
-        updated["agent_execution_id"] = execution_id
-        updated["agent_execution_intent"] = outbound.intent
-        updated["agent_execution_agent_id"] = target_agent
-        self.delivery_state = sync_work_board(
-            cast(DeliveryState, updated),
-            sprint_id=self.sprint_id,
+            artifact_refs=explicit_refs,
         )
         write_request(
             self.delivery_state,
-            kind=f"{node_name}_request",
+            kind=f"{tool}_request",
             target_agent=target_agent,
+            work_item_id=item.work_item_id,
             payload={
-                "sprint_id": self.sprint_id,
-                "active_feature_id": self.delivery_state.get("active_feature_id"),
+                "sprint_id": item.sprint_id,
+                "work_item_id": item.work_item_id,
+                "work_item": item.to_dict(),
                 "message": message,
+                "reason": reason,
                 "message_id": outbound.message_id,
                 "message_intent": outbound.intent,
-                "execution_id": execution_id,
                 "artifact_refs": outbound.artifact_refs,
+                "external_reference": external_ref,
             },
         )
         write_team_lead_event(
             self.delivery_state,
             "team_lead_worker_started",
-            {
-                "node": node_name,
-                "active_feature_id": self.delivery_state.get("active_feature_id"),
-                "reason": reason,
-                "execution_id": execution_id,
-            },
+            {"work_item_id": item.work_item_id, "node": node_name, "tool": tool},
         )
-        checkpoint_delivery_state(self.delivery_state)
-        self.delivery_state = worker(self.delivery_state)
-        if tool == "run_fullstack" and str(self.delivery_state.get("status", "")).startswith(
-            "fullstack_feature_implemented"
-        ):
-            self.delivery_state = set_work_item_status(
-                self.delivery_state,
-                target,
-                "implemented",
-                active=True,
-                sprint_id=self.sprint_id,
-            )
-        else:
-            self.delivery_state = sync_work_board(self.delivery_state, sprint_id=self.sprint_id)
+        checked = worker(self.delivery_state)
+        self.delivery_state = checked
         downstream_response = latest_downstream_response(
             self.delivery_state,
             from_agent=target_agent,
-            correlation_id=target,
+            correlation_id=item.work_item_id,
         )
+        status = str(checked.get("status") or checked.get("stage") or "")
+        if downstream_response is None:
+            status = "worker_contract_error"
+            final_status = "blocked"
+            activity_message = (
+                f"{tool} did not return a correlated response for {item.work_item_id}."
+            )
+        else:
+            final_status = _status_for_tool_result(tool, status)
+            activity_message = _worker_activity_message(tool, item.work_item_id, final_status)
+        self._transition(
+            item.work_item_id,
+            tool,
+            target_agent,
+            final_status,
+            activity_message,
+            tool_call_id=tool_call_id,
+        )
+        self._record(tool, item.work_item_id, reason, message, result_status=status)
         write_team_lead_event(
             self.delivery_state,
             "team_lead_worker_completed",
-            {
-                "node": node_name,
-                "stage": self.delivery_state["stage"],
-                "status": self.delivery_state["status"],
-                "execution_id": execution_id,
-            },
+            {"work_item_id": item.work_item_id, "node": node_name, "tool": tool, "status": status},
         )
-        self._record(tool, target, reason, message)
         return self._tool_response(
-            f"{tool} completed with status {self.delivery_state.get('status')}.",
+            tool,
+            f"{tool} completed with status {status or final_status}.",
             downstream_response=downstream_response,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+            input_summary=_input_summary(
+                work_item_id=item.work_item_id,
+                sprint_id=item.sprint_id,
+                reason=reason,
+                message=message,
+                artifact_refs=explicit_refs,
+                external_reference=external_ref,
+            ),
+            status_override=status or final_status,
+            work_item_id=item.work_item_id,
+            tool_call_id=tool_call_id,
         )
 
-    def _record(
+    def _contract_error(
         self,
-        tool: TeamLeadToolName,
-        target: str | None,
+        tool: str,
+        work_item_id: str,
+        reason: str,
+        message: str,
+    ) -> str:
+        if work_item_id:
+            try:
+                get_work_item(str(self.delivery_state["run_id"]), work_item_id)
+            except ValueError as exc:
+                return self._contract_error_response(
+                    tool,
+                    work_item_id,
+                    str(exc),
+                    message,
+                    record_runtime_event=False,
+                )
+            return ""
+        return self._contract_error_response(
+            tool,
+            "",
+            "work_item_id is required; target/feature/active item Repair is disabled.",
+            message or reason,
+            record_runtime_event=False,
+        )
+
+    def _contract_error_response(
+        self,
+        tool: str,
+        work_item_id: str,
         reason: str,
         message: str,
         *,
-        result_status: str | None = None,
+        status: str = "contract_error",
+        tool_call_id: str = "",
+        record_runtime_event: bool = True,
+    ) -> str:
+        if record_runtime_event:
+            self._record(tool, work_item_id, reason, message, result_status=status)
+        return self._tool_response(
+            tool,
+            f"{tool} contract error: {reason}",
+            status_override=status,
+            work_item_id=work_item_id,
+            tool_call_id=tool_call_id,
+            record_tool_event=record_runtime_event,
+        )
+
+    def _limit_response(self, tool: str, work_item_id: str, message: str) -> str | None:
+        if self.max_steps <= 0:
+            return self._tool_response(
+                tool,
+                "Team Lead tool limit reached before this action.",
+                status_override="blocked",
+                work_item_id=work_item_id,
+            )
+        self.max_steps -= 1
+        return None
+
+    def _record(
+        self,
+        tool: str,
+        work_item_id: str,
+        reason: str,
+        message: str,
+        *,
+        result_status: str = "",
     ) -> None:
-        step = len(self.history or []) + 1
-        decision = TeamLeadDecision(tool, reason or "No reason provided.", target, message)
-        decision_path = write_decision_artifact(self.delivery_state, step, decision)
-        write_team_lead_event(
-            self.delivery_state,
-            "team_lead_decision",
-            {"step": step, "decision": decision.to_dict(), "artifact": decision_path},
-        )
-        status = result_status or str(self.delivery_state.get("status") or "")
-        history = self.history or []
-        history.append(
-            {
-                "step": step,
-                "tool": tool,
-                "target": target,
-                "reason": reason,
-                "message": message,
-                "result_status": status,
-                "stage": self.delivery_state.get("stage"),
-                "active_feature_id": self.delivery_state.get("active_feature_id"),
-                "qa_status": self.delivery_state.get("qa_status"),
-                "deployment_status": self.delivery_state.get("deployment_status"),
-                "post_deploy_qa_status": self.delivery_state.get("post_deploy_qa_status"),
-                "blockers": self.delivery_state.get("blockers", []),
-            }
-        )
+        history = self.history if self.history is not None else []
         self.history = history
+        step = len(history) + 1
+        decision = TeamLeadDecision(
+            cast(TeamLeadToolName, tool),
+            reason or "No reason provided.",
+            work_item_id,
+            message,
+        )
+        artifact = write_decision_artifact(self.delivery_state, step, decision)
+        history_entry = {
+            **decision.to_dict(),
+            "step": step,
+            "artifact": artifact,
+            "result_status": result_status,
+            "work_item_id": work_item_id,
+        }
+        history.append(history_entry)
         write_history_artifact(self.delivery_state, self.sprint_id, history)
         write_team_lead_event(
             self.delivery_state,
-            "team_lead_tool_completed",
-            {"tool": tool, "status": status},
-        )
-        self.delivery_state = sync_work_board(self.delivery_state, sprint_id=self.sprint_id)
-        checkpoint_delivery_state(self.delivery_state)
-
-    def _step_limit_reached(self) -> bool:
-        return len(self.history or []) >= self.max_steps
-
-    def _feature_repair_blocked(self, feature_id: str) -> bool:
-        attempts = dict(self.delivery_state.get("feature_repair_attempts", {}))
-        max_attempts = int(self.delivery_state.get("max_repair_attempts", 5))
-        return (
-            self.delivery_state.get("status") == "qa_feature_failed_blocked"
-            and attempts.get(feature_id, 0) >= max_attempts
+            "team_lead_decision",
+            {"step": step, "decision": decision.to_dict(), "artifact": artifact},
         )
 
-    def _limit_response(self, message: str) -> str:
-        if not self._step_limit_reached():
-            return ""
-        return self.block_sprint(reason="Team Lead exceeded max tool calls.", message=message)
+    def _transition(
+        self,
+        work_item_id: str,
+        tool: str,
+        owner_agent: str,
+        status: str,
+        message: str,
+        *,
+        tool_call_id: str = "",
+    ) -> None:
+        item = get_work_item(str(self.delivery_state["run_id"]), work_item_id)
+        record = ToolExecutionRecord(
+            run_id=str(self.delivery_state["run_id"]),
+            work_item_id=item.work_item_id,
+            sprint_id=item.sprint_id,
+            owner_agent=owner_agent,
+            tool_name=tool,
+            tool_call_id=tool_call_id
+            or _tool_call_id(self.delivery_state, tool, len(self.history or []) + 1),
+            attempt_id="1",
+            status=status,
+            activity_message=message or f"{tool} updated {item.work_item_id}.",
+        )
+        record_work_item_transition(record)
+
+    def _claim_worker_start(
+        self,
+        work_item_id: str,
+        tool: str,
+        owner_agent: str,
+        message: str,
+        *,
+        tool_call_id: str,
+    ):
+        item = get_work_item(str(self.delivery_state["run_id"]), work_item_id)
+        record = ToolExecutionRecord(
+            run_id=str(self.delivery_state["run_id"]),
+            work_item_id=item.work_item_id,
+            sprint_id=item.sprint_id,
+            owner_agent=owner_agent,
+            tool_name=tool,
+            tool_call_id=tool_call_id,
+            attempt_id="1",
+            status="in_progress",
+            activity_message=message or f"{tool} started {item.work_item_id}.",
+        )
+        return claim_work_item_for_execution(record)
 
     def _tool_response(
         self,
-        message: str,
+        tool_name: str,
+        business_summary: str,
         *,
         downstream_response: dict[str, Any] | None = None,
         artifact_refs: list[str] | None = None,
+        duration_ms: int | None = None,
+        input_summary: dict[str, Any] | None = None,
+        status_override: str | None = None,
+        work_item_id: str = "",
+        tool_call_id: str = "",
+        record_tool_event: bool = True,
     ) -> str:
-        snapshot = {
-            "message": message,
-            "status": self.delivery_state.get("status"),
-            "active_feature_id": self.delivery_state.get("active_feature_id"),
-            "completed_feature_ids": self.delivery_state.get("completed_feature_ids", []),
-            "feature_statuses": self.delivery_state.get("feature_statuses", {}),
-            "work_board": self.delivery_state.get("work_board", {}),
-            "qa_status": self.delivery_state.get("qa_status"),
-            "deployment_status": self.delivery_state.get("deployment_status"),
-            "post_deploy_qa_status": self.delivery_state.get("post_deploy_qa_status"),
-            "blockers": self.delivery_state.get("blockers", []),
-        }
-        if artifact_refs is not None:
-            snapshot["artifact_refs"] = artifact_refs
-        if downstream_response is not None:
-            snapshot["downstream_response"] = downstream_response
-        return json.dumps(snapshot, sort_keys=True)
+        status = status_override or str(self.delivery_state.get("status") or "running")
+        refs = _response_artifact_refs(
+            artifact_refs=artifact_refs,
+            downstream_response=downstream_response,
+        )
+        result = ToolCallResult(
+            tool_name=tool_name,
+            tool_call_id=tool_call_id
+            or _tool_call_id(self.delivery_state, tool_name, len(self.history or [])),
+            status=status,
+            business_summary=business_summary,
+            developer_diagnostics={
+                "sprint_id": self.sprint_id,
+                "downstream_response": downstream_response,
+            },
+            output_artifacts=_tool_artifact_refs(self.delivery_state, refs),
+            failure_mode=failure_mode_from_status(status, self.delivery_state.get("blockers", [])),
+            recommended_next_action=_recommended_next_action(
+                status,
+                failure_mode_from_status(status, self.delivery_state.get("blockers", [])),
+            ),
+            dashboard_update=ToolDashboardUpdate(
+                status=dashboard_status_from_runtime_status(status),
+                summary=business_summary,
+                comment=business_summary,
+                artifact_links=_tool_artifact_refs(self.delivery_state, refs),
+            ),
+        )
+        if record_tool_event:
+            record_tool_call_event(
+                Path(self.delivery_state["run_dir"]),
+                run_id=self.delivery_state["run_id"],
+                agent_id=TEAM_LEAD_AGENT_ID,
+                tool_name=result.tool_name,
+                tool_call_id=result.tool_call_id,
+                status=status,
+                work_item_id=work_item_id or None,
+                input_summary=input_summary or {"work_item_id": work_item_id},
+                output_summary=result.to_dict(),
+                duration_ms=duration_ms,
+                failure_mode=result.failure_mode,
+            )
+        checkpoint_delivery_state(self.delivery_state)
+        return result.to_json()
 
 
 def apply_team_lead_result(state: DeliveryState, sprint_id: str) -> DeliveryState:
-    state = sync_work_board(state, sprint_id=sprint_id)
-    completed = [
-        feature_id
-        for feature_id in list(state.get("completed_feature_ids", []))
-        if feature_id != "post-deploy"
-    ]
-    feature_statuses = dict(state.get("feature_statuses", {}))
-    failed = [
-        feature_id
-        for feature_id, status in feature_statuses.items()
-        if status in {"qa_failed", "blocked"}
-    ]
-    if state.get("blockers"):
-        status = "blocked"
-        next_action = "Resolve blockers before continuing."
-    elif state.get("status") == "team_lead_sprint_handoff_ready":
-        status = "handoff_ready"
-        next_action = "Sprint is ready for review or the next sprint."
-    elif state.get("deployment_status") == "deployed":
-        status = "deployed"
-        next_action = "Create or review sprint handoff."
-    else:
-        status = "running"
-        next_action = "Continue sprint execution."
+    """Persist the Team Lead sprint result from DB-backed state."""
 
-    artifact_refs = _team_lead_completion_artifact_refs(state, sprint_id)
-    handoff_artifacts = _latest_handoff_artifact_refs(state)
-    result = TeamLeadResult(
-        sprint_id=sprint_id,
-        status=status,
-        completed_features=completed,
-        failed_features=failed,
-        blockers=list(state.get("blockers", [])),
-        deployment_status=state.get("deployment_status"),
-        qa_status=state.get("qa_status"),
-        handoff_status="ready"
-        if handoff_artifacts
-        else state.get("status")
-        if str(state.get("status", "")).startswith("handoff")
-        else None,
-        next_recommended_action=next_action,
-        artifact_refs=artifact_refs,
-    )
-    result_path = f"team-lead/{result.sprint_id}-result.json"
-    write_json_artifact(state, result_path, result.to_dict())
-    extend_artifacts(
+    status = str(state.get("status") or "")
+    completion = sprint_completion_state(str(state["run_id"]), sprint_id)
+    state_blockers = list(state.get("blockers", []))
+    if completion.is_complete and status == "team_lead_sprint_handoff_ready":
+        state_blockers = []
+    blocked = "blocked" in status.lower() or bool(state_blockers)
+    if not status:
+        status = "team_lead_sprint_blocked" if blocked else "team_lead_sprint_handoff_ready"
+    result = {
+        "sprint_id": sprint_id,
+        "status": status,
+        "completed_work_item_ids": completed_work_item_ids(str(state["run_id"]), sprint_id),
+        "blockers": state_blockers,
+        "handoff_status": state.get("handoff_status"),
+        "deployment_status": state.get("deployment_status"),
+        "artifact_refs": _team_lead_completion_artifact_refs(state, sprint_id),
+    }
+    relative_path = f"team-lead/{sprint_id}-result.json"
+    write_json_artifact(state, relative_path, result)
+    _register_team_lead_artifact(
         state,
-        [
-            artifact_ref(
-                result_path,
-                kind="internal",
-                owner_agent=TEAM_LEAD_AGENT_ID,
-                visibility="developer",
-            )
-        ],
+        relative_path,
+        artifact_type="team_lead_result",
+        visibility="developer",
+        source_tool="apply_team_lead_result",
+        work_item_id="PLAN-04",
     )
-    _append_team_lead_response_to_head(state, result.to_dict(), [result_path, *artifact_refs])
-    write_team_lead_event(state, "team_lead_sprint_completed", result.to_dict())
-    checkpoint_delivery_state(state)
-    return state
+    write_team_lead_event(state, "team_lead_sprint_completed", result)
+    _append_team_lead_response_to_head(
+        state,
+        result,
+        _team_lead_completion_artifact_refs(state, sprint_id),
+    )
+    return mark_node_completed(state, node_name="team_lead", stage="team_lead", status=status)
 
 
-def _sprint_status_context(
+def checkpoint_delivery_state(state: DeliveryState) -> None:
+    write_delivery_state(state)
+
+
+def write_json_artifact(state: DeliveryState, relative_path: str, payload: dict[str, Any]) -> Path:
+    path = Path(state["run_dir"]) / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def write_team_lead_event(state: DeliveryState, event: str, data: dict[str, Any]) -> None:
+    write_event(Path(state["run_dir"]), state["run_id"], TEAM_LEAD_AGENT_ID, event, data)
+
+
+def write_history_artifact(
     state: DeliveryState,
-    sprint: dict[str, Any],
     sprint_id: str,
     history: list[dict[str, Any]],
-) -> dict[str, Any]:
-    feature_statuses = dict(state.get("feature_statuses", {}))
-    completed = {str(feature_id) for feature_id in state.get("completed_feature_ids", [])}
-    tasks: list[dict[str, Any]] = []
-    for feature in features_for_sprint(state, sprint_id):
-        feature_id = str(feature.get("id") or feature.get("feature_id") or "")
-        if not feature_id:
-            continue
-        evidence_refs = _artifact_refs_for_feature(state, feature_id)
-        status = _status_for_sprint_inspection(
-            str(feature_statuses.get(feature_id) or feature.get("status") or "pending"),
-            evidence_refs=evidence_refs,
-        )
-        if feature_id in completed and status == "pending":
-            status = "qa_passed"
-        tasks.append(
-            {
-                "id": feature_id,
-                "title": feature.get("title"),
-                "status": status,
-                "owner_agent": feature.get("suggested_owner_agent"),
-                "evidence_refs": evidence_refs,
-                "blockers": _blockers_for_feature(state, feature_id),
-                "delivery_order": feature.get("delivery_order"),
-                "acceptance_criteria": feature.get("acceptance_criteria", []),
-                "dependencies": feature.get("dependencies", []),
-                "qa_notes": feature.get("qa_notes", []),
-                "deployment_notes": feature.get("deployment_notes", []),
-            }
-        )
-    next_feature = next_feature_for_state(state, sprint_id)
-    return {
-        "run_id": state.get("run_id"),
-        "stage": state.get("stage"),
-        "status": state.get("status"),
-        "sprint": sprint,
-        "sprint_id": sprint_id,
-        "active_feature_id": state.get("active_feature_id"),
-        "tasks": tasks,
-        "next_feature": next_feature,
-        "features_not_qa_passed": features_not_qa_passed(state, sprint_id),
-        "completed_feature_ids": list(state.get("completed_feature_ids", [])),
-        "feature_statuses": feature_statuses,
-        "feature_repair_attempts": state.get("feature_repair_attempts", {}),
-        "qa_status": state.get("qa_status"),
-        "deployment_status": state.get("deployment_status"),
-        "post_deploy_qa_status": state.get("post_deploy_qa_status"),
-        "public_url": state.get("public_url"),
-        "public_urls": state.get("public_urls", []),
-        "blockers": state.get("blockers", []),
-        "handoff_artifact_refs": _latest_handoff_artifact_refs(state),
-        "team_lead_history": history,
-        "messages": _recent_messages(state, sprint_id=sprint_id, limit=40),
-        "artifact_refs": _sprint_status_artifact_refs(state, sprint_id),
-        "status_rules": {
-            "implemented": "Owner work exists but QA still needs to validate the same task.",
-            "qa_passed": "Feature can count as sprint work done.",
-            "pending": "Feature is planned but owner implementation has not started.",
-            "ready_for_handoff": (
-                "All feature/gate work appears done but Handoff still owns evidence."
-            ),
-            "ready_to_complete": (
-                "Sprint can complete only after Handoff-owned evidence refs exist and "
-                "can_complete_sprint is true."
-            ),
-        },
-    }
+) -> None:
+    relative_path = f"team-lead/{sprint_id}-history.json"
+    write_json_artifact(state, relative_path, {"steps": history})
+    _register_team_lead_artifact(
+        state,
+        relative_path,
+        artifact_type="debug_trace",
+        visibility="developer",
+        source_tool="team_lead_history",
+        work_item_id="PLAN-04",
+    )
 
 
-def _status_for_sprint_inspection(status: str, *, evidence_refs: list[str]) -> str:
-    normalized = status.strip().lower()
-    if normalized in {"active", "ready"}:
-        return "pending"
-    if normalized == "review":
-        return "implemented" if evidence_refs else "pending"
-    if normalized in {
-        "pending",
-        "assigned",
-        "in_progress",
-        "implemented",
-        "in_qa",
-        "qa_passed",
-        "qa_failed",
-        "blocked",
-    }:
-        return normalized
-    if normalized in {"done", "deployed", "handoff_ready"}:
-        return "qa_passed"
-    return "pending"
+def write_sprint_plan_artifact(
+    state: DeliveryState,
+    sprint_id: str,
+    sprint: dict[str, Any],
+) -> None:
+    relative_path = f"team-lead/{sprint_id}-plan.json"
+    write_json_artifact(state, relative_path, sprint)
+    _register_team_lead_artifact(
+        state,
+        relative_path,
+        artifact_type="team_lead_plan",
+        visibility="developer",
+        source_tool="prepare_sprint",
+        work_item_id="PLAN-04",
+    )
 
 
-def _artifact_refs_for_feature(state: DeliveryState, feature_id: str) -> list[str]:
-    refs: list[str] = []
-    for artifact in state.get("artifacts", []):
-        path = str(artifact.get("path") or "")
-        if path and (
-            f"/{feature_id}/" in path or f"-{feature_id}" in path or path.endswith(feature_id)
-        ):
-            refs.append(path)
-    return _unique_paths(refs)
+def write_decision_artifact(state: DeliveryState, step: int, decision: TeamLeadDecision) -> str:
+    relative_path = f"team-lead/decisions/{step:03d}-{decision.tool}.json"
+    write_json_artifact(state, relative_path, decision.to_dict())
+    _register_team_lead_artifact(
+        state,
+        relative_path,
+        artifact_type="debug_trace",
+        visibility="internal",
+        source_tool=decision.tool,
+        work_item_id=decision.work_item_id or "PLAN-04",
+    )
+    return relative_path
 
 
-def _blockers_for_feature(state: DeliveryState, feature_id: str) -> list[str]:
-    return [str(blocker) for blocker in state.get("blockers", []) if feature_id in str(blocker)]
-
-
-def _sprint_status_artifact_refs(state: DeliveryState, sprint_id: str) -> list[str]:
-    run_dir = Path(state["run_dir"])
-    discovered = [
-        "00-requirements.md",
-        "upstream-planning/project-management/release-plan.md",
-        "upstream-planning/project-management/release-plan.json",
-        "upstream-planning/project-management/candidate-feature-queue.json",
-        "upstream-planning/project-management/roadmap.csv",
-        f"upstream-planning/project-management/{sprint_id}.json",
-        f"upstream-planning/project-management/{sprint_id}.md",
-        f"upstream-planning/project-management/{sprint_id}-plan.json",
-        f"upstream-planning/project-management/{sprint_id}-plan.md",
-        f"team-lead/{sprint_id}-history.json",
-        f"team-lead/{sprint_id}-result.json",
-    ]
-    for pattern in [
-        "team-lead/requests/*.json",
-        "handoff/**/*.md",
-        "handoff/**/*.json",
-        "qa/**/*.json",
-        "deployment/**/*.json",
-        "fullstack/**/*.json",
-    ]:
-        discovered.extend(path.relative_to(run_dir).as_posix() for path in run_dir.glob(pattern))
-    discovered.extend(str(artifact.get("path")) for artifact in state.get("artifacts", []))
-    return _unique_paths([path for path in discovered if path and (run_dir / path).exists()])
-
-
-def _recent_messages(
+def write_request(
     state: DeliveryState,
     *,
-    sprint_id: str,
-    limit: int,
-) -> list[dict[str, Any]]:
-    try:
-        messages = AgentMessageStore(state["run_dir"]).read(limit=limit)
-    except Exception:
-        return []
-    recent: list[dict[str, Any]] = []
-    for message in messages:
-        if message.correlation_id and message.correlation_id not in {
-            sprint_id,
-            str(state.get("active_feature_id") or ""),
-            "post-deploy",
-        }:
-            continue
-        recent.append(
-            {
-                "from_agent": message.from_agent,
-                "to_agent": message.to_agent,
-                "intent": message.intent,
-                "correlation_id": message.correlation_id,
-                "execution_id": message.execution_id,
-                "artifact_refs": message.artifact_refs,
-                "content": message.content[:1000],
-            }
-        )
-    return recent
-
-
-def _team_lead_completion_artifact_refs(state: DeliveryState, sprint_id: str) -> list[str]:
-    """Return the canonical artifacts Head should inspect for this Team Lead result."""
-
-    return _unique_paths(
-        [
-            f"team-lead/{sprint_id}-history.json",
-            *_latest_handoff_artifact_refs(state),
-        ]
+    kind: str,
+    target_agent: str,
+    work_item_id: str,
+    payload: dict[str, Any],
+) -> Path:
+    run_dir = Path(state["run_dir"])
+    request_dir = run_dir / "team-lead" / "requests"
+    request_dir.mkdir(parents=True, exist_ok=True)
+    execution_id = str(payload.get("execution_id") or state.get("agent_execution_id") or "")
+    suffix = f"-{short_hash(execution_id)}" if execution_id else ""
+    path = request_dir / f"{kind}-{work_item_id}{suffix}.json"
+    body = {
+        "kind": kind,
+        "source_agent": TEAM_LEAD_AGENT_ID,
+        "target_agent": target_agent,
+        "run_id": state["run_id"],
+        "stage": state["stage"],
+        "status": state["status"],
+        "work_item_id": work_item_id,
+        **payload,
+    }
+    path.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _register_team_lead_artifact(
+        state,
+        path.relative_to(run_dir).as_posix(),
+        artifact_type="tool_request",
+        visibility="internal",
+        source_tool="team_lead_request",
+        work_item_id=work_item_id,
     )
-
-
-def _latest_handoff_artifact_refs(state: DeliveryState) -> list[str]:
-    return _unique_paths(
-        [
-            str(artifact.get("path"))
-            for artifact in state.get("artifacts", [])
-            if artifact.get("kind") == "handoff" and artifact.get("path")
-        ]
-    )
-
-
-def _append_team_lead_response_to_head(
-    state: DeliveryState,
-    result: dict[str, Any],
-    artifact_refs: list[str],
-) -> None:
-    messages = AgentMessageStore(state["run_dir"]).read(
-        from_agent="head-agent",
-        to_agent=TEAM_LEAD_AGENT_ID,
-        intent="request_sprint_delivery",
-        limit=1,
-    )
-    parent = messages[-1] if messages else None
-    append_agent_response(
-        state["run_dir"],
-        from_agent=TEAM_LEAD_AGENT_ID,
-        to_agent=parent.from_agent if parent else "head-agent",
-        status=str(result.get("status") or state.get("status") or ""),
-        content=json.dumps(result, indent=2, sort_keys=True),
-        artifact_refs=_unique_paths(artifact_refs),
-        correlation_id=parent.correlation_id if parent else str(state.get("team_lead_sprint_id")),
-        parent_message_id=parent.message_id if parent else None,
-        execution_id=str(state.get("agent_execution_id") or "") or None,
-    )
-
-
-def next_feature_for_state(
-    state: DeliveryState,
-    sprint_id: str | None = None,
-) -> dict[str, Any] | None:
-    completed = set(state.get("completed_feature_ids", []))
-    active_sprint_id = sprint_id or str(state.get("team_lead_sprint_id") or "sprint-01")
-    feature_queue = features_for_sprint(state, active_sprint_id)
-    for feature in feature_queue:
-        feature_id = str(feature["id"])
-        if (
-            feature_id not in completed
-            and dict(state.get("feature_statuses", {})).get(feature_id) != "qa_passed"
-        ):
-            return feature
-    return None
-
-
-def feature_by_id(state: DeliveryState, feature_id: str) -> dict[str, Any] | None:
-    for feature in list(state.get("feature_queue", [])):
-        if str(feature.get("id")) == feature_id:
-            return feature
-    return None
-
-
-def _extract_feature_id(raw_target: str, feature_ids: set[str]) -> str:
-    target = raw_target.strip()
-    if target in feature_ids:
-        return target
-    for feature_id in sorted(feature_ids, key=len, reverse=True):
-        if re.search(rf"\b{re.escape(feature_id)}\b", target):
-            return feature_id
-    return ""
-
-
-def features_not_qa_passed(
-    state: DeliveryState,
-    sprint_id: str | None = None,
-) -> list[str]:
-    feature_statuses = dict(state.get("feature_statuses", {}))
-    completed = set(state.get("completed_feature_ids", []))
-    active_sprint_id = sprint_id or str(state.get("team_lead_sprint_id") or "sprint-01")
-    missing: list[str] = []
-    for feature in features_for_sprint(state, active_sprint_id):
-        feature_id = str(feature.get("id"))
-        if feature_id == "post-deploy":
-            continue
-        if feature_id not in completed or feature_statuses.get(feature_id) != "qa_passed":
-            missing.append(feature_id)
-    return missing
-
-
-def target_agent_id(node_name: str) -> str:
-    return route_for_node(node_name)[0]
-
-
-def agent_message_intent(node_name: str) -> str:
-    return route_for_node(node_name)[1]
+    return path
 
 
 def append_agent_call_message(
     state: DeliveryState,
     *,
     node_name: str,
-    target: str,
+    work_item_id: str,
     reason: str,
     message: str,
+    artifact_refs: list[str] | None = None,
 ) -> AgentMessage:
     target_agent = target_agent_id(node_name)
     intent = agent_message_intent(node_name)
     content = _agent_call_message(
         state=state,
         node_name=node_name,
-        target=target,
+        work_item_id=work_item_id,
         message=message,
         reason=reason,
     )
@@ -1129,7 +1173,7 @@ def append_agent_call_message(
     execution_id = build_agent_execution_id(
         run_id=str(state["run_id"]),
         agent_id=target_agent,
-        target=target,
+        correlation_id=work_item_id,
         intent=intent,
         message_id=message_id,
     )
@@ -1139,15 +1183,18 @@ def append_agent_call_message(
             to_agent=target_agent,
             intent=intent,
             content=content,
-            artifact_refs=_agent_call_artifacts(node_name, state),
+            artifact_refs=_unique_paths(
+                [*_agent_call_artifacts(node_name, state), *(artifact_refs or [])]
+            ),
             message_id=message_id,
-            correlation_id=target,
+            correlation_id=work_item_id,
             execution_id=execution_id,
         )
     )
     state["agent_call_message_id"] = outbound.message_id
-    state["agent_call_correlation_id"] = target
+    state["agent_call_correlation_id"] = work_item_id
     state["agent_execution_id"] = execution_id
+    state["agent_execution_agent_id"] = target_agent
     return outbound
 
 
@@ -1178,224 +1225,301 @@ def latest_downstream_response(
     }
 
 
+def next_work_item_for_state(
+    state: DeliveryState,
+    sprint_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Return the next DB work item for the current sprint."""
+
+    item = next_work_item(str(state["run_id"]), sprint_id or str(state.get("team_lead_sprint_id")))
+    return item.to_dict() if item else None
+
+
+def work_items_not_qa_passed(state: DeliveryState, sprint_id: str | None = None) -> list[str]:
+    item = next_work_item(str(state["run_id"]), sprint_id or str(state.get("team_lead_sprint_id")))
+    return [item.work_item_id] if item else []
+
+
+def target_agent_id(node_name: str) -> str:
+    return route_for_node(node_name)[0]
+
+
+def agent_message_intent(node_name: str) -> str:
+    return route_for_node(node_name)[1]
+
+
+def _clean_work_item_id(work_item_id: str | None) -> str:
+    return str(work_item_id or "").strip()
+
+
+def _input_summary(
+    *,
+    work_item_id: str,
+    sprint_id: str,
+    reason: str,
+    message: str,
+    artifact_refs: list[str] | None = None,
+    external_reference: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "work_item_id": work_item_id,
+        "sprint_id": sprint_id,
+        "reason": reason,
+        "message": message,
+    }
+    if artifact_refs:
+        summary["artifact_refs"] = artifact_refs
+    if external_reference:
+        summary["external_reference"] = external_reference
+    return summary
+
+
+def _validated_artifact_refs(run_id: str, artifact_refs: str) -> list[str]:
+    refs = _split_artifact_refs(artifact_refs)
+    if refs:
+        artifact_links_for_paths(run_id, refs)
+    return refs
+
+
+def _status_for_tool_result(tool: str, runtime_status: str) -> str:
+    normalized = runtime_status.lower()
+    if any(token in normalized for token in ("failed", "blocked", "repair", "error")):
+        return "blocked"
+    if tool in {"run_qa", "run_handoff", "run_post_deploy_qa"}:
+        return "done"
+    return "review"
+
+
+def _worker_activity_message(tool: str, work_item_id: str, status: str) -> str:
+    if status == "blocked":
+        return f"{tool} reported a blocker for {work_item_id}."
+    if status == "done":
+        return f"{tool} completed {work_item_id}."
+    return f"{tool} moved {work_item_id} into review."
+
+
 def _agent_call_message(
     *,
     state: DeliveryState,
     node_name: str,
-    target: str,
+    work_item_id: str,
     message: str,
     reason: str,
 ) -> str:
+    item = get_work_item(str(state["run_id"]), work_item_id)
     content = message.strip() or reason.strip()
     coordinator_note = content or "Please handle the delegated agent task and report the result."
-    packet = _canonical_work_item_packet(state, target)
-    if not packet:
-        return coordinator_note
+    packet = {
+        "work_item_id": item.work_item_id,
+        "title": item.title,
+        "sprint_id": item.sprint_id,
+        "delivery_order": item.delivery_order,
+        "owner_agent": item.owner_agent,
+        "source_refs": item.source_refs,
+        "current_status": item.status,
+    }
     return (
         f"{coordinator_note}\n\n"
-        "Canonical work item packet:\n"
+        "Canonical DB work item packet:\n"
         f"{json.dumps(packet, indent=2, sort_keys=True)}\n\n"
         "Contract precedence:\n"
-        "- Treat the canonical work item packet and referenced artifacts as the source of truth.\n"
-        "- Treat this coordinator note as routing/context only.\n"
-        "- Do not add stricter acceptance criteria, status codes, feature scope, deployment gates, "
-        "or QA gates unless they are present in the canonical packet or cited artifacts.\n"
-        "- If the coordinator note appears to conflict with the canonical packet or cited "
-        "artifacts, report the mismatch instead of silently changing the contract.\n"
-        f"- This request is for `{node_name}` ownership of work item `{target}`."
+        "- Treat the DB packet and explicitly cited artifacts as the source of truth.\n"
+        "- Do not repair work identity from target text, active feature state, filenames, "
+        "or artifact paths.\n"
+        f"- This request is for `{node_name}` ownership of work item `{work_item_id}`."
     )
-
-
-def _canonical_work_item_packet(state: DeliveryState, target: str) -> dict[str, Any]:
-    feature = feature_by_id(state, target)
-    if not feature:
-        return {}
-    sprint_id = str(feature.get("sprint_id") or state.get("team_lead_sprint_id") or "")
-    return {
-        "id": str(feature.get("id") or target),
-        "title": feature.get("title"),
-        "description": feature.get("description"),
-        "sprint_id": sprint_id,
-        "delivery_order": feature.get("delivery_order"),
-        "suggested_owner_agent": feature.get("suggested_owner_agent"),
-        "acceptance_criteria": feature.get("acceptance_criteria", []),
-        "definition_of_done": feature.get("definition_of_done", []),
-        "dependencies": feature.get("dependencies", []),
-        "qa_notes": feature.get("qa_notes", []),
-        "deployment_notes": feature.get("deployment_notes"),
-        "source_refs": feature.get("source_refs", []),
-        "architecture_components": feature.get("architecture_components", []),
-        "current_status": dict(state.get("feature_statuses", {})).get(str(feature.get("id"))),
-        "completed_feature_ids": list(state.get("completed_feature_ids", [])),
-    }
 
 
 def _agent_call_artifacts(node_name: str, state: DeliveryState) -> list[str]:
     base = _upstream_planning_artifacts(state)
     if node_name == "fullstack":
-        return _unique_paths(
-            [
-                *base,
-                *_artifact_paths_by_kind(state, "qa"),
-            ]
-        )
+        return base
     if node_name == "qa":
-        return _unique_paths([*base, *_artifact_paths_by_kind(state, "execution")])
+        return base
     if node_name == "deployment":
-        return _unique_paths([*base, *_artifact_paths_by_kind(state, "qa")])
+        return base
     if node_name == "handoff":
-        return _unique_paths(
-            [
-                *base,
-                *_artifact_paths_by_kind(state, "execution"),
-                *_artifact_paths_by_kind(state, "qa"),
-                *_artifact_paths_by_kind(state, "deployment"),
-            ]
-        )
+        return base
     return base
-
-
-def _split_artifact_refs(value: str) -> list[str]:
-    refs: list[str] = []
-    for raw in re.split(r"[\n,;]+", value or ""):
-        item = raw.strip()
-        if item and item not in refs:
-            refs.append(item)
-    return refs
-
-
-def _review_work_item_id(state: DeliveryState, target: str | None) -> str:
-    candidate = str(target or state.get("active_feature_id") or "").strip()
-    if not candidate:
-        return ""
-    board = state.get("work_board", {})
-    items = board.get("items", []) if isinstance(board, dict) else []
-    item_ids = {
-        str(item.get("item_id") or "")
-        for item in items
-        if isinstance(item, dict) and item.get("item_id")
-    }
-    return candidate if candidate in item_ids else ""
-
-
-def _artifact_paths_by_kind(state: DeliveryState, kind: str) -> list[str]:
-    return [
-        str(artifact.get("path"))
-        for artifact in state.get("artifacts", [])
-        if artifact.get("kind") == kind and artifact.get("path")
-    ]
 
 
 def _upstream_planning_artifacts(state: DeliveryState) -> list[str]:
     return _unique_paths(
         [
             "00-requirements.md",
-            *[
-                str(artifact.get("path"))
-                for artifact in state.get("artifacts", [])
-                if artifact.get("kind") == "planning"
-                and artifact.get("path")
-                and str(artifact.get("path")).startswith("upstream-planning/")
-                and "/codex/" not in str(artifact.get("path"))
-            ],
+            "upstream-planning/business-analysis.json",
+            "upstream-planning/architecture.json",
+            "upstream-planning/project-management/release-plan.json",
+            "upstream-planning/project-management/planned-work-items.json",
         ]
     )
+
+
+def _sprint_status_context(state: DeliveryState, sprint_id: str) -> dict[str, Any]:
+    completion = sprint_completion_state(str(state["run_id"]), sprint_id)
+    return {
+        "run_id": state.get("run_id"),
+        "sprint_id": sprint_id,
+        "status": state.get("status"),
+        "sprint_db_state": completion.to_dict(),
+        "work_items": [
+            item.to_dict() for item in list_sprint_work_items(str(state["run_id"]), sprint_id)
+        ],
+        "next_work_item": next_work_item_for_state(state, sprint_id),
+        "completed_work_item_ids": completed_work_item_ids(str(state["run_id"]), sprint_id),
+        "blockers": list(state.get("blockers", [])),
+    }
+
+
+def _sprint_status_artifact_refs(state: DeliveryState, sprint_id: str) -> list[str]:
+    run_dir = Path(state["run_dir"])
+    refs = [
+        "00-requirements.md",
+        "upstream-planning/project-management/release-plan.json",
+        "upstream-planning/project-management/planned-work-items.json",
+        f"team-lead/{sprint_id}-result.json",
+    ]
+    return _unique_paths([ref for ref in refs if (run_dir / ref).exists()])
+
+
+def _final_project_report_allowed(state: DeliveryState, sprint_id: str) -> bool:
+    return sprint_is_final(str(state["run_id"]), sprint_id)
+
+
+def _team_lead_completion_artifact_refs(state: DeliveryState, sprint_id: str) -> list[str]:
+    return _unique_paths(_latest_handoff_artifact_refs(state))
+
+
+def _latest_handoff_artifact_refs(state: DeliveryState) -> list[str]:
+    return artifact_paths_by_type(str(state["run_id"]), {"handoff", "release_report"})
+
+
+def _append_team_lead_response_to_head(
+    state: DeliveryState,
+    result: dict[str, Any],
+    artifact_refs: list[str],
+) -> None:
+    messages = AgentMessageStore(state["run_dir"]).read(
+        from_agent="head-agent",
+        to_agent=TEAM_LEAD_AGENT_ID,
+        intent="request_sprint_delivery",
+        limit=1,
+    )
+    parent = messages[-1] if messages else None
+    append_agent_response(
+        state["run_dir"],
+        from_agent=TEAM_LEAD_AGENT_ID,
+        to_agent=parent.from_agent if parent else "head-agent",
+        status=str(result.get("status") or state.get("status") or ""),
+        content=json.dumps(result, indent=2, sort_keys=True),
+        artifact_refs=_unique_paths(artifact_refs),
+        correlation_id=parent.correlation_id if parent else str(state.get("team_lead_sprint_id")),
+        parent_message_id=parent.message_id if parent else None,
+        execution_id=str(state.get("agent_execution_id") or "") or None,
+    )
+
+
+def _response_artifact_refs(
+    *,
+    artifact_refs: list[str] | None,
+    downstream_response: dict[str, Any] | None,
+) -> list[str]:
+    refs: list[str] = []
+    if artifact_refs:
+        refs.extend(artifact_refs)
+    if downstream_response:
+        refs.extend(
+            str(ref)
+            for ref in downstream_response.get("artifact_refs", [])
+            if isinstance(ref, str) and ref
+        )
+    return _unique_paths(refs)
+
+
+def _tool_artifact_refs(state: DeliveryState, paths: list[str]) -> tuple[Any, ...]:
+    return artifact_links_for_paths(str(state["run_id"]), _unique_paths(paths))
+
+
+def _tool_call_id(state: DeliveryState, tool_name: str, step: int) -> str:
+    run_id = str(state.get("run_id") or "run")
+    return f"{run_id}:team-lead-agent:{tool_name}:{step}"
+
+
+def _new_tool_call_id(state: DeliveryState, tool_name: str) -> str:
+    run_id = str(state.get("run_id") or "run")
+    return f"{run_id}:team-lead-agent:{tool_name}:{uuid4().hex[:12]}"
+
+
+def _recommended_next_action(status: str, failure_mode: str | None) -> str:
+    if failure_mode == "needs_repair":
+        return "Route the findings to the owning specialist, then rerun the relevant check."
+    if failure_mode:
+        return "Inspect diagnostics and blocker evidence before retrying or escalating."
+    if dashboard_status_from_runtime_status(status) == "done":
+        return "Inspect sprint status and proceed to the next required gate."
+    return "Inspect sprint status before choosing the next tool."
+
+
+def _split_artifact_refs(value: str) -> list[str]:
+    refs: list[str] = []
+    for raw in (value or "").replace(";", "\n").replace(",", "\n").splitlines():
+        item = raw.strip()
+        if item and item not in refs:
+            refs.append(item)
+    return refs
+
+
+def _register_team_lead_artifact(
+    state: DeliveryState,
+    relative_path: str,
+    *,
+    artifact_type: str,
+    visibility: str,
+    source_tool: str,
+    work_item_id: str,
+) -> None:
+    record_artifact_link(
+        Path(state["run_dir"]),
+        ArtifactRegistrationRequest(
+            artifact_id=artifact_id_for(str(state["run_id"]), relative_path),
+            artifact_type=artifact_type,
+            visibility=visibility,
+            owner_agent=TEAM_LEAD_AGENT_ID,
+            source_tool=source_tool,
+            label=Path(relative_path).name,
+            relative_path=relative_path,
+            run_id=str(state["run_id"]),
+            work_item_id=work_item_id,
+            task_scoped=True,
+        ),
+    )
+
+
+def _register_team_lead_tool_artifacts(
+    state: DeliveryState,
+    relative_paths: list[str],
+    *,
+    artifact_type: str,
+    source_tool: str,
+    work_item_id: str,
+) -> None:
+    run_dir = Path(state["run_dir"])
+    for relative_path in _unique_paths([path for path in relative_paths if path]):
+        if not (run_dir / relative_path).is_file():
+            continue
+        _register_team_lead_artifact(
+            state,
+            relative_path,
+            artifact_type=artifact_type,
+            visibility="internal",
+            source_tool=source_tool,
+            work_item_id=work_item_id,
+        )
 
 
 def _unique_paths(paths: list[str]) -> list[str]:
     unique: list[str] = []
     for path in paths:
-        if path not in unique:
+        if path and path not in unique:
             unique.append(path)
     return unique
-
-
-def write_request(
-    state: DeliveryState,
-    *,
-    kind: str,
-    target_agent: str,
-    payload: dict[str, Any],
-) -> Path:
-    run_dir = Path(state["run_dir"])
-    request_dir = run_dir / "team-lead" / "requests"
-    request_dir.mkdir(parents=True, exist_ok=True)
-    feature_id = state.get("active_feature_id") or "sprint"
-    execution_id = str(payload.get("execution_id") or state.get("agent_execution_id") or "")
-    suffix = f"-{short_hash(execution_id)}" if execution_id else ""
-    path = request_dir / f"{kind}-{feature_id}{suffix}.json"
-    body = {
-        "kind": kind,
-        "source_agent": TEAM_LEAD_AGENT_ID,
-        "target_agent": target_agent,
-        "run_id": state["run_id"],
-        "stage": state["stage"],
-        "status": state["status"],
-        **payload,
-    }
-    path.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return path
-
-
-def write_temporary_execution_feature(state: DeliveryState, feature: dict[str, Any]) -> None:
-    request_path = Path(state["run_dir"]) / EXECUTION_REQUEST_ARTIFACT
-    if not request_path.exists():
-        return
-    payload = json.loads(request_path.read_text(encoding="utf-8"))
-    payload["active_feature"] = feature
-    payload["completed_feature_ids"] = list(state.get("completed_feature_ids", []))
-    input_artifacts = list(payload.get("input_artifacts", []))
-    request_artifact = f"team-lead/requests/post_deploy_quality_request-{feature['id']}.json"
-    if request_artifact not in input_artifacts:
-        input_artifacts.append(request_artifact)
-    payload["input_artifacts"] = input_artifacts
-    request_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-
-
-def write_decision_artifact(state: DeliveryState, step: int, decision: TeamLeadDecision) -> str:
-    relative_path = f"team-lead/decisions/{step:03d}-{decision.tool}.json"
-    write_json_artifact(state, relative_path, decision.to_dict())
-    return relative_path
-
-
-def write_history_artifact(
-    state: DeliveryState,
-    sprint_id: str,
-    history: list[dict[str, Any]],
-) -> None:
-    write_json_artifact(state, f"team-lead/{sprint_id}-history.json", {"steps": history})
-
-
-def _read_history_artifact(state: DeliveryState, sprint_id: str) -> list[dict[str, Any]]:
-    path = Path(state["run_dir"]) / f"team-lead/{sprint_id}-history.json"
-    if not path.exists():
-        return []
-    try:
-        payload = read_json_object_artifact(path, normalize_bom=True)
-    except (OSError, json.JSONDecodeError):
-        return []
-    steps = payload.get("steps", [])
-    if not isinstance(steps, list):
-        return []
-    return [dict(step) for step in steps if isinstance(step, dict)]
-
-
-def write_json_artifact(state: DeliveryState, relative_path: str, payload: dict[str, Any]) -> Path:
-    path = Path(state["run_dir"]) / relative_path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return path
-
-
-def write_team_lead_event(state: DeliveryState, event: str, data: dict[str, Any]) -> None:
-    write_event(
-        Path(state["run_dir"]) / "events.jsonl",
-        state["run_id"],
-        TEAM_LEAD_AGENT_ID,
-        event,
-        data,
-    )
-
-
-def checkpoint_delivery_state(state: DeliveryState) -> None:
-    write_delivery_state(state)

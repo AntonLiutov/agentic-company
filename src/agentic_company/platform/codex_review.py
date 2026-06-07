@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from agentic_company.integrations.codex import (
+    DEFAULT_CODEX_MODEL,
     build_codex_exec_command,
     build_codex_exec_environment,
     stream_codex_exec_to_log,
 )
+from agentic_company.platform.artifact_registry import artifact_id_for
 from agentic_company.platform.artifacts import read_text_artifact
 from agentic_company.platform.executions import (
     build_agent_execution_id,
@@ -19,6 +22,9 @@ from agentic_company.platform.executions import (
     execution_artifact_dir,
     extract_codex_thread_id,
 )
+from agentic_company.platform.run_trace import record_model_call_event
+from agentic_company.platform.runtime_db import record_artifact_link
+from agentic_company.platform.tool_contracts import ArtifactRegistrationRequest
 
 CommandExecutor = Callable[
     [Sequence[str], str, int, Path, Path],
@@ -38,7 +44,7 @@ class CodexReviewRequest:
     artifact_refs: list[str] = field(default_factory=list)
     target_agent: str | None = None
     correlation_id: str | None = None
-    model: str = "gpt-5.3-codex"
+    model: str = DEFAULT_CODEX_MODEL
     execution_id: str = ""
     codex_resume_thread_id: str = ""
 
@@ -70,7 +76,7 @@ class CodexReviewRunner:
         execution_id = request.execution_id or build_agent_execution_id(
             run_id=request.run_id,
             agent_id=request.requesting_agent,
-            target=request.correlation_id or request.target_agent or "review",
+            correlation_id=request.correlation_id or request.target_agent or "review",
             intent="codex_review",
             message_id=request.question,
         )
@@ -94,6 +100,7 @@ class CodexReviewRunner:
 
         prompt = build_codex_review_prompt(request)
         prompt_path.write_text(prompt, encoding="utf-8")
+        prompt_artifact = prompt_path.relative_to(request.run_dir).as_posix()
         command = build_codex_exec_command(
             codex_binary=self.codex_binary,
             model=request.model,
@@ -104,6 +111,7 @@ class CodexReviewRunner:
             force_sandbox=True,
             resume_session_id=request.codex_resume_thread_id,
         )
+        started = time.perf_counter()
         completed = self._execute(
             command,
             prompt,
@@ -111,7 +119,11 @@ class CodexReviewRunner:
             raw_events_path,
             request.run_dir,
             codex_execution_id=codex_execution_id,
+            run_id=request.run_id,
+            agent_id=review_agent_id,
+            work_item_id=request.correlation_id,
         )
+        duration_ms = max(0, int((time.perf_counter() - started) * 1000))
         content = (
             read_text_artifact(summary_path) if summary_path.exists() else completed.stdout.strip()
         )
@@ -119,14 +131,37 @@ class CodexReviewRunner:
         if not content:
             content = "Codex review produced no response."
         codex_thread_id = extract_codex_thread_id(raw_events_path) or request.codex_resume_thread_id
+        summary_artifact = summary_path.relative_to(request.run_dir).as_posix()
+        log_artifact = log_path.relative_to(request.run_dir).as_posix()
+        raw_events_artifact = raw_events_path.relative_to(request.run_dir).as_posix()
+        _register_review_artifacts(
+            request,
+            [
+                (summary_artifact, "execution_summary"),
+                (prompt_artifact, "tool_request"),
+                (log_artifact, "codex_log"),
+                (raw_events_artifact, "debug_trace"),
+            ],
+        )
+        record_model_call_event(
+            request.run_dir,
+            run_id=request.run_id,
+            agent_id=request.requesting_agent,
+            provider="openai",
+            model=request.model,
+            purpose="codex_review",
+            prompt_ref=prompt_artifact,
+            status=status,
+            duration_ms=duration_ms,
+        )
         return CodexReviewResult(
             status=status,
             content=content,
             artifact_refs=list(request.artifact_refs),
-            summary_artifact=summary_path.relative_to(request.run_dir).as_posix(),
-            prompt_artifact=prompt_path.relative_to(request.run_dir).as_posix(),
-            log_artifact=log_path.relative_to(request.run_dir).as_posix(),
-            raw_events_artifact=raw_events_path.relative_to(request.run_dir).as_posix(),
+            summary_artifact=summary_artifact,
+            prompt_artifact=prompt_artifact,
+            log_artifact=log_artifact,
+            raw_events_artifact=raw_events_artifact,
             execution_id=execution_id,
             codex_thread_id=codex_thread_id,
         )
@@ -140,6 +175,9 @@ class CodexReviewRunner:
         run_dir: Path,
         *,
         codex_execution_id: str,
+        run_id: int | str,
+        agent_id: str,
+        work_item_id: str | None,
     ) -> subprocess.CompletedProcess[str]:
         if self.command_executor:
             return self.command_executor(
@@ -159,6 +197,10 @@ class CodexReviewRunner:
             raw_events_path,
             env=env,
             codex_execution_id=codex_execution_id,
+            trace_run_dir=run_dir,
+            trace_run_id=run_id,
+            trace_agent_id=agent_id,
+            trace_work_item_id=work_item_id,
         )
 
 
@@ -199,3 +241,25 @@ def _review_agent_id(requesting_agent: str) -> str:
 
 def _review_artifact_owner(requesting_agent: str) -> str:
     return requesting_agent.removesuffix("-agent") or "review"
+
+
+def _register_review_artifacts(
+    request: CodexReviewRequest,
+    artifacts: list[tuple[str, str]],
+) -> None:
+    for relative_path, artifact_type in artifacts:
+        if not (request.run_dir / relative_path).is_file():
+            continue
+        record_artifact_link(
+            request.run_dir,
+            ArtifactRegistrationRequest(
+                artifact_id=artifact_id_for(request.run_id, relative_path),
+                artifact_type=artifact_type,
+                visibility="developer",
+                owner_agent=request.requesting_agent,
+                source_tool="codex_review",
+                label=Path(relative_path).name,
+                relative_path=relative_path,
+                run_id=request.run_id,
+            ),
+        )

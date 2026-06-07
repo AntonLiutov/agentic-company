@@ -16,6 +16,7 @@ from agentic_company.agents.handoff.contracts import (
     SPRINT_HANDOFF_SCOPE,
     handoff_contract_paths_for_scope,
 )
+from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.platform.agent_contracts import (
     append_downstream_response,
     artifact_refs,
@@ -35,6 +36,11 @@ from agentic_company.platform.artifacts import (
 )
 from agentic_company.platform.events import write_event
 from agentic_company.platform.models import AgentRunResult
+from agentic_company.platform.runtime_db import (
+    completed_work_item_ids,
+    get_work_item,
+    packet_for_work_item,
+)
 from agentic_company.platform.state import (
     DeliveryState,
     codex_resume_thread_id,
@@ -146,8 +152,7 @@ def _prepare_context(state: HandoffAgentGraphState) -> HandoffAgentGraphState:
         handoff_output_dir=str(delivery_state.get("handoff_output_dir") or ""),
         handoff_expected_outputs=list(delivery_state.get("handoff_expected_outputs", [])),
     )
-    event_log = run_dir / "events.jsonl"
-    event_log.parent.mkdir(parents=True, exist_ok=True)
+    event_log = run_dir
     write_event(
         event_log,
         delivery_state["run_id"],
@@ -163,19 +168,21 @@ def _write_handoff_execution_request(run_dir: Path, delivery_state: DeliveryStat
         str(delivery_state.get("handoff_scope") or ""),
         sprint_id=str(delivery_state.get("handoff_sprint_id") or ""),
     )
+    work_item_id = str(delivery_state.get("agent_call_correlation_id") or "").strip()
+    work_item = get_work_item(str(delivery_state["run_id"]), work_item_id).to_dict()
     request = build_execution_request_payload(
         delivery_state,
         agent_id=HANDOFF_AGENT_ID,
         model=(
             agent_env_value("HANDOFF_CODEX_MODEL", delivery_state)
             or agent_env_value("AGENT_CODEX_MODEL", delivery_state)
-            or "gpt-5.3-codex"
+            or DEFAULT_CODEX_MODEL
         ),
         input_artifacts=_handoff_input_artifacts(delivery_state),
         expected_outputs=contract_paths.as_list(),
         instructions=[
             (
-                "Read the current Team Lead request, work board, delivery artifacts, "
+                "Read the current Team Lead request, DB work item table, delivery artifacts, "
                 "QA evidence, deployment results, and prior handoff artifacts."
             ),
             (
@@ -193,6 +200,11 @@ def _write_handoff_execution_request(run_dir: Path, delivery_state: DeliveryStat
             "Do not invent public URLs, deployment status, or QA evidence.",
             "Do not overwrite unrelated handoff scopes; use scope-aware paths when requested.",
         ],
+        target_project_dir=str(delivery_state["target_project_dir"]),
+        work_item=work_item,
+        completed_work_item_ids=completed_work_item_ids(
+            str(delivery_state["run_id"]), str(work_item.get("sprint_id") or "")
+        ),
         codex_resume_thread_id=codex_resume_thread_id(delivery_state, HANDOFF_CODEX_AGENT_ID),
         handoff_scope=str(delivery_state.get("handoff_scope") or ""),
         handoff_sprint_id=str(delivery_state.get("handoff_sprint_id") or ""),
@@ -203,14 +215,7 @@ def _write_handoff_execution_request(run_dir: Path, delivery_state: DeliveryStat
 
 
 def _handoff_input_artifacts(delivery_state: DeliveryState) -> list[str]:
-    paths = [
-        "00-requirements.md",
-        *[
-            str(artifact.get("path"))
-            for artifact in delivery_state.get("artifacts", [])
-            if artifact.get("path") and "/codex/" not in str(artifact.get("path"))
-        ],
-    ]
+    paths = ["00-requirements.md"]
     return _unique_paths(paths)
 
 
@@ -227,6 +232,16 @@ def _run_agent_executor(runner: HandoffRunner | None, agent_executor: Specialist
                 runner=runner or HandoffCodexRunner(),
                 run_dir=run_dir,
                 delivery_state=state["delivery_state"],
+                packet=packet_for_work_item(
+                    run_id=str(state["delivery_state"]["run_id"]),
+                    work_item_id=str(
+                        state["delivery_state"].get("agent_call_correlation_id") or ""
+                    ),
+                    tool_name="run_handoff",
+                    tool_call_id=str(state["delivery_state"].get("agent_execution_id") or ""),
+                    attempt_id="1",
+                    owner_agent=HANDOFF_AGENT_ID,
+                ),
             )
         )
         return {**state, "result": result, "status": _normalize_handoff_status(result.status)}
@@ -241,7 +256,7 @@ def _apply_handoff_result(state: HandoffAgentGraphState) -> HandoffAgentGraphSta
 
     status = state.get("status") or _normalize_handoff_status(result.status)
     delivery_state = state["delivery_state"]
-    event_log = Path(state["run_dir"]) / "events.jsonl"
+    event_log = Path(state["run_dir"])
     primary_artifact = (
         result.output_artifacts[0] if result.output_artifacts else "release-report.html"
     )

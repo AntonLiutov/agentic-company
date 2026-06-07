@@ -1,5 +1,6 @@
 import subprocess
 
+from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.platform.codex_review import (
     CodexReviewRequest,
     CodexReviewRunner,
@@ -7,9 +8,10 @@ from agentic_company.platform.codex_review import (
 )
 
 
-def test_codex_review_runner_uses_read_only_sandbox(tmp_path):
+def test_codex_review_runner_uses_read_only_sandbox(tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
+    _create_run(tmp_path, monkeypatch, run_dir, "run")
 
     def executor(command, prompt, timeout_seconds, log_path, raw_events_path):
         assert "--sandbox" in command
@@ -39,9 +41,10 @@ def test_codex_review_runner_uses_read_only_sandbox(tmp_path):
     assert result.summary_artifact.startswith("team-lead/codex-review/")
 
 
-def test_codex_review_runner_can_resume_existing_session(tmp_path):
+def test_codex_review_runner_can_resume_existing_session(tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
+    _create_run(tmp_path, monkeypatch, run_dir, "run")
 
     def executor(command, prompt, timeout_seconds, log_path, raw_events_path):
         assert command[-3:] == ["resume", "thread-review", "-"]
@@ -64,9 +67,10 @@ def test_codex_review_runner_can_resume_existing_session(tmp_path):
     assert result.codex_thread_id == "thread-review"
 
 
-def test_codex_review_runner_uses_requesting_agent_artifact_owner(tmp_path):
+def test_codex_review_runner_uses_requesting_agent_artifact_owner(tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
+    _create_run(tmp_path, monkeypatch, run_dir, "run")
 
     def executor(command, prompt, timeout_seconds, log_path, raw_events_path):
         return subprocess.CompletedProcess(command, 0, stdout="Head review complete.", stderr="")
@@ -123,3 +127,31 @@ def test_codex_review_prompt_is_generic_and_uses_question_as_source_of_truth(tmp
 
     assert "Treat the Question and Purpose as the source of truth" in prompt
     assert "Artifact references:" in prompt
+
+
+def _create_run(tmp_path, monkeypatch, run_dir, run_uid):
+    db_path = tmp_path / "console.db"
+    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
+    repo = ConsoleRepository(db_path)
+    repo.init_schema()
+    user = repo.create_user(
+        email=f"{run_uid}@example.test",
+        username=f"user-{run_uid}",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Review",
+        request_text="Review",
+        mode="internal_tool",
+        complexity="simple",
+        status="running",
+    )
+    repo.create_run(
+        project_id=project.id,
+        run_uid=run_uid,
+        run_dir=run_dir,
+        status="running",
+        mode="internal_tool",
+        reasoning="medium",
+    )

@@ -169,7 +169,7 @@ config:
 ---
 graph TD;
     platform["Platform Graph Runner"]
-    state[(".delivery-state.json<br/>events.jsonl")]
+    state[("internal graph state<br/>structured trace")]
     head["Head Agent<br/>company coordinator"]
     ba["Business Analyst<br/>Codex worker"]
     architect["Architect<br/>Codex worker"]

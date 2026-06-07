@@ -10,11 +10,11 @@ from pathlib import Path
 from agentic_company.platform.artifacts import read_text_artifact
 
 
-def slugify(value: object, *, fallback: str = "run") -> str:
+def slugify(value: object, *, default_value: str = "run") -> str:
     """Return a compact filesystem-safe slug."""
 
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", str(value or "").strip()).strip("-").lower()
-    return slug or fallback
+    return slug or default_value
 
 
 def short_hash(value: object, *, length: int = 8) -> str:
@@ -27,7 +27,7 @@ def build_agent_execution_id(
     *,
     run_id: str,
     agent_id: str,
-    target: str = "",
+    correlation_id: str = "",
     intent: str = "",
     message_id: str = "",
     attempt: int | None = None,
@@ -38,8 +38,8 @@ def build_agent_execution_id(
         "exec",
         slugify(run_id),
         slugify(agent_id),
-        slugify(target, fallback="target"),
-        slugify(intent, fallback="task"),
+        slugify(correlation_id, default_value="correlation"),
+        slugify(intent, default_value="task"),
     ]
     if attempt is not None:
         parts.append(f"attempt-{attempt}")
@@ -65,7 +65,7 @@ def build_codex_execution_id(
 def execution_artifact_dir_name(execution_id: str) -> str:
     """Return a short filesystem label for execution-scoped artifacts."""
 
-    slug = slugify(execution_id, fallback="execution")
+    slug = slugify(execution_id, default_value="execution")
     suffix = slug.rsplit("-", maxsplit=1)[-1]
     if not re.fullmatch(r"[0-9a-f]{8}", suffix):
         suffix = short_hash(slug)

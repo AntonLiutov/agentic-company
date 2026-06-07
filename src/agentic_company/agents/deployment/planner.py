@@ -63,7 +63,7 @@ def build_deployment_plan(target_dir: Path) -> dict[str, object]:
         "topology_owner": "deployment-codex-agent",
         "observed_files": _observed_files(target_dir),
         "instructions": [
-            "Deployment Codex must infer topology from project evidence.",
+            "Deployment Codex must derive topology from project evidence.",
             "Deployment Codex must decide whether deployment is safe.",
             "Deployment Codex must write the final deployment contract artifacts.",
         ],
@@ -84,7 +84,7 @@ def build_deployment_request(target_dir: Path) -> dict[str, object]:
         "environment_variables_from_example": _env_example_keys(target_dir / ".env.example"),
         "topology_owner": "deployment-codex-agent",
         "constraints": [
-            "Do not infer fixed service names, ports, Dockerfiles, or container count here.",
+            "Do not derive fixed service names, ports, Dockerfiles, or container count here.",
             "Do not delete cloud resources or user data without explicit approval.",
             "Do not print or bake secrets into images.",
             "Deployment reports URL targets; QA owns post-deployment validation.",

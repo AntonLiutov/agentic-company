@@ -8,7 +8,7 @@ import sys
 
 
 def configure_logging(default_level: str = "INFO") -> None:
-    """Configure process-wide logging without duplicating handlers on Streamlit reruns."""
+    """Configure process-wide logging without duplicating handlers on repeated app starts."""
 
     level_name = os.getenv("AGENTIC_COMPANY_LOG_LEVEL", default_level).upper()
     level = getattr(logging, level_name, logging.INFO)
@@ -20,7 +20,7 @@ def configure_logging(default_level: str = "INFO") -> None:
         handler = logging.StreamHandler(sys.stdout)
         handler.setFormatter(
             logging.Formatter(
-                fmt="%(asctime)s %(levelname)s %(name)s %(message)s",
+                fmt="%(asctime)s %(levelname).1s %(message)s",
                 datefmt="%H:%M:%S",
             )
         )
@@ -28,3 +28,10 @@ def configure_logging(default_level: str = "INFO") -> None:
         root_logger.addHandler(handler)
 
     root_logger.setLevel(level)
+    if not _truthy(os.getenv("AGENTIC_COMPANY_VENDOR_LOGS")):
+        for logger_name in ("httpx", "httpcore", "google_genai", "google_genai.models"):
+            logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}

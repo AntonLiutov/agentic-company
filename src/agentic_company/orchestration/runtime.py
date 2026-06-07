@@ -15,19 +15,23 @@ from agentic_company.orchestration.graphs import (
     DeliveryGraphNodes,
     run_delivery_graph,
 )
-from agentic_company.platform.artifacts import (
-    EXECUTION_REQUEST_ARTIFACT,
-    load_execution_request,
-)
 from agentic_company.platform.events import write_event
+from agentic_company.platform.runtime_cache import runtime_cache_from_env
+from agentic_company.platform.runtime_db import (
+    latest_delivery_state_snapshot,
+    record_run_lifecycle,
+    run_target_project_dir,
+)
+from agentic_company.platform.runtime_db import stop_requested as db_stop_requested
 from agentic_company.platform.state import (
+    DELIVERY_STATE_SNAPSHOT,
     DeliveryState,
     initial_delivery_state,
     write_delivery_state,
 )
 
 LOGGER = logging.getLogger(__name__)
-DEFAULT_STATE_FILENAME = ".delivery-state.json"
+DEFAULT_STATE_FILENAME = DELIVERY_STATE_SNAPSHOT.as_posix()
 GRAPH_AGENT_ID = "delivery-graph"
 
 
@@ -51,18 +55,26 @@ class DeliveryGraphRuntime:
         """Load or create graph state, invoke configured nodes, and persist final state."""
 
         run_dir.mkdir(parents=True, exist_ok=True)
-        event_log = run_dir / "events.jsonl"
+        event_log = run_dir
         node_order = list(self.node_order or DELIVERY_GRAPH_NODE_ORDER)
         state = self.load_state(run_dir)
         if state is None:
+            runtime_run_id = run_id or run_dir.name
+            resolved_target_project_dir = target_project_dir or Path(
+                run_target_project_dir(runtime_run_id)
+            )
             state = initial_delivery_state(
-                run_id=run_id or run_dir.name,
+                run_id=runtime_run_id,
                 run_dir=run_dir,
                 requirements_path=requirements_path,
-                target_project_dir=target_project_dir,
+                target_project_dir=resolved_target_project_dir,
                 max_repair_attempts=max_repair_attempts,
             )
-            state = self._hydrate_existing_run_context(run_dir, state)
+            record_run_lifecycle(
+                str(state["run_id"]),
+                "running",
+                target_project_dir=str(resolved_target_project_dir),
+            )
             self.save_state(run_dir, state)
             self._write_state_event(event_log, state)
 
@@ -72,6 +84,7 @@ class DeliveryGraphRuntime:
             state["stage"],
             state["status"],
         )
+        graph_started = time.perf_counter()
         write_event(
             event_log,
             state["run_id"],
@@ -91,6 +104,8 @@ class DeliveryGraphRuntime:
                 node_order=node_order,
             )
         except Exception as exc:
+            duration_ms = int((time.perf_counter() - graph_started) * 1000)
+            record_run_lifecycle(state["run_id"], "failed")
             write_event(
                 event_log,
                 state["run_id"],
@@ -101,6 +116,7 @@ class DeliveryGraphRuntime:
                     "stage": state["stage"],
                     "status": "failed",
                     "error": str(exc),
+                    "duration_ms": duration_ms,
                 },
             )
             raise
@@ -116,7 +132,14 @@ class DeliveryGraphRuntime:
                 "stage": final_state["stage"],
                 "status": final_state["status"],
                 "state_artifact": self.state_filename,
+                "duration_ms": int((time.perf_counter() - graph_started) * 1000),
             },
+        )
+        record_run_lifecycle(
+            final_state["run_id"],
+            str(final_state["status"]),
+            generated_app_url=str(final_state.get("public_url") or ""),
+            target_project_dir=str(final_state.get("target_project_dir") or ""),
         )
         LOGGER.info(
             "Delivery graph completed run_id=%s stage=%s status=%s",
@@ -129,6 +152,9 @@ class DeliveryGraphRuntime:
     def load_state(self, run_dir: Path) -> DeliveryState | None:
         """Read the persisted delivery state if one exists."""
 
+        db_state = latest_delivery_state_snapshot(run_dir.name)
+        if db_state is not None:
+            return cast(DeliveryState, db_state)
         state_path = self.state_path(run_dir)
         if not state_path.exists():
             return None
@@ -193,7 +219,12 @@ class DeliveryGraphRuntime:
 
         def run(state: DeliveryState) -> DeliveryState:
             stop_path = Path(state["run_dir"]) / ".stop-requested"
-            if stop_path.exists():
+            should_stop = (
+                stop_path.exists()
+                or runtime_cache_from_env().stop_requested(run_id)
+                or db_stop_requested(run_id)
+            )
+            if should_stop:
                 stopped: DeliveryState = {**state}
                 stopped["status"] = "stopped"
                 stopped["blockers"] = [*stopped.get("blockers", []), "Stopped by user"]
@@ -241,9 +272,11 @@ class DeliveryGraphRuntime:
                     "status": state["status"],
                 },
             )
+            node_started = time.perf_counter()
             try:
                 updated = node(state)
             except Exception as exc:
+                duration_ms = int((time.perf_counter() - node_started) * 1000)
                 write_event(
                     event_log,
                     run_id,
@@ -254,9 +287,11 @@ class DeliveryGraphRuntime:
                         "stage": state["stage"],
                         "status": "failed",
                         "error": str(exc),
+                        "duration_ms": duration_ms,
                     },
                 )
                 raise
+            duration_ms = int((time.perf_counter() - node_started) * 1000)
             write_event(
                 event_log,
                 run_id,
@@ -266,6 +301,7 @@ class DeliveryGraphRuntime:
                     "node": node_name,
                     "stage": updated["stage"],
                     "status": updated["status"],
+                    "duration_ms": duration_ms,
                 },
             )
             self.save_state(Path(updated["run_dir"]), updated)
@@ -286,27 +322,3 @@ class DeliveryGraphRuntime:
                 "state_artifact": self.state_filename,
             },
         )
-
-    def _hydrate_existing_run_context(
-        self,
-        run_dir: Path,
-        state: DeliveryState,
-    ) -> DeliveryState:
-        request_path = run_dir / EXECUTION_REQUEST_ARTIFACT
-        if not request_path.exists():
-            return state
-
-        request = load_execution_request(run_dir)
-        updated: DeliveryState = {**state}
-        updated["target_project_dir"] = request.target_project_dir
-        updated["feature_queue"] = request.feature_queue
-        updated["completed_feature_ids"] = request.completed_feature_ids
-        updated["feature_statuses"] = {
-            feature_id: "qa_passed" for feature_id in request.completed_feature_ids
-        }
-        updated["feature_repair_attempts"] = {}
-        active_feature = request.active_feature
-        updated["active_feature_id"] = (
-            str(active_feature["id"]) if active_feature and active_feature.get("id") else None
-        )
-        return updated

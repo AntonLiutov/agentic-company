@@ -1,5 +1,6 @@
 import json
 
+from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.orchestration.graphs import (
     CONSOLE_EXECUTION_NODE_ORDER,
     DELIVERY_GRAPH_NODE_ORDER,
@@ -9,12 +10,13 @@ from agentic_company.orchestration.runtime import (
     DEFAULT_STATE_FILENAME,
     DeliveryGraphRuntime,
 )
-from agentic_company.platform.artifacts import artifact_ref
+from agentic_company.platform.run_trace import load_run_events
 from agentic_company.platform.state import DeliveryState, initial_delivery_state
 
 
-def test_delivery_graph_runtime_starts_graph_and_persists_state(tmp_path):
+def test_delivery_graph_runtime_starts_graph_and_persists_state(tmp_path, monkeypatch):
     run_dir = tmp_path / "runs" / "runtime-test"
+    _create_run(tmp_path, monkeypatch, run_dir)
     requirements_path = run_dir / "00-requirements.md"
     visited: list[str] = []
 
@@ -26,15 +28,6 @@ def test_delivery_graph_runtime_starts_graph_and_persists_state(tmp_path):
                 "stage": name,
                 "status": f"{name}_completed",
                 "completed_nodes": [*state["completed_nodes"], name],
-                "artifacts": [
-                    *state["artifacts"],
-                    artifact_ref(
-                        f"{name}.json",
-                        kind="internal",
-                        owner_agent=f"{name}-agent",
-                        visibility="internal",
-                    ),
-                ],
             }
 
         return run
@@ -59,17 +52,10 @@ def test_delivery_graph_runtime_starts_graph_and_persists_state(tmp_path):
     assert runtime.load_state(run_dir) == result
 
 
-def test_delivery_graph_runtime_loads_existing_state_before_running(tmp_path):
+def test_delivery_graph_runtime_loads_existing_state_before_running(tmp_path, monkeypatch):
     run_dir = tmp_path / "runs" / "existing-state"
+    _create_run(tmp_path, monkeypatch, run_dir)
     starting_state = initial_delivery_state(run_id="existing-state", run_dir=run_dir)
-    starting_state["artifacts"] = [
-        artifact_ref(
-            "existing.json",
-            kind="internal",
-            owner_agent="existing-agent",
-            visibility="internal",
-        )
-    ]
     runtime = DeliveryGraphRuntime(
         node_order=("head",),
         nodes=DeliveryGraphNodes(
@@ -92,11 +78,29 @@ def test_delivery_graph_runtime_loads_existing_state_before_running(tmp_path):
     assert result["run_id"] == "existing-state"
     assert result["max_repair_attempts"] == 5
     assert result["completed_nodes"] == ["head"]
-    assert result["artifacts"] == starting_state["artifacts"]
 
 
-def test_delivery_graph_runtime_writes_graph_events(tmp_path):
+def test_delivery_graph_runtime_loads_state_from_db_without_file(tmp_path, monkeypatch):
+    run_dir = tmp_path / "runs" / "db-state"
+    _create_run(tmp_path, monkeypatch, run_dir)
+    starting_state = initial_delivery_state(run_id="db-state", run_dir=run_dir)
+    starting_state["stage"] = "team_lead"
+    starting_state["status"] = "running"
+    runtime = DeliveryGraphRuntime(node_order=("head",), nodes=DeliveryGraphNodes())
+    state_path = runtime.save_state(run_dir, starting_state)
+    state_path.unlink()
+
+    loaded = runtime.load_state(run_dir)
+
+    assert loaded is not None
+    assert loaded["run_id"] == "db-state"
+    assert loaded["stage"] == "team_lead"
+    assert loaded["status"] == "running"
+
+
+def test_delivery_graph_runtime_writes_graph_events(tmp_path, monkeypatch):
     run_dir = tmp_path / "runs" / "graph-events"
+    _create_run(tmp_path, monkeypatch, run_dir)
     visited: list[str] = []
 
     def node(name: str):
@@ -127,30 +131,22 @@ def test_delivery_graph_runtime_writes_graph_events(tmp_path):
 
     runtime.start(run_dir)
 
-    events = [
-        json.loads(line)
-        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
-    event_names = [event["event"] for event in events]
-    node_events = [event for event in events if event["event"] == "delivery_graph_node_completed"]
+    events = load_run_events(run_dir)
+    event_names = [event.event_type for event in events]
+    node_events = [event for event in events if event.event_type == "delivery_graph_node_completed"]
 
     assert visited == CONSOLE_EXECUTION_NODE_ORDER
     assert "delivery_graph_started" in event_names
     assert "delivery_graph_completed" in event_names
     assert "delivery_graph_state_written" in event_names
-    assert [event["data"]["node"] for event in node_events] == CONSOLE_EXECUTION_NODE_ORDER
-    assert {event["agent_id"] for event in events} == {"delivery-graph"}
+    assert [event.data["node"] for event in node_events] == CONSOLE_EXECUTION_NODE_ORDER
+    assert {event.agent_id for event in events} == {"delivery-graph"}
 
 
-def test_delivery_graph_runtime_hydrates_feature_queue_from_existing_execution_request(
-    tmp_path,
-):
+def test_delivery_graph_runtime_hydrates_only_execution_session_fields(tmp_path, monkeypatch):
     run_dir = tmp_path / "runs" / "hydrated"
     run_dir.mkdir(parents=True)
-    feature_queue = [
-        {"id": "F1", "title": "Create", "delivery_order": 1},
-        {"id": "F2", "title": "Update", "delivery_order": 2},
-    ]
+    _create_run(tmp_path, monkeypatch, run_dir, target_project_dir=run_dir / "generated-project")
     request_path = run_dir / "delivery/execution-request.json"
     request_path.parent.mkdir(parents=True, exist_ok=True)
     request_path.write_text(
@@ -161,15 +157,14 @@ def test_delivery_graph_runtime_hydrates_feature_queue_from_existing_execution_r
                 "agent_version": "0.1.0",
                 "maturity_level": "L6 Codex Agent",
                 "provider": "codex",
-                "model": "gpt-5.3-codex",
+                "model": "gpt-5.5",
                 "target_project_dir": str(run_dir / "generated-project"),
                 "input_artifacts": [],
                 "expected_outputs": [],
                 "instructions": [],
                 "constraints": [],
-                "feature_queue": feature_queue,
-                "active_feature": feature_queue[0],
-                "completed_feature_ids": [],
+                "work_item": {"work_item_id": "F1"},
+                "completed_work_item_ids": [],
             }
         ),
         encoding="utf-8",
@@ -177,10 +172,9 @@ def test_delivery_graph_runtime_hydrates_feature_queue_from_existing_execution_r
     seen: dict[str, object] = {}
 
     def team_lead(state: DeliveryState) -> DeliveryState:
-        seen["feature_queue"] = state["feature_queue"]
-        seen["active_feature_id"] = state["active_feature_id"]
-        seen["feature_statuses"] = state["feature_statuses"]
-        seen["feature_repair_attempts"] = state["feature_repair_attempts"]
+        seen["target_project_dir"] = state["target_project_dir"]
+        seen["has_work_items"] = "work_items" in state
+        seen["has_current_work_item_id"] = "current_work_item_id" in state
         return {**state, "stage": "team_lead", "status": "seen"}
 
     runtime = DeliveryGraphRuntime(
@@ -190,23 +184,20 @@ def test_delivery_graph_runtime_hydrates_feature_queue_from_existing_execution_r
 
     runtime.start(run_dir)
 
-    assert seen["feature_queue"] == feature_queue
-    assert seen["active_feature_id"] == "F1"
-    assert seen["feature_statuses"] == {}
-    assert seen["feature_repair_attempts"] == {}
+    assert seen["target_project_dir"] == str(run_dir / "generated-project")
+    assert seen["has_work_items"] is False
+    assert seen["has_current_work_item_id"] is False
 
 
-def test_delivery_graph_runtime_checkpoints_state_between_nodes(tmp_path):
+def test_delivery_graph_runtime_checkpoints_state_between_nodes(tmp_path, monkeypatch):
     run_dir = tmp_path / "runs" / "checkpointed"
+    _create_run(tmp_path, monkeypatch, run_dir)
 
     def team_lead(state: DeliveryState) -> DeliveryState:
         return {
             **state,
             "stage": "team_lead",
             "status": "team_lead_sprint_handoff_ready",
-            "active_feature_id": None,
-            "completed_feature_ids": ["F1", "F2"],
-            "feature_statuses": {"F1": "qa_passed", "F2": "qa_passed"},
             "qa_status": "passed",
             "deployment_status": "deployed",
             "completed_nodes": [*state["completed_nodes"], "team_lead"],
@@ -221,11 +212,14 @@ def test_delivery_graph_runtime_checkpoints_state_between_nodes(tmp_path):
 
     result = runtime.start(run_dir)
 
-    assert result["completed_feature_ids"] == ["F1", "F2"]
+    assert result["status"] == "team_lead_sprint_handoff_ready"
 
 
-def test_delivery_graph_runtime_skips_downstream_nodes_when_state_has_blockers(tmp_path):
+def test_delivery_graph_runtime_skips_downstream_nodes_when_state_has_blockers(
+    tmp_path, monkeypatch
+):
     run_dir = tmp_path / "runs" / "blocked-after-business-analysis"
+    _create_run(tmp_path, monkeypatch, run_dir)
     visited: list[str] = []
 
     def business_analyst(state: DeliveryState) -> DeliveryState:
@@ -255,14 +249,46 @@ def test_delivery_graph_runtime_skips_downstream_nodes_when_state_has_blockers(t
 
     result = runtime.start(run_dir)
 
-    events = [
-        json.loads(line)
-        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
-    skipped = [event for event in events if event["event"] == "delivery_graph_node_skipped"]
+    events = load_run_events(run_dir)
+    skipped = [event for event in events if event.event_type == "delivery_graph_node_skipped"]
 
     assert visited == ["business_analyst"]
     assert result["stage"] == "business_analysis"
     assert result["status"] == "business_analysis_verified_downstream_paused"
     assert result["blockers"] == ["Downstream agents are intentionally paused."]
-    assert [event["data"]["node"] for event in skipped] == ["team_lead"]
+    assert [event.data["node"] for event in skipped] == ["team_lead"]
+
+
+def _create_run(
+    tmp_path,
+    monkeypatch,
+    run_dir,
+    *,
+    target_project_dir=None,
+) -> None:
+    db_path = tmp_path / "console.db"
+    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
+    repo = ConsoleRepository(db_path)
+    repo.init_schema()
+    user = repo.create_user(
+        email=f"{run_dir.name}@example.test",
+        username=f"user-{run_dir.name}",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Runtime",
+        request_text="Runtime",
+        mode="internal_tool",
+        complexity="simple",
+        status="running",
+    )
+    repo.create_run(
+        project_id=project.id,
+        run_uid=run_dir.name,
+        run_dir=run_dir,
+        target_project_dir=target_project_dir or run_dir / "generated-project",
+        status="running",
+        mode="internal_tool",
+        reasoning="medium",
+    )

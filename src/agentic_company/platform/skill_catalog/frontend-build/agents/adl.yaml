@@ -1,0 +1,53 @@
+schema_version: 1
+skill_id: frontend-build
+version: "1.0"
+status: active
+trust_level: system
+selection:
+  applies_to_agents: [fullstack-agent]
+  default_for_agents: [fullstack-agent]
+  stages: [fullstack, build, repair]
+  trigger_keywords: [implement, build, UI repair, broken button, runtime defect, layout defect]
+  negative_triggers: [QA-only validation, deployment-only work, release report]
+contracts:
+  required_tools: [codex_exec]
+  allowed_tools: [codex_exec]
+  consumes_artifacts: [requirements_brief, architecture_report, delivery_plan, qa_report]
+  produces_artifacts:
+    - artifact_type: execution_summary
+      visibility: developer
+      required: true
+      dashboard_label: Build summary
+      external_reference_type: work_item
+    - artifact_type: screenshot_evidence
+      visibility: qa_evidence
+      required: false
+      dashboard_label: Screenshot evidence
+      external_reference_type: work_item
+    - artifact_type: tool_result
+      visibility: developer
+      required: false
+      dashboard_label: Tool result
+      external_reference_type: work_item
+dashboard:
+  status: in_progress
+  work_item_stage: build
+  external_systems_supported: [internal, github, jira, azure_devops, linear]
+  comment_template: build-update
+  labels: [agentic-delivery, build]
+governance:
+  risk_level: medium
+  requires_human_approval: false
+  max_repair_attempts: 2
+  checkpoint_before: true
+  checkpoint_after: true
+validation:
+  eval_prompts:
+    - Implement a small web app with two working buttons and no placeholder UI.
+  success_signals:
+    - execution_summary artifact exists
+    - changed files are listed
+    - local run or blocker evidence is present
+examples:
+  - input: Feature work item and planning artifact refs
+    output: Implemented slice with summary and evidence

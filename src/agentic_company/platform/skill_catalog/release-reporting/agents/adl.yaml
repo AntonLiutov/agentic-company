@@ -1,0 +1,43 @@
+schema_version: 1
+skill_id: release-reporting
+version: "1.0"
+status: active
+trust_level: system
+selection:
+  applies_to_agents: [documentation-handoff-agent]
+  default_for_agents: [documentation-handoff-agent]
+  stages: [handoff, release, reporting]
+  trigger_keywords: [release report, handoff, business report, stakeholder summary, final outcome]
+  negative_triggers: [implementation, QA execution, deployment setup]
+contracts:
+  required_tools: [codex_exec]
+  allowed_tools: [codex_exec]
+  consumes_artifacts: [requirements_brief, delivery_plan, qa_report, deployment_summary]
+  produces_artifacts:
+    - artifact_type: release_report
+      visibility: release
+      required: true
+      dashboard_label: Release report
+      external_reference_type: work_item
+dashboard:
+  status: done
+  work_item_stage: release
+  external_systems_supported: [internal, github, jira, azure_devops, linear]
+  comment_template: release-report
+  labels: [agentic-delivery, release]
+governance:
+  risk_level: medium
+  requires_human_approval: false
+  max_repair_attempts: 1
+  checkpoint_before: false
+  checkpoint_after: true
+validation:
+  eval_prompts:
+    - Write a release report for a deployed generated demo with QA evidence.
+  success_signals:
+    - release_report artifact exists
+    - generated app URL or blocker is explicit
+    - limitations and next steps are present
+examples:
+  - input: Delivery artifacts and deployed URL
+    output: Stakeholder-ready release report

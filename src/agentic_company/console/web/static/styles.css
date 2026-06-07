@@ -1853,7 +1853,7 @@ textarea { resize: vertical; line-height: 1.5; min-height: 10rem; max-height: 36
 .workflow-arrow {
   display: none;
 }
-.legacy-workflow {
+.delivery-workflow {
   display: none;
 }
 .landing-flow {

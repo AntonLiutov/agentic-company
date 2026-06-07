@@ -56,7 +56,7 @@ class BusinessAnalystCodexRunner:
         execution_id = build_agent_execution_id(
             run_id=str(request["run_id"]),
             agent_id=BUSINESS_ANALYST_AGENT_ID,
-            target="requirements",
+            correlation_id="requirements",
             intent="business_analysis",
         )
         codex_execution_id = build_codex_execution_id(
@@ -94,7 +94,7 @@ class BusinessAnalystCodexRunner:
             encoding="utf-8",
         )
         write_event(
-            run_dir / "events.jsonl",
+            run_dir,
             str(request["run_id"]),
             BUSINESS_ANALYST_AGENT_ID,
             "business_analysis_codex_started",
@@ -107,6 +107,10 @@ class BusinessAnalystCodexRunner:
                 log_path,
                 raw_events_path,
                 codex_execution_id=codex_execution_id,
+                run_dir=run_dir,
+                run_id=str(request["run_id"]),
+                agent_id=BUSINESS_ANALYST_AGENT_ID,
+                work_item_id="PLAN-01",
             )
         except FileNotFoundError:
             LOGGER.exception("Business Analyst Codex CLI missing run_id=%s", request["run_id"])
@@ -145,7 +149,7 @@ class BusinessAnalystCodexRunner:
             *structured_artifacts,
         ]
         write_event(
-            run_dir / "events.jsonl",
+            run_dir,
             str(request["run_id"]),
             BUSINESS_ANALYST_AGENT_ID,
             "business_analysis_codex_completed",
@@ -179,6 +183,10 @@ class BusinessAnalystCodexRunner:
         raw_events_path: Path,
         *,
         codex_execution_id: str,
+        run_dir: Path,
+        run_id: int | str,
+        agent_id: str,
+        work_item_id: str | None,
     ) -> subprocess.CompletedProcess[str]:
         if self.command_executor:
             return self.command_executor(
@@ -195,6 +203,10 @@ class BusinessAnalystCodexRunner:
             log_path,
             raw_events_path,
             codex_execution_id=codex_execution_id,
+            trace_run_dir=run_dir,
+            trace_run_id=run_id,
+            trace_agent_id=agent_id,
+            trace_work_item_id=work_item_id,
         )
 
 
@@ -296,7 +308,7 @@ Write policy:
 - Write only the two allowed business analysis artifacts listed above.
 - Do not modify generated-project files.
 - Do not write implementation, QA, deployment, handoff, or Team Lead artifacts.
-- Do not create sprint plans, feature queues, delivery sequencing, or technical
+- Do not create sprint plans, planned work item contracts, delivery sequencing, or technical
   architecture.
 - Do not edit platform repository files.
 - Do not print secrets.
@@ -319,12 +331,12 @@ Business analysis output:
 - Treat the JSON as an internal contract for downstream platform roles from the
   registry snapshot. Do not treat Markdown as that internal contract.
 - Acceptance criteria must be business-facing, testable, and scoped.
-- If the requirements include feature ids, sprint ids, milestones, phases, or
+- If the requirements include work item ids, sprint ids, milestones, phases, or
   named plan markers, preserve those original labels as `source_refs` on related
   JSON user stories, acceptance criteria, risks, and open questions.
 - Preserve every distinct feature/source label from the requirements. Do not
   collapse many features into a smaller fixed set, and do not invent generic
-  feature ids when the user provided specific labels.
+  work item ids when the user provided specific labels.
 - Preserve source references for both feature and non-feature requirements.
   Use the most specific original label available: feature id, milestone, phase,
   section heading, bullet label, requirement name, or a concise descriptive

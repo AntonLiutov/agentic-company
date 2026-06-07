@@ -61,22 +61,23 @@ class AgentMessage:
 
 
 class AgentMessageStore:
-    """Append-only JSONL message store scoped to one run directory."""
+    """DB-backed message store with a run-local JSONL debug export."""
 
     def __init__(self, run_dir: str | Path) -> None:
         self.run_dir = Path(run_dir)
         self.path = self.run_dir / "messages" / "agent-messages.jsonl"
 
     def append(self, message: AgentMessage) -> AgentMessage:
-        """Append a message to the run-local message log."""
+        """Append a message to canonical DB storage and export it locally."""
 
+        _persist_message_to_db(self.run_dir, message)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(message.to_dict(), sort_keys=True) + "\n")
         return message
 
     def get(self, message_id: str) -> AgentMessage | None:
-        """Return one message by id from the run-local message log."""
+        """Return one message by id from canonical DB storage."""
 
         for message in self.read():
             if message.message_id == message_id:
@@ -94,27 +95,14 @@ class AgentMessageStore:
     ) -> list[AgentMessage]:
         """Read messages with optional sender, recipient, intent, and limit filters."""
 
-        if not self.path.exists():
-            return []
-
-        messages: list[AgentMessage] = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            message = AgentMessage.from_dict(json.loads(line))
-            if to_agent is not None and message.to_agent != to_agent:
-                continue
-            if from_agent is not None and message.from_agent != from_agent:
-                continue
-            if intent is not None and message.intent != intent:
-                continue
-            if correlation_id is not None and message.correlation_id != correlation_id:
-                continue
-            messages.append(message)
-
-        if limit is not None:
-            return messages[-limit:]
-        return messages
+        return _read_messages_from_db(
+            self.run_dir,
+            to_agent=to_agent,
+            from_agent=from_agent,
+            intent=intent,
+            correlation_id=correlation_id,
+            limit=limit,
+        )
 
 
 def render_incoming_messages_for_prompt(
@@ -179,6 +167,59 @@ def append_agent_response(
             status="sent",
         )
     )
+
+
+def _persist_message_to_db(run_dir: Path, message: AgentMessage) -> None:
+    db_run_id = _db_run_id_for_run_dir(run_dir)
+    if db_run_id is None:
+        raise RuntimeError(f"No DB run is registered for message run_dir={run_dir}")
+    from agentic_company.console.web.db import ConsoleRepository
+
+    repo = ConsoleRepository()
+    repo.init_schema()
+    repo.upsert_agent_message(db_run_id, message.to_dict())
+
+
+def _read_messages_from_db(
+    run_dir: Path,
+    *,
+    to_agent: str | None,
+    from_agent: str | None,
+    intent: str | None,
+    correlation_id: str | None,
+    limit: int | None,
+) -> list[AgentMessage]:
+    db_run_id = _db_run_id_for_run_dir(run_dir)
+    if db_run_id is None:
+        raise RuntimeError(f"No DB run is registered for message run_dir={run_dir}")
+    from agentic_company.console.web.db import ConsoleRepository
+
+    repo = ConsoleRepository()
+    repo.init_schema()
+    return [
+        AgentMessage.from_dict(payload)
+        for payload in repo.list_agent_messages(
+            db_run_id,
+            to_agent=to_agent,
+            from_agent=from_agent,
+            intent=intent,
+            correlation_id=correlation_id,
+            limit=limit,
+        )
+    ]
+
+
+def _db_run_id_for_run_dir(run_dir: Path) -> int | None:
+    from agentic_company.console.web.db import ConsoleRepository
+
+    repo = ConsoleRepository()
+    repo.init_schema()
+    with repo.connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM runs WHERE run_dir = ?",
+            (str(run_dir),),
+        ).fetchone()
+    return int(row["id"]) if row else None
 
 
 def _indent_message(content: str, *, prefix: str) -> str:

@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Any, NotRequired, TypedDict
+from typing import NotRequired, TypedDict
 from uuid import uuid4
 
-from agentic_company.platform.artifacts import ArtifactRef
+DELIVERY_STATE_SNAPSHOT = Path("delivery") / "run-state.json"
 
 
 class DeliveryState(TypedDict):
@@ -28,18 +28,9 @@ class DeliveryState(TypedDict):
     post_deploy_repair_attempts: NotRequired[int]
     repair_attempts: int
     max_repair_attempts: int
-    artifacts: list[ArtifactRef]
     blockers: list[str]
     auto_confirmations: list[str]
     completed_nodes: list[str]
-    feature_queue: NotRequired[list[dict[str, Any]]]
-    candidate_feature_queue: NotRequired[list[dict[str, Any]]]
-    work_items: NotRequired[list[dict[str, Any]]]
-    active_feature_id: NotRequired[str | None]
-    completed_feature_ids: NotRequired[list[str]]
-    feature_statuses: NotRequired[dict[str, str]]
-    feature_repair_attempts: NotRequired[dict[str, int]]
-    work_board: NotRequired[dict[str, Any]]
     team_lead_sprint_id: NotRequired[str]
     agent_call_message_id: NotRequired[str | None]
     agent_call_correlation_id: NotRequired[str | None]
@@ -77,17 +68,9 @@ def initial_delivery_state(
         "post_deploy_repair_attempts": 0,
         "repair_attempts": 0,
         "max_repair_attempts": max_repair_attempts,
-        "artifacts": [],
         "blockers": [],
         "auto_confirmations": [],
         "completed_nodes": [],
-        "feature_queue": [],
-        "work_items": [],
-        "active_feature_id": None,
-        "completed_feature_ids": [],
-        "feature_statuses": {},
-        "feature_repair_attempts": {},
-        "work_board": {},
         "team_lead_sprint_id": "sprint-01",
         "codex_threads_by_agent": {},
     }
@@ -105,7 +88,10 @@ def mark_node_completed(
     updated: DeliveryState = {**state}
     updated["stage"] = stage
     updated["status"] = status
-    updated["completed_nodes"] = [*state.get("completed_nodes", []), node_name]
+    completed_nodes = list(state.get("completed_nodes", []))
+    if node_name not in completed_nodes:
+        completed_nodes.append(node_name)
+    updated["completed_nodes"] = completed_nodes
     return updated
 
 
@@ -129,9 +115,11 @@ def record_codex_thread(state: DeliveryState, agent_id: str, thread_id: str) -> 
 
 
 def write_delivery_state(state: DeliveryState, path: str | Path | None = None) -> Path:
-    """Persist delivery state atomically so live UI readers never see partial JSON."""
+    """Persist the internal graph state snapshot in DB and as a file export."""
 
-    state_path = Path(path) if path is not None else Path(state["run_dir"]) / ".delivery-state.json"
+    state_path = (
+        Path(path) if path is not None else Path(state["run_dir"]) / DELIVERY_STATE_SNAPSHOT
+    )
     state_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = state_path.with_name(f"{state_path.name}.{uuid4().hex}.tmp")
     payload = json.dumps(state, indent=2, sort_keys=True) + "\n"
@@ -146,4 +134,7 @@ def write_delivery_state(state: DeliveryState, path: str | Path | None = None) -
                 temp_path.unlink(missing_ok=True)
                 break
             time.sleep(0.05 * (attempt + 1))
+    from agentic_company.platform.runtime_db import record_delivery_state_snapshot
+
+    record_delivery_state_snapshot(dict(state))
     return state_path
