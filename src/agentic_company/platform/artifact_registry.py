@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from agentic_company.platform.tool_contracts import ArtifactLink
@@ -65,9 +65,14 @@ def normalize_artifact_path(path: str | Path) -> str:
 def resolve_run_artifact_path(run_dir: Path, relative_path: str | Path) -> Path:
     """Resolve a run-local artifact path and reject paths outside the run."""
 
-    normalized_path = normalize_artifact_path(relative_path)
     root = run_dir.resolve()
-    candidate = (run_dir / normalized_path).resolve()
+    raw_path = Path(str(relative_path))
+    normalized_path = normalize_artifact_path(relative_path)
+    candidate = (
+        raw_path.resolve()
+        if _is_absolute_artifact_path(relative_path)
+        else (run_dir / normalized_path).resolve()
+    )
     try:
         candidate.relative_to(root)
     except ValueError as exc:
@@ -227,3 +232,8 @@ def _optional_str(value: Any) -> str | None:
     if value in (None, ""):
         return None
     return str(value)
+
+
+def _is_absolute_artifact_path(path: str | Path) -> bool:
+    raw = str(path)
+    return Path(raw).is_absolute() or PureWindowsPath(raw).is_absolute()

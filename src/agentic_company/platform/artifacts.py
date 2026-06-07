@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from agentic_company.platform.artifact_registry import normalize_artifact_path
 from agentic_company.platform.models import ExecutionRequest
 
 EXECUTION_REQUEST_ARTIFACT = "delivery/execution-request.json"
@@ -98,7 +97,7 @@ def canonical_output_artifact_refs(
     refs: list[str] = []
     seen: set[str] = set()
     for raw_ref in artifact_refs:
-        token = normalize_artifact_path(str(raw_ref or "").strip())
+        token = str(raw_ref or "").strip()
         if not token:
             continue
         resolved_ref = _canonical_output_ref(
@@ -159,7 +158,7 @@ def _canonical_output_ref(
     artifact_ref: str,
 ) -> str:
     raw_path = Path(artifact_ref)
-    if raw_path.is_absolute():
+    if _is_absolute_artifact_path(artifact_ref):
         resolved = raw_path.resolve()
         try:
             return resolved.relative_to(run_root).as_posix()
@@ -197,6 +196,11 @@ def _is_relative_to(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _is_absolute_artifact_path(path: str | Path) -> bool:
+    raw = str(path)
+    return Path(raw).is_absolute() or PureWindowsPath(raw).is_absolute()
 
 
 def load_execution_request(run_dir: Path) -> ExecutionRequest:

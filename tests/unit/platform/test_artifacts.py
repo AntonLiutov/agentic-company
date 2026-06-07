@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.platform.artifacts import (
     build_execution_request_payload,
@@ -97,6 +99,110 @@ def test_build_execution_request_payload_omits_retired_topology_label(tmp_path: 
         "target_project_dir",
         "work_item",
     }
+
+
+def test_build_execution_request_payload_requires_target_project_dir():
+    with pytest.raises(ValueError, match="explicit target_project_dir"):
+        build_execution_request_payload(
+            {"run_id": "run"},
+            agent_id="fullstack-agent",
+            model="gpt-5.5",
+            input_artifacts=[],
+            expected_outputs=[],
+            instructions=[],
+            constraints=[],
+            target_project_dir="",
+        )
+
+
+def test_build_execution_request_payload_includes_explicit_handoff_contract(tmp_path: Path):
+    payload = build_execution_request_payload(
+        {
+            "run_id": "run",
+            "agent_execution_id": "exec-1",
+            "agent_execution_intent": "handoff",
+            "agent_call_message_id": "msg-1",
+        },
+        agent_id="documentation-handoff-agent",
+        model="gpt-5.5",
+        input_artifacts=["qa/report.md"],
+        expected_outputs=["handoff/report.html"],
+        instructions=["write report"],
+        constraints=["db contract only"],
+        target_project_dir=str(tmp_path / "run" / "generated-project"),
+        work_item={"id": "PLAN-04"},
+        completed_work_item_ids=["F1"],
+        codex_resume_thread_id="thread-1",
+        handoff_scope="sprint",
+        handoff_sprint_id="sprint-01",
+        handoff_output_dir="handoff/sprint-01",
+        handoff_expected_outputs=["release-report.html"],
+    )
+
+    assert payload["execution_id"] == "exec-1"
+    assert payload["execution_intent"] == "handoff"
+    assert payload["parent_message_id"] == "msg-1"
+    assert payload["work_item"] == {"id": "PLAN-04"}
+    assert payload["completed_work_item_ids"] == ["F1"]
+    assert payload["handoff_scope"] == "sprint"
+    assert payload["handoff_sprint_id"] == "sprint-01"
+    assert payload["handoff_output_dir"] == "handoff/sprint-01"
+    assert payload["handoff_expected_outputs"] == ["release-report.html"]
+
+
+def test_update_execution_request_context_updates_db_contract(monkeypatch, tmp_path: Path):
+    run_dir = tmp_path / "run-1"
+    run_dir.mkdir()
+    payload = {
+        "run_id": "run-1",
+        "agent_id": "fullstack-agent",
+        "agent_version": "0.1.0",
+        "maturity_level": "L6 Codex Agent",
+        "provider": "codex",
+        "model": "gpt-5.5",
+        "target_project_dir": str(run_dir / "generated-project"),
+        "input_artifacts": [],
+        "expected_outputs": [],
+        "instructions": [],
+        "constraints": [],
+    }
+    writes = []
+
+    monkeypatch.setattr(
+        "agentic_company.platform.runtime_db.latest_execution_request",
+        lambda run_id: dict(payload),
+    )
+    monkeypatch.setattr(
+        "agentic_company.platform.runtime_db.record_execution_request",
+        lambda run_id, updated: writes.append((run_id, dict(updated))),
+    )
+
+    update_execution_request_context(
+        run_dir,
+        execution_id="exec-2",
+        execution_intent="repair",
+        parent_message_id="msg-2",
+        codex_resume_thread_id="thread-2",
+        work_item={"id": "F1"},
+        completed_work_item_ids=["PLAN-01"],
+        handoff_scope="release",
+        handoff_sprint_id="sprint-01",
+        handoff_output_dir="handoff/release",
+        handoff_expected_outputs=["release-report.html"],
+    )
+
+    assert writes[0][0] == "run-1"
+    updated = writes[0][1]
+    assert updated["execution_id"] == "exec-2"
+    assert updated["execution_intent"] == "repair"
+    assert updated["parent_message_id"] == "msg-2"
+    assert updated["codex_resume_thread_id"] == "thread-2"
+    assert updated["work_item"] == {"id": "F1"}
+    assert updated["completed_work_item_ids"] == ["PLAN-01"]
+    assert updated["handoff_scope"] == "release"
+    assert updated["handoff_sprint_id"] == "sprint-01"
+    assert updated["handoff_output_dir"] == "handoff/release"
+    assert updated["handoff_expected_outputs"] == ["release-report.html"]
 
 
 def test_read_json_artifact_tolerates_and_normalizes_utf8_bom(tmp_path: Path):
