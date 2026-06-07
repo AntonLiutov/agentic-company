@@ -19,8 +19,11 @@ from agentic_company.agents.project_manager.graph import (
     PROJECT_MANAGEMENT_RISKS_MD,
     PROJECT_MANAGEMENT_ROADMAP_CSV,
     PROJECT_MANAGEMENT_WORK_ITEMS_JSON,
+    _apply_result,
 )
 from agentic_company.console.web.db import ConsoleRepository
+from agentic_company.platform.models import AgentRunResult
+from agentic_company.platform.state import initial_delivery_state
 
 
 def test_project_management_prompt_scopes_codex_to_planning_artifacts(tmp_path, monkeypatch):
@@ -273,6 +276,35 @@ def test_project_manager_codex_runner_maps_valid_contract_to_completed_result(
         .read_text(encoding="utf-8")
         .startswith("\ufeff")
     )
+
+
+def test_project_manager_success_clears_transient_contract_blocker(tmp_path, monkeypatch):
+    _register_run(tmp_path, monkeypatch)
+    state = initial_delivery_state(run_id="run", run_dir=tmp_path)
+    state["blockers"] = ["Invalid PM release-plan contract: sprint[1] missing delivery_order"]
+
+    monkeypatch.setattr(
+        "agentic_company.agents.project_manager.graph.materialize_pm_work_items",
+        lambda run_id, run_dir: None,
+    )
+    result = AgentRunResult(
+        agent_id="project-manager-agent",
+        status="project_management_completed",
+        output_artifacts=[],
+        summary="PM repaired the planning contract.",
+    )
+
+    updated = _apply_result(
+        {
+            "run_dir": str(tmp_path),
+            "delivery_state": state,
+            "result": result,
+        }
+    )["delivery_state"]
+
+    assert updated["status"] == "project_management_completed"
+    assert updated["blockers"] == []
+    assert updated["completed_nodes"] == ["project_management"]
 
 
 def _write_inputs(run_dir: Path) -> None:

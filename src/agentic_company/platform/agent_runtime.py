@@ -17,6 +17,7 @@ from agentic_company.platform.artifact_registry import (
     artifact_id_for,
     tool_artifact_refs_from_records,
 )
+from agentic_company.platform.artifacts import discover_implementation_artifacts
 from agentic_company.platform.messages import AgentMessage, AgentMessageStore
 from agentic_company.platform.models import AgentRunResult
 from agentic_company.platform.run_trace import (
@@ -511,6 +512,23 @@ def _append_agent_executor_feedback(
         + "\n",
         encoding="utf-8",
     )
+    runtime_run_id = str(request.delivery_state.get("run_id") or request.run_dir.name)
+    relative_path = feedback_path.relative_to(request.run_dir).as_posix()
+    record_artifact_link(
+        request.run_dir,
+        ArtifactRegistrationRequest(
+            artifact_id=artifact_id_for(runtime_run_id, relative_path),
+            artifact_type="agent_feedback",
+            visibility="internal",
+            owner_agent=request.agent_id,
+            source_tool="agent_executor_feedback",
+            label=f"Agent feedback: {feedback_path.name}",
+            relative_path=relative_path,
+            run_id=runtime_run_id,
+            work_item_id=request.packet.work_item_id,
+            task_scoped=True,
+        ),
+    )
 
 
 def _feedback_content(
@@ -601,6 +619,11 @@ def _codex_exec_tool_response(
         )
         for path in result.output_artifacts
     ]
+    if request.stage.strip().lower() == "fullstack":
+        _register_implementation_inventory(
+            request=request,
+            runtime_run_id=runtime_run_id,
+        )
     output_artifacts = tool_artifact_refs_from_records(artifact_records)
     tool_result = ToolCallResult(
         tool_name="codex_exec",
@@ -790,6 +813,8 @@ def _artifact_contract_for_stage(stage: str, relative_path: str) -> tuple[str, s
     normalized = stage.strip().lower()
     if normalized in {"business_analysis", "architecture", "project_management"}:
         return f"{normalized}_deliverable", "business", "Planning report"
+    if normalized == "fullstack":
+        return "execution_summary", "business", "Build summary"
     if normalized == "qa":
         return "qa_evidence", "qa_evidence", "Quality evidence"
     if normalized == "deployment":
@@ -797,6 +822,35 @@ def _artifact_contract_for_stage(stage: str, relative_path: str) -> tuple[str, s
     if normalized == "handoff":
         return "release_report", "release", "Release report"
     return "codex_output", "internal", "Codex output"
+
+
+def _register_implementation_inventory(
+    *,
+    request: SpecialistAgentRequest,
+    runtime_run_id: str,
+) -> None:
+    target_project_dir = str(request.delivery_state.get("target_project_dir") or "").strip()
+    if not target_project_dir:
+        return
+    for relative_path in discover_implementation_artifacts(
+        run_dir=request.run_dir,
+        target_project_dir=target_project_dir,
+    ):
+        record_artifact_link(
+            request.run_dir,
+            ArtifactRegistrationRequest(
+                artifact_id=artifact_id_for(runtime_run_id, relative_path),
+                artifact_type="implementation_artifact",
+                visibility="developer",
+                owner_agent=request.agent_id,
+                source_tool="implementation_inventory",
+                label=f"Implementation file: {Path(relative_path).name}",
+                relative_path=relative_path,
+                run_id=runtime_run_id,
+                work_item_id=request.packet.work_item_id,
+                task_scoped=True,
+            ),
+        )
 
 
 def _is_internal_execution_artifact(relative_path: str) -> bool:

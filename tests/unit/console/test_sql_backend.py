@@ -5,7 +5,9 @@ from agentic_company.console.web.sql_backend import (
     DatabaseSettings,
     _postgres_pool,
     _translate_sql,
+    is_retryable_database_error,
     postgres_pool_bounds,
+    retry_database_operation,
 )
 
 
@@ -75,6 +77,42 @@ def test_postgres_pool_is_reused_per_url(monkeypatch):
     _POSTGRES_POOLS.clear()
 
 
+def test_retry_database_operation_retries_deadlock(monkeypatch):
+    monkeypatch.setenv("AGENTIC_DATABASE_RETRY_ATTEMPTS", "3")
+    monkeypatch.setenv("AGENTIC_DATABASE_RETRY_DELAY_SECONDS", "0")
+    calls = {"count": 0}
+
+    def operation():
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise _FakeDatabaseError("deadlock detected", sqlstate="40P01")
+        return "ok"
+
+    assert retry_database_operation(operation) == "ok"
+    assert calls["count"] == 2
+
+
+def test_retry_database_operation_does_not_retry_contract_errors(monkeypatch):
+    monkeypatch.setenv("AGENTIC_DATABASE_RETRY_ATTEMPTS", "3")
+    calls = {"count": 0}
+
+    def operation():
+        calls["count"] += 1
+        raise ValueError("contract failed")
+
+    try:
+        retry_database_operation(operation)
+    except ValueError as exc:
+        assert "contract failed" in str(exc)
+    else:
+        raise AssertionError("Expected contract error to fail without retry.")
+    assert calls["count"] == 1
+
+
+def test_retryable_database_error_detects_postgres_sqlstate():
+    assert is_retryable_database_error(_FakeDatabaseError("boom", sqlstate="40P01"))
+
+
 class _FakePool:
     def __init__(self, *, conninfo, min_size, max_size, kwargs, open):
         self.conninfo = conninfo
@@ -86,3 +124,9 @@ class _FakePool:
 
     def open(self):
         self.opened = True
+
+
+class _FakeDatabaseError(Exception):
+    def __init__(self, message: str, *, sqlstate: str = "") -> None:
+        super().__init__(message)
+        self.sqlstate = sqlstate

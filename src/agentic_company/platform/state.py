@@ -88,7 +88,10 @@ def mark_node_completed(
     updated: DeliveryState = {**state}
     updated["stage"] = stage
     updated["status"] = status
-    updated["completed_nodes"] = [*state.get("completed_nodes", []), node_name]
+    completed_nodes = list(state.get("completed_nodes", []))
+    if node_name not in completed_nodes:
+        completed_nodes.append(node_name)
+    updated["completed_nodes"] = completed_nodes
     return updated
 
 

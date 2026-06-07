@@ -41,7 +41,7 @@ def write_event(
         )
     except Exception:
         LOGGER.exception("structured_trace_write_failed run_id=%s event=%s", run_id, event)
-    LOGGER.info(
+    LOGGER.debug(
         "event_written run_id=%s agent=%s event=%s data_keys=%s",
         run_id,
         agent_id,

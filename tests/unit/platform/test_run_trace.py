@@ -1,4 +1,5 @@
 ﻿import json
+import logging
 import subprocess
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from agentic_company.platform.run_trace import (
     load_run_events,
     load_tool_call_events,
     record_model_call_event,
+    record_run_event,
     record_tool_call_event,
     sanitize_trace_data,
     trace_summary,
@@ -46,6 +48,41 @@ def test_write_event_records_structured_trace_without_retired_root_log(tmp_path:
     assert events[0].data["api_key"] == "[REDACTED]"
     assert events[0].artifact_ids == ["art_abc123"]
     assert (tmp_path / RUN_TRACE_DIR / RUN_EVENTS_FILE).exists()
+
+
+def test_write_event_debug_log_does_not_pollute_operator_info_logs(
+    tmp_path: Path,
+    caplog,
+):
+    with caplog.at_level(logging.INFO):
+        write_event(
+            tmp_path,
+            "run-1",
+            "project-manager-agent",
+            "project_management_started",
+            {"artifact": "upstream-planning/project-management/release-plan.json"},
+        )
+
+    assert "event_written" not in caplog.text
+    assert "data_keys" not in caplog.text
+
+
+def test_operator_run_event_log_is_human_readable(tmp_path: Path, caplog):
+    with caplog.at_level(logging.INFO, logger="agentic_company.runtime"):
+        record_run_event(
+            tmp_path,
+            run_id="run-1",
+            agent_id="project-manager-agent",
+            event_type="project_management_blocked",
+            status="needs_repair",
+            work_item_id="PLAN-03",
+            message="Delivery plan is missing sprint delivery order.",
+        )
+
+    assert (
+        "RUN run-1 [PLAN-03] Delivery Planner: project management blocked -> needs repair "
+        "- Delivery plan is missing sprint delivery order."
+    ) in caplog.text
 
 
 def test_tool_and_model_trace_roundtrip_and_summary(tmp_path: Path):
@@ -82,6 +119,27 @@ def test_tool_and_model_trace_roundtrip_and_summary(tmp_path: Path):
     assert model_events[0].estimated_cost_usd is None
     assert summary["duration_ms"] == 83
     assert summary["tools"] == {"run_fullstack": 1}
+
+
+def test_duplicate_tool_trace_events_are_idempotent(tmp_path: Path):
+    for second in range(3):
+        record_tool_call_event(
+            tmp_path,
+            run_id="run-1",
+            agent_id="qa-codex-agent",
+            tool_name="qa_codex_attempt_started",
+            tool_call_id="qa:TASK-03:attempt-1",
+            status="running",
+            work_item_id="TASK-03",
+            input_summary={"attempt": 1},
+            created_at=f"2026-01-01T00:00:0{second}Z",
+        )
+
+    events = load_tool_call_events(tmp_path)
+    lines = (tmp_path / RUN_TRACE_DIR / TOOL_CALL_EVENTS_FILE).read_text(encoding="utf-8")
+
+    assert len(events) == 1
+    assert lines.count("qa_codex_attempt_started") == 1
 
 
 def test_trace_events_are_persisted_to_console_db(tmp_path: Path, monkeypatch):

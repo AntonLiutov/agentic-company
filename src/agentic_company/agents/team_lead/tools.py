@@ -289,6 +289,9 @@ class TeamLeadToolbox:
             or reason
             or "Review the referenced artifacts against the explicit work item.",
             artifact_refs=refs,
+            model=agent_env_value("TEAM_LEAD_CODEX_REVIEW_MODEL", self.delivery_state)
+            or agent_env_value("AGENT_CODEX_MODEL", self.delivery_state)
+            or DEFAULT_CODEX_MODEL,
             execution_id=build_agent_execution_id(
                 run_id=str(self.delivery_state["run_id"]),
                 agent_id=TEAM_LEAD_AGENT_ID,

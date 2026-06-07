@@ -491,12 +491,12 @@ def _compact_delivery_state(state: DeliveryState) -> dict[str, Any]:
         "run_id",
         "stage",
         "status",
-        "requirements_path",
         "team_lead_sprint_id",
         "completed_nodes",
         "blockers",
     ]
     compact = {key: state.get(key) for key in keys if key in state}
+    compact["source_requirements_ref"] = "00-requirements.md"
     return compact
 
 

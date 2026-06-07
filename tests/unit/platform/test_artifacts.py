@@ -3,6 +3,8 @@
 from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.platform.artifacts import (
     build_execution_request_payload,
+    canonical_output_artifact_refs,
+    discover_implementation_artifacts,
     load_execution_request,
     read_json_artifact,
     read_text_artifact,
@@ -116,3 +118,96 @@ def test_read_text_artifact_tolerates_windows_encoded_text(tmp_path: Path):
     assert "HANDOFF_STATUS: ready" in text
     assert "Sprint - done" not in text
     assert "Sprint \u2013 done" in text
+
+
+def test_canonical_output_artifact_refs_converts_target_relative_files_to_run_refs(
+    tmp_path: Path,
+):
+    run_dir = tmp_path / "run"
+    target_project_dir = run_dir / "generated-project"
+    target_project_dir.mkdir(parents=True)
+    (target_project_dir / "README.md").write_text("# App\n", encoding="utf-8")
+
+    refs = canonical_output_artifact_refs(
+        run_dir=run_dir,
+        target_project_dir=target_project_dir,
+        artifact_refs=["README.md"],
+    )
+
+    assert refs == ["generated-project/README.md"]
+
+
+def test_canonical_output_artifact_refs_preserves_existing_run_relative_files(
+    tmp_path: Path,
+):
+    run_dir = tmp_path / "run"
+    target_project_dir = run_dir / "generated-project"
+    report = run_dir / "codex" / "F1" / "summary.md"
+    report.parent.mkdir(parents=True)
+    target_project_dir.mkdir(parents=True)
+    report.write_text("# Summary\n", encoding="utf-8")
+
+    refs = canonical_output_artifact_refs(
+        run_dir=run_dir,
+        target_project_dir=target_project_dir,
+        artifact_refs=["codex/F1/summary.md"],
+    )
+
+    assert refs == ["codex/F1/summary.md"]
+
+
+def test_canonical_output_artifact_refs_rejects_paths_outside_run(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    target_project_dir = run_dir / "generated-project"
+    outside = tmp_path / "outside.md"
+    target_project_dir.mkdir(parents=True)
+    outside.write_text("# Nope\n", encoding="utf-8")
+
+    try:
+        canonical_output_artifact_refs(
+            run_dir=run_dir,
+            target_project_dir=target_project_dir,
+            artifact_refs=[str(outside)],
+        )
+    except ValueError as exc:
+        assert "inside run directory" in str(exc)
+    else:
+        raise AssertionError("Expected outside artifact path to fail")
+
+
+def test_discover_implementation_artifacts_uses_explicit_target_root(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    target_project_dir = run_dir / "generated-project"
+    web_dir = target_project_dir / "web"
+    cache_dir = target_project_dir / "node_modules" / "dep"
+    web_dir.mkdir(parents=True)
+    cache_dir.mkdir(parents=True)
+    (web_dir / "index.html").write_text("<main>App</main>\n", encoding="utf-8")
+    (web_dir / "app.js").write_text("console.log('app')\n", encoding="utf-8")
+    (target_project_dir / ".env").write_text("SECRET=value\n", encoding="utf-8")
+    (target_project_dir / "uv.lock").write_text("lock\n", encoding="utf-8")
+    (cache_dir / "index.js").write_text("cached\n", encoding="utf-8")
+
+    refs = discover_implementation_artifacts(
+        run_dir=run_dir,
+        target_project_dir=target_project_dir,
+    )
+
+    assert refs == [
+        "generated-project/web/app.js",
+        "generated-project/web/index.html",
+    ]
+
+
+def test_discover_implementation_artifacts_rejects_target_outside_run(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    outside = tmp_path / "outside-project"
+    run_dir.mkdir()
+    outside.mkdir()
+
+    try:
+        discover_implementation_artifacts(run_dir=run_dir, target_project_dir=outside)
+    except ValueError as exc:
+        assert "inside run directory" in str(exc)
+    else:
+        raise AssertionError("Expected outside target project to fail")

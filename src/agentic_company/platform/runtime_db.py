@@ -13,6 +13,7 @@ from agentic_company.platform.artifact_registry import (
     ArtifactRecord,
     normalize_artifact_path,
     register_artifact,
+    resolve_run_artifact_path,
 )
 from agentic_company.platform.tool_contracts import (
     ActivityEventRecord,
@@ -375,10 +376,14 @@ def packet_for_work_item(
 
 def record_work_item_transition(record: ToolExecutionRecord) -> None:
     record.validate()
-    repo, db_run_id = _repo_and_run(record.run_id)
-    now = _now()
-    with repo.connect() as conn:
-        _record_work_item_transition_conn(conn, db_run_id, record, now)
+
+    def operation() -> None:
+        repo, db_run_id = _repo_and_run(record.run_id)
+        now = _now()
+        with repo.connect() as conn:
+            _record_work_item_transition_conn(conn, db_run_id, record, now)
+
+    _with_db_retry(operation)
 
 
 def claim_work_item_for_execution(record: ToolExecutionRecord) -> WorkItemClaimResult:
@@ -391,67 +396,80 @@ def claim_work_item_for_execution(record: ToolExecutionRecord) -> WorkItemClaimR
     """
 
     record.validate()
-    repo, db_run_id = _repo_and_run(record.run_id)
-    now = _now()
-    with repo.connect() as conn:
-        target = conn.execute(
-            """
-            SELECT work_item_id, sprint_id, status, active
-            FROM work_items
-            WHERE run_id = ? AND work_item_id = ?
-            """,
-            (db_run_id, record.work_item_id),
-        ).fetchone()
-        if target is None:
-            raise ValueError(f"Unknown work_item_id for run {record.run_id}: {record.work_item_id}")
-        if str(target["sprint_id"]) != record.sprint_id:
-            return WorkItemClaimResult(
-                claimed=False,
-                work_item_id=record.work_item_id,
-                reason=(
-                    f"work_item_id {record.work_item_id} belongs to sprint "
-                    f"{target['sprint_id']}, not {record.sprint_id}."
-                ),
-            )
-        if str(target["status"]) == "done":
-            return WorkItemClaimResult(
-                claimed=False,
-                work_item_id=record.work_item_id,
-                reason=f"Cannot start {record.work_item_id}; it is already done.",
-            )
-        conn.execute(
-            """
-            UPDATE sprints
-            SET updated_at = ?
-            WHERE run_id = ? AND sprint_id = ?
-            """,
-            (now, db_run_id, record.sprint_id),
+
+    def operation() -> WorkItemClaimResult:
+        repo, db_run_id = _repo_and_run(record.run_id)
+        now = _now()
+        with repo.connect() as conn:
+            return _claim_work_item_for_execution_conn(conn, db_run_id, record, now)
+
+    return _with_db_retry(operation)
+
+
+def _claim_work_item_for_execution_conn(
+    conn: Any,
+    db_run_id: int,
+    record: ToolExecutionRecord,
+    now: str,
+) -> WorkItemClaimResult:
+    target = conn.execute(
+        """
+        SELECT work_item_id, sprint_id, status, active
+        FROM work_items
+        WHERE run_id = ? AND work_item_id = ?
+        """,
+        (db_run_id, record.work_item_id),
+    ).fetchone()
+    if target is None:
+        raise ValueError(f"Unknown work_item_id for run {record.run_id}: {record.work_item_id}")
+    if str(target["sprint_id"]) != record.sprint_id:
+        return WorkItemClaimResult(
+            claimed=False,
+            work_item_id=record.work_item_id,
+            reason=(
+                f"work_item_id {record.work_item_id} belongs to sprint "
+                f"{target['sprint_id']}, not {record.sprint_id}."
+            ),
         )
-        blocking = conn.execute(
-            """
-            SELECT work_item_id
-            FROM work_items
-            WHERE run_id = ?
-              AND sprint_id = ?
-              AND work_item_id <> ?
-              AND (active = 1 OR status IN ('in_progress', 'review'))
-            ORDER BY delivery_order, work_item_id
-            LIMIT 1
-            """,
-            (db_run_id, record.sprint_id, record.work_item_id),
-        ).fetchone()
-        if blocking is not None:
-            blocking_id = str(blocking["work_item_id"])
-            return WorkItemClaimResult(
-                claimed=False,
-                work_item_id=record.work_item_id,
-                blocking_work_item_id=blocking_id,
-                reason=(
-                    f"Cannot start {record.work_item_id}; {blocking_id} is already active "
-                    f"in {record.sprint_id}."
-                ),
-            )
-        _record_work_item_transition_conn(conn, db_run_id, record, now)
+    if str(target["status"]) == "done":
+        return WorkItemClaimResult(
+            claimed=False,
+            work_item_id=record.work_item_id,
+            reason=f"Cannot start {record.work_item_id}; it is already done.",
+        )
+    conn.execute(
+        """
+        UPDATE sprints
+        SET updated_at = ?
+        WHERE run_id = ? AND sprint_id = ?
+        """,
+        (now, db_run_id, record.sprint_id),
+    )
+    blocking = conn.execute(
+        """
+        SELECT work_item_id
+        FROM work_items
+        WHERE run_id = ?
+          AND sprint_id = ?
+          AND work_item_id <> ?
+          AND (active = 1 OR status IN ('in_progress', 'review'))
+        ORDER BY delivery_order, work_item_id
+        LIMIT 1
+        """,
+        (db_run_id, record.sprint_id, record.work_item_id),
+    ).fetchone()
+    if blocking is not None:
+        blocking_id = str(blocking["work_item_id"])
+        return WorkItemClaimResult(
+            claimed=False,
+            work_item_id=record.work_item_id,
+            blocking_work_item_id=blocking_id,
+            reason=(
+                f"Cannot start {record.work_item_id}; {blocking_id} is already active "
+                f"in {record.sprint_id}."
+            ),
+        )
+    _record_work_item_transition_conn(conn, db_run_id, record, now)
     return WorkItemClaimResult(claimed=True, work_item_id=record.work_item_id)
 
 
@@ -531,48 +549,59 @@ def record_activity_event(record: ActivityEventRecord) -> None:
     """Persist user-facing task activity without mutating work-item state."""
 
     record.validate()
-    repo, db_run_id = _repo_and_run(record.run_id)
-    now = _now()
-    with repo.connect() as conn:
-        row = conn.execute(
-            "SELECT work_item_id FROM work_items WHERE run_id = ? AND work_item_id = ?",
-            (db_run_id, record.work_item_id),
-        ).fetchone()
-        if row is None:
-            raise ValueError(
-                f"Unknown work_item_id for run {record.run_id}: {record.work_item_id}"
-            )
-        conn.execute(
-            """
-            INSERT INTO activity_events (
-                run_id, event_id, work_item_id, owner_agent, agent_id, tool_name,
-                message, status, artifact_ids, visibility, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'user', ?)
-            ON CONFLICT(run_id, event_id) DO UPDATE SET
-                work_item_id = excluded.work_item_id,
-                owner_agent = excluded.owner_agent,
-                agent_id = excluded.agent_id,
-                tool_name = excluded.tool_name,
-                message = excluded.message,
-                status = excluded.status,
-                artifact_ids = excluded.artifact_ids,
-                visibility = excluded.visibility,
-                created_at = excluded.created_at
-            """,
-            (
-                db_run_id,
-                record.event_id,
-                record.work_item_id,
-                record.owner_agent,
-                record.agent_id,
-                record.tool_name,
-                record.message,
-                record.status,
-                json.dumps(list(record.artifact_ids), sort_keys=True),
-                now,
-            ),
+
+    def operation() -> None:
+        repo, db_run_id = _repo_and_run(record.run_id)
+        now = _now()
+        with repo.connect() as conn:
+            _record_activity_event_conn(conn, db_run_id, record, now)
+
+    _with_db_retry(operation)
+
+
+def _record_activity_event_conn(
+    conn: Any,
+    db_run_id: int,
+    record: ActivityEventRecord,
+    now: str,
+) -> None:
+    row = conn.execute(
+        "SELECT work_item_id FROM work_items WHERE run_id = ? AND work_item_id = ?",
+        (db_run_id, record.work_item_id),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown work_item_id for run {record.run_id}: {record.work_item_id}")
+    conn.execute(
+        """
+        INSERT INTO activity_events (
+            run_id, event_id, work_item_id, owner_agent, agent_id, tool_name,
+            message, status, artifact_ids, visibility, created_at
         )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'user', ?)
+        ON CONFLICT(run_id, event_id) DO UPDATE SET
+            work_item_id = excluded.work_item_id,
+            owner_agent = excluded.owner_agent,
+            agent_id = excluded.agent_id,
+            tool_name = excluded.tool_name,
+            message = excluded.message,
+            status = excluded.status,
+            artifact_ids = excluded.artifact_ids,
+            visibility = excluded.visibility,
+            created_at = excluded.created_at
+        """,
+        (
+            db_run_id,
+            record.event_id,
+            record.work_item_id,
+            record.owner_agent,
+            record.agent_id,
+            record.tool_name,
+            record.message,
+            record.status,
+            json.dumps(list(record.artifact_ids), sort_keys=True),
+            now,
+        ),
+    )
 
 
 def record_artifact_link(
@@ -580,7 +609,7 @@ def record_artifact_link(
     request: ArtifactRegistrationRequest,
 ) -> ArtifactRecord:
     request.validate()
-    artifact_path = run_dir / normalize_artifact_path(request.relative_path)
+    artifact_path = resolve_run_artifact_path(run_dir, request.relative_path)
     if not artifact_path.is_file():
         raise ValueError(
             "Artifact registration requires an existing run-local file: "
@@ -599,35 +628,39 @@ def record_artifact_link(
         source_tool=request.source_tool,
     )
     repo, db_run_id = _repo_and_run(request.run_id)
-    with repo.connect() as conn:
-        repo._upsert_artifact_record_conn(conn, db_run_id, record)
-        if record.work_item_id:
-            row = conn.execute(
-                "SELECT artifact_ids FROM work_items WHERE run_id = ? AND work_item_id = ?",
-                (db_run_id, record.work_item_id),
-            ).fetchone()
-            if row is None:
-                raise ValueError(
-                    "Artifact registration references unknown work_item_id: "
-                    f"{record.work_item_id}"
+
+    def operation() -> None:
+        with repo.connect() as conn:
+            repo._upsert_artifact_record_conn(conn, db_run_id, record)
+            if record.work_item_id:
+                row = conn.execute(
+                    "SELECT artifact_ids FROM work_items WHERE run_id = ? AND work_item_id = ?",
+                    (db_run_id, record.work_item_id),
+                ).fetchone()
+                if row is None:
+                    raise ValueError(
+                        "Artifact registration references unknown work_item_id: "
+                        f"{record.work_item_id}"
+                    )
+                artifact_ids = _json_list(row["artifact_ids"])
+                if record.artifact_id not in artifact_ids:
+                    artifact_ids.append(record.artifact_id)
+                conn.execute(
+                    """
+                    UPDATE work_items
+                    SET artifact_ids = ?, updated_at = ?
+                    WHERE run_id = ? AND work_item_id = ?
+                    """,
+                    (
+                        json.dumps(artifact_ids, sort_keys=True),
+                        _now(),
+                        db_run_id,
+                        record.work_item_id,
+                    ),
                 )
-            artifact_ids = _json_list(row["artifact_ids"])
-            if record.artifact_id not in artifact_ids:
-                artifact_ids.append(record.artifact_id)
-            conn.execute(
-                """
-                UPDATE work_items
-                SET artifact_ids = ?, updated_at = ?
-                WHERE run_id = ? AND work_item_id = ?
-                """,
-                (
-                    json.dumps(artifact_ids, sort_keys=True),
-                    _now(),
-                    db_run_id,
-                    record.work_item_id,
-                ),
-            )
-    _record_artifact_content(repo, db_run_id, run_dir, record)
+
+    _with_db_retry(operation)
+    _with_db_retry(lambda: _record_artifact_content(repo, db_run_id, run_dir, record))
     return record
 
 
@@ -790,22 +823,25 @@ def _record_work_item_transition_conn(
 
 
 def _update_sprint_status(run_id: str, sprint_id: str, status: str) -> None:
-    repo, db_run_id = _repo_and_run(run_id)
-    with repo.connect() as conn:
-        row = conn.execute(
-            "SELECT sprint_id FROM sprints WHERE run_id = ? AND sprint_id = ?",
-            (db_run_id, sprint_id),
-        ).fetchone()
-        if row is None:
-            raise ValueError(f"Unknown sprint_id for run {run_id}: {sprint_id}")
-        conn.execute(
-            """
-            UPDATE sprints
-            SET status = ?, updated_at = ?
-            WHERE run_id = ? AND sprint_id = ?
-            """,
-            (status, _now(), db_run_id, sprint_id),
-        )
+    def operation() -> None:
+        repo, db_run_id = _repo_and_run(run_id)
+        with repo.connect() as conn:
+            row = conn.execute(
+                "SELECT sprint_id FROM sprints WHERE run_id = ? AND sprint_id = ?",
+                (db_run_id, sprint_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Unknown sprint_id for run {run_id}: {sprint_id}")
+            conn.execute(
+                """
+                UPDATE sprints
+                SET status = ?, updated_at = ?
+                WHERE run_id = ? AND sprint_id = ?
+                """,
+                (status, _now(), db_run_id, sprint_id),
+            )
+
+    _with_db_retry(operation)
 
 
 def _record_artifact_content(
@@ -844,7 +880,28 @@ def _artifact_content_kind(path: str) -> str:
     suffix = Path(path).suffix.lower()
     if suffix == ".json":
         return "json"
-    if suffix in {".md", ".txt", ".html", ".mmd", ".csv", ".log"}:
+    if suffix in {
+        ".css",
+        ".csv",
+        ".dockerignore",
+        ".env",
+        ".example",
+        ".html",
+        ".js",
+        ".jsx",
+        ".log",
+        ".md",
+        ".mjs",
+        ".mmd",
+        ".py",
+        ".sh",
+        ".toml",
+        ".ts",
+        ".tsx",
+        ".txt",
+        ".yaml",
+        ".yml",
+    }:
         return suffix.lstrip(".") or "text"
     return "binary_ref"
 
@@ -868,6 +925,12 @@ def _run_row(repo: Any, run_id: str) -> Any:
     if row is None:
         raise ValueError(f"Unknown runtime run_id: {run_id}")
     return row
+
+
+def _with_db_retry(operation: Any) -> Any:
+    from agentic_company.console.web.sql_backend import retry_database_operation
+
+    return retry_database_operation(operation)
 
 
 def _upsert_work_item_conn(
@@ -955,7 +1018,7 @@ def _normalize_status(status: str) -> str:
         for value in (
             "failed",
             "blocked",
-            "repair",
+            "needs_repair",
             "provider_limit",
             "usage_limit",
             "quota",

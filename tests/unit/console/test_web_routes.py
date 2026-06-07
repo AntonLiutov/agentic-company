@@ -80,6 +80,11 @@ def test_new_project_page_renders_dictation_language_picker(tmp_path):
     assert "Google Gemini" in response.text
     assert "Google Gemini" in response.text
     assert "gemini-3.1-flash-lite" in response.text
+    assert "gpt-5.5" in response.text
+    assert "gpt-5.4" in response.text
+    assert "gpt-5.4-mini" in response.text
+    assert "gpt-5.3-codex-spark" not in response.text
+    assert "gpt-5.2" not in response.text
     assert "Powered by Speechmatics" in response.text
     assert "English (en)" in response.text
     assert "Italian (it)" in response.text
@@ -283,6 +288,44 @@ def test_new_run_creates_canonical_planning_work_items(tmp_path):
         "PLAN-04",
     ]
     assert [item.status for item in items] == ["todo", "todo", "todo", "todo"]
+
+
+def test_new_run_registers_source_requirements_artifact(tmp_path):
+    repo = ConsoleRepository(tmp_path / "console.db")
+    repo.init_schema()
+    user = repo.create_user(
+        email="requirements@example.test",
+        username="requirements",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Requirements",
+        request_text="Build",
+        mode="simple_prototype",
+        complexity="simple",
+    )
+    run_dir = tmp_path / "run-requirements"
+    run_dir.mkdir()
+    (run_dir / "00-requirements.md").write_text("Build a tiny app.\n", encoding="utf-8")
+
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="run-requirements",
+        run_dir=run_dir,
+        status="running",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+
+    artifacts = repo.list_artifact_records(run.id)
+    assert [(artifact.relative_path, artifact.work_item_id) for artifact in artifacts] == [
+        ("00-requirements.md", "PLAN-01")
+    ]
+    assert artifacts[0].artifact_type == "source_requirements"
+    assert artifacts[0].visibility == "business"
+    plan_01 = next(item for item in repo.list_work_items(run.id) if item.work_item_id == "PLAN-01")
+    assert artifacts[0].artifact_id in plan_01.artifact_ids
 
 
 def test_pm_queue_materializes_feature_work_items_in_db(tmp_path):

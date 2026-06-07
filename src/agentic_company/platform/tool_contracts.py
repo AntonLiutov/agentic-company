@@ -438,12 +438,12 @@ def dashboard_status_from_runtime_status(status: str) -> DashboardStatus:
     """Map internal runtime statuses to dashboard-friendly board statuses."""
 
     normalized = status.strip().lower()
-    if any(token in normalized for token in ("blocked", "failed", "precondition")):
+    if any(token in normalized for token in ("blocked", "failed", "precondition", "needs_repair")):
         return "blocked"
-    if any(token in normalized for token in ("qa", "review", "inspect")):
-        return "review"
     if any(token in normalized for token in ("ready", "done", "completed", "deployed")):
         return "done"
+    if any(token in normalized for token in ("qa", "review", "inspect")):
+        return "review"
     if normalized in {"pending", "todo"}:
         return "todo"
     return "in_progress"
@@ -471,7 +471,7 @@ def failure_mode_from_status(status: str, blockers: list[Any] | tuple[Any, ...] 
         return "provider_limit"
     if "human" in normalized or "approval" in normalized:
         return "human_approval_required"
-    if "repair" in normalized or "qa_failed" in normalized:
+    if "needs_repair" in normalized or "qa_failed" in normalized:
         return "needs_repair"
     if any(token in normalized for token in ("blocked", "failed", "error", "precondition")):
         return "failed"

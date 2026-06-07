@@ -62,6 +62,21 @@ def normalize_artifact_path(path: str | Path) -> str:
     return str(path).replace("\\", "/").lstrip("/")
 
 
+def resolve_run_artifact_path(run_dir: Path, relative_path: str | Path) -> Path:
+    """Resolve a run-local artifact path and reject paths outside the run."""
+
+    normalized_path = normalize_artifact_path(relative_path)
+    root = run_dir.resolve()
+    candidate = (run_dir / normalized_path).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(
+            f"Artifact path must stay inside run directory: {normalized_path}"
+        ) from exc
+    return candidate
+
+
 def register_artifact(
     run_dir: Path,
     *,
@@ -110,7 +125,7 @@ def register_artifact(
         storage_uri=storage_uri,
         relative_path=normalized_path,
         label=label,
-        created_at=_artifact_created_at(run_dir / normalized_path),
+        created_at=_artifact_created_at(resolve_run_artifact_path(run_dir, normalized_path)),
         source_tool=source_tool,
         source_model=source_model,
         external_refs=list(external_refs or []),
@@ -178,7 +193,13 @@ def normalize_visibility(value: str) -> str:
     normalized = value.strip().lower()
     if normalized == "user":
         return "business"
-    if normalized in {"business", "release", "qa_evidence", "developer", "internal"}:
+    if normalized in {
+        "business",
+        "release",
+        "qa_evidence",
+        "developer",
+        "internal",
+    }:
         return normalized
     return "developer"
 

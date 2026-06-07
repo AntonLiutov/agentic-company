@@ -15,7 +15,10 @@ from agentic_company.integrations.codex import (
     stream_codex_exec_to_log,
     write_structured_codex_artifacts,
 )
-from agentic_company.platform.artifacts import load_execution_request, read_text_artifact
+from agentic_company.platform.artifacts import (
+    load_execution_request,
+    read_text_artifact,
+)
 from agentic_company.platform.events import write_event
 from agentic_company.platform.executions import (
     build_agent_execution_id,
@@ -218,16 +221,18 @@ class CodexCliRunner:
             },
         )
         LOGGER.info("Codex execution completed run_id=%s", request.run_id)
-        return AgentRunResult(
-            agent_id=request.agent_id,
-            status="codex_completed",
-            output_artifacts=[
+        output_artifacts = _unique_artifacts(
+            [
                 summary_filename,
                 prompt_filename,
                 log_filename,
                 *structured_artifacts,
-                *request.expected_outputs,
-            ],
+            ]
+        )
+        return AgentRunResult(
+            agent_id=request.agent_id,
+            status="codex_completed",
+            output_artifacts=output_artifacts,
             summary=summary,
             execution_id=execution_id,
             codex_thread_id=codex_thread_id,
@@ -557,6 +562,15 @@ def _render_feature_context(request: ExecutionRequest) -> str:
 - Completed work items before this run: {completed}
 - Implement only the scoped work item in this Codex run.
 - Preserve behavior for completed work items and avoid broad rewrites unless required."""
+
+
+def _unique_artifacts(paths: Sequence[str]) -> list[str]:
+    unique: list[str] = []
+    for path in paths:
+        normalized = str(path or "").strip().replace("\\", "/")
+        if normalized and normalized not in unique:
+            unique.append(normalized)
+    return unique
 
 
 def _is_failed_summary(summary_path: Path) -> bool:

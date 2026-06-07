@@ -281,6 +281,8 @@ def _apply_result(state: ProjectManagerAgentGraphState) -> ProjectManagerAgentGr
         except ValueError as exc:
             updated["status"] = "project_management_blocked"
             updated["blockers"] = [*updated.get("blockers", []), str(exc)]
+        else:
+            updated["blockers"] = []
     else:
         updated["blockers"] = [*updated.get("blockers", []), result.summary]
     completed_event = (

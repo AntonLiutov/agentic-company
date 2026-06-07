@@ -132,15 +132,15 @@ class TraceStore:
         return trace_dir(self.run_dir)
 
     def append_run_event(self, event: RunEvent) -> RunEvent:
-        _append_jsonl(self.trace_dir / RUN_EVENTS_FILE, event.to_dict())
+        _append_jsonl_once(self.trace_dir / RUN_EVENTS_FILE, event.to_dict(), event.event_id)
         return event
 
     def append_tool_call_event(self, event: ToolCallEvent) -> ToolCallEvent:
-        _append_jsonl(self.trace_dir / TOOL_CALL_EVENTS_FILE, event.to_dict())
+        _append_jsonl_once(self.trace_dir / TOOL_CALL_EVENTS_FILE, event.to_dict(), event.event_id)
         return event
 
     def append_model_call_event(self, event: ModelCallEvent) -> ModelCallEvent:
-        _append_jsonl(self.trace_dir / MODEL_CALL_EVENTS_FILE, event.to_dict())
+        _append_jsonl_once(self.trace_dir / MODEL_CALL_EVENTS_FILE, event.to_dict(), event.event_id)
         return event
 
     def load(self) -> RunTrace:
@@ -202,10 +202,10 @@ def record_run_event(
             run_id,
             agent_id,
             event_type,
-            created,
             status,
+            work_item_id or "",
+            _event_correlation_key(safe_data),
             message,
-            safe_data,
         ),
         project_id=project_id,
         run_id=run_id,
@@ -219,9 +219,11 @@ def record_run_event(
         data=safe_data,
         created_at=created,
     )
+    is_new = not _jsonl_contains_event_id(trace_dir(run_dir) / RUN_EVENTS_FILE, event.event_id)
     stored = TraceStore(run_dir).append_run_event(event)
     _persist_run_event_to_db(stored)
-    _log_run_event(stored)
+    if is_new:
+        _log_run_event(stored)
     return stored
 
 
@@ -261,8 +263,8 @@ def record_tool_call_event(
             agent_id,
             tool_name,
             tool_call_id,
-            created,
             status,
+            work_item_id or "",
         ),
         run_id=run_id,
         work_item_id=work_item_id,
@@ -277,9 +279,13 @@ def record_tool_call_event(
         duration_ms=duration_ms,
         created_at=created,
     )
+    is_new = not _jsonl_contains_event_id(
+        trace_dir(run_dir) / TOOL_CALL_EVENTS_FILE, event.event_id
+    )
     stored = TraceStore(run_dir).append_tool_call_event(event)
     _persist_tool_call_event_to_db(stored)
-    _log_tool_call_event(stored)
+    if is_new:
+        _log_tool_call_event(stored)
     return stored
 
 
@@ -311,7 +317,6 @@ def record_model_call_event(
             model,
             purpose,
             prompt_ref,
-            created,
             status,
         ),
         run_id=run_id,
@@ -327,8 +332,13 @@ def record_model_call_event(
         duration_ms=duration_ms,
         created_at=created,
     )
+    is_new = not _jsonl_contains_event_id(
+        trace_dir(run_dir) / MODEL_CALL_EVENTS_FILE, event.event_id
+    )
     stored = TraceStore(run_dir).append_model_call_event(event)
     _persist_model_call_event_to_db(stored)
+    if not is_new:
+        return stored
     return stored
 
 
@@ -353,22 +363,26 @@ def record_raw_log_event(
         return
     try:
         from agentic_company.console.web.db import ConsoleRepository
+        from agentic_company.console.web.sql_backend import retry_database_operation
 
-        repo = ConsoleRepository()
-        repo.init_schema()
-        repo.append_raw_log_event(
-            db_run_id,
-            agent_id=agent_id,
-            work_item_id=work_item_id or "",
-            sprint_id=sprint_id,
-            tool_name=tool_name,
-            tool_call_id=tool_call_id,
-            seq=seq,
-            level=level,
-            stream=stream,
-            message=redact_sensitive_output(message.rstrip()),
-            created_at=created_at or utc_now(),
-        )
+        def operation() -> None:
+            repo = ConsoleRepository()
+            repo.init_schema()
+            repo.append_raw_log_event(
+                db_run_id,
+                agent_id=agent_id,
+                work_item_id=work_item_id or "",
+                sprint_id=sprint_id,
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                seq=seq,
+                level=level,
+                stream=stream,
+                message=redact_sensitive_output(message.rstrip()),
+                created_at=created_at or utc_now(),
+            )
+
+        retry_database_operation(operation)
     except Exception:
         RUNTIME_LOGGER.debug("Skipping DB raw log persistence", exc_info=True)
 
@@ -408,11 +422,15 @@ def _persist_run_event_to_db(event: RunEvent) -> None:
         return
     try:
         from agentic_company.console.web.db import ConsoleRepository
+        from agentic_company.console.web.sql_backend import retry_database_operation
 
-        repo = ConsoleRepository()
-        repo.init_schema()
-        with repo.connect() as conn:
-            repo._upsert_run_event_conn(conn, run_id, event)
+        def operation() -> None:
+            repo = ConsoleRepository()
+            repo.init_schema()
+            with repo.connect() as conn:
+                repo._upsert_run_event_conn(conn, run_id, event)
+
+        retry_database_operation(operation)
         _record_card_log_from_run_event(event)
     except Exception:
         RUNTIME_LOGGER.debug("Skipping DB run trace persistence", exc_info=True)
@@ -424,10 +442,14 @@ def _persist_tool_call_event_to_db(event: ToolCallEvent) -> None:
         return
     try:
         from agentic_company.console.web.db import ConsoleRepository
+        from agentic_company.console.web.sql_backend import retry_database_operation
 
-        repo = ConsoleRepository()
-        repo.init_schema()
-        repo.upsert_tool_call_event(run_id, event)
+        def operation() -> None:
+            repo = ConsoleRepository()
+            repo.init_schema()
+            repo.upsert_tool_call_event(run_id, event)
+
+        retry_database_operation(operation)
     except Exception:
         RUNTIME_LOGGER.debug("Skipping DB tool trace persistence", exc_info=True)
 
@@ -438,10 +460,14 @@ def _persist_model_call_event_to_db(event: ModelCallEvent) -> None:
         return
     try:
         from agentic_company.console.web.db import ConsoleRepository
+        from agentic_company.console.web.sql_backend import retry_database_operation
 
-        repo = ConsoleRepository()
-        repo.init_schema()
-        repo.upsert_model_call_event(run_id, event)
+        def operation() -> None:
+            repo = ConsoleRepository()
+            repo.init_schema()
+            repo.upsert_model_call_event(run_id, event)
+
+        retry_database_operation(operation)
     except Exception:
         RUNTIME_LOGGER.debug("Skipping DB model trace persistence", exc_info=True)
 
@@ -703,17 +729,59 @@ def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
         handle.write(json.dumps(sanitize_trace_data(payload), sort_keys=True) + "\n")
 
 
+def _append_jsonl_once(path: Path, payload: dict[str, Any], event_id: str) -> bool:
+    if _jsonl_contains_event_id(path, event_id):
+        return False
+    _append_jsonl(path, payload)
+    return True
+
+
+def _jsonl_contains_event_id(path: Path, event_id: str) -> bool:
+    if not path.exists():
+        return False
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict) and payload.get("event_id") == event_id:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def _event_correlation_key(data: dict[str, Any]) -> str:
+    for key in (
+        "tool_call_id",
+        "codex_execution_id",
+        "execution_id",
+        "attempt",
+        "work_item_id",
+        "artifact",
+        "status",
+    ):
+        value = data.get(key)
+        if value not in (None, ""):
+            return f"{key}:{value}"
+    return json.dumps(sanitize_trace_data(data), sort_keys=True, default=str)
+
+
 def _log_run_event(event: RunEvent) -> None:
     if not _is_operator_run_event(event):
         return
     message = _truncate_operator_text(event.message or event.event_type)
     RUNTIME_LOGGER.info(
-        "RUN %s | %s | %s | %s -> %s | %s",
+        "RUN %s [%s] %s: %s -> %s - %s",
         event.run_id,
         event.work_item_id or "-",
         _operator_agent_label(event.agent_id),
-        event.event_type,
-        event.status or "-",
+        _operator_event_label(event.event_type),
+        _operator_status_label(event.status),
         message,
     )
 
@@ -730,13 +798,13 @@ def _log_tool_call_event(event: ToolCallEvent) -> None:
     duration = _duration_label(event.duration_ms)
     status = event.failure_mode or event.status or "-"
     RUNTIME_LOGGER.info(
-        "RUN %s | %s | %s | %s -> %s | %s | %s",
+        "RUN %s [%s] %s: %s -> %s%s - %s",
         event.run_id,
         event.work_item_id or "-",
         _operator_agent_label(event.agent_id),
-        event.tool_name,
-        status,
-        duration,
+        _operator_event_label(event.tool_name),
+        _operator_status_label(status),
+        f" in {duration}" if duration != "-" else "",
         _truncate_operator_text(summary),
     )
 
@@ -772,6 +840,67 @@ def _operator_agent_label(agent_id: str) -> str:
         "handoff-codex-agent": "Release Reporter",
     }
     return labels.get(agent_id, agent_id or "runtime")
+
+
+def _operator_event_label(value: str) -> str:
+    labels = {
+        "delivery_graph_started": "delivery started",
+        "delivery_graph_completed": "delivery completed",
+        "delivery_graph_node_started": "stage started",
+        "delivery_graph_node_completed": "stage completed",
+        "head_worker_started": "worker started",
+        "head_worker_completed": "worker completed",
+        "head_tool_completed": "tool completed",
+        "team_lead_worker_started": "worker started",
+        "team_lead_worker_completed": "worker completed",
+        "team_lead_tool_completed": "tool completed",
+        "team_lead_blocked_sprint": "sprint blocked",
+        "artifact_written": "artifact written",
+        "run_business_analyst": "run business analysis",
+        "run_architect": "run architecture",
+        "run_project_manager": "run delivery planning",
+        "run_team_lead": "run delivery lead",
+        "run_fullstack": "build feature",
+        "run_qa": "quality review",
+        "run_handoff": "handoff report",
+        "complete_sprint": "complete sprint",
+        "block_sprint": "block sprint",
+        "inspect_delivery_status": "inspect delivery",
+        "inspect_sprint_status": "inspect sprint",
+        "codex_exec": "codex execution",
+    }
+    normalized = str(value or "").strip()
+    return labels.get(normalized, normalized.replace("_", " ") or "event")
+
+
+def _operator_status_label(value: str | None) -> str:
+    status = str(value or "").strip()
+    if not status:
+        return "-"
+    labels = {
+        "business_analysis_completed": "completed",
+        "architecture_completed": "completed",
+        "project_management_completed": "completed",
+        "codex_completed": "completed",
+        "qa_passed": "passed",
+        "needs_repair": "needs repair",
+        "handoff_ready": "ready",
+        "team_lead_sprint_handoff_ready": "sprint ready",
+        "team_lead_sprint_blocked": "blocked",
+        "fullstack_feature_implemented": "implemented",
+        "qa_feature_passed_next_feature_ready": "QA passed",
+        "qa_feature_failed_repair_ready": "needs repair",
+        "feature_queue_qa_completed_deployment_ready": "deployment ready",
+        "ready_for_next_sprint": "ready for next sprint",
+        "ready_to_complete": "ready to complete",
+        "failed": "failed",
+        "blocked": "blocked",
+        "running": "running",
+        "done": "done",
+        "passed": "passed",
+        "ready": "ready",
+    }
+    return labels.get(status, status.replace("_", " "))
 
 
 def _first_text(*values: Any) -> str:

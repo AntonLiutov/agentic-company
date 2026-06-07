@@ -6,6 +6,7 @@ from agentic_company.console.web.product import (
     ArtifactView,
     activity_groups_from_db_events,
     board_cards_from_work_items,
+    board_groups_from_work_items,
     canonical_artifacts_for_run,
     delivery_overview_from_work_items,
     task_detail_from_work_items,
@@ -87,6 +88,43 @@ def test_board_card_counts_only_user_visible_artifacts():
     )
 
     assert cards["done"][0].artifact_count == 1
+
+
+def test_open_card_duration_is_capped_when_run_is_not_running():
+    cards_by_sprint = board_groups_from_work_items(
+        [
+            SimpleNamespace(
+                work_item_id="F1",
+                title="Build app",
+                sprint_id="sprint-01",
+                delivery_order=1,
+                status="in_progress",
+                lane="in_progress",
+                owner_agent="fullstack-agent",
+                active=True,
+                artifact_ids=[],
+                created_at="2026-06-07T10:00:00Z",
+                updated_at="2026-06-07T10:10:00Z",
+            )
+        ],
+        [],
+        [
+            SimpleNamespace(
+                id=1,
+                work_item_id="F1",
+                owner_agent="fullstack-agent",
+                agent_id="fullstack-agent",
+                message="Builder started F1.",
+                status="in_progress",
+                created_at="2026-06-07T10:00:00Z",
+            )
+        ],
+        open_duration_end_at="2026-06-07T10:21:00Z",
+    )
+
+    card = cards_by_sprint["Sprint 1"][0]
+    assert card.elapsed_label == "21m"
+    assert card.completed_at == "2026-06-07T10:21:00Z"
 
 
 def test_task_detail_requires_exact_db_work_item_id():
@@ -206,6 +244,53 @@ def test_qa_evidence_artifact_type_is_user_facing(tmp_path):
     assert not technical
     assert business[0].task_id == "US-rooms"
     assert business[0].artifact_type == "qa_evidence"
+
+
+def test_fullstack_implementation_artifacts_are_internal_inventory(tmp_path):
+    source = tmp_path / "generated-project" / "web" / "app.js"
+    source.parent.mkdir(parents=True)
+    source.write_text("console.log('app')\n", encoding="utf-8")
+    record = register_artifact(
+        tmp_path,
+        artifact_id=artifact_id_for("run", "generated-project/web/app.js"),
+        relative_path="generated-project/web/app.js",
+        run_id="run",
+        owner_agent="fullstack-agent",
+        artifact_type="implementation_artifact",
+        visibility="developer",
+        label="Implementation artifact: app.js",
+        source_tool="codex_exec",
+        work_item_id="F1",
+    )
+
+    business, technical = canonical_artifacts_for_run(tmp_path, [record])
+
+    assert not business
+    assert technical[0].task_id == "F1"
+    assert technical[0].artifact_type == "implementation_artifact"
+
+
+def test_generated_project_artifacts_require_implementation_contract_type(tmp_path):
+    source = tmp_path / "generated-project" / "web" / "app.js"
+    source.parent.mkdir(parents=True)
+    source.write_text("console.log('app')\n", encoding="utf-8")
+    record = register_artifact(
+        tmp_path,
+        artifact_id=artifact_id_for("run", "generated-project/web/app.js"),
+        relative_path="generated-project/web/app.js",
+        run_id="run",
+        owner_agent="fullstack-agent",
+        artifact_type="codex_output",
+        visibility="developer",
+        label="Implementation artifact: app.js",
+        source_tool="codex_exec",
+        work_item_id="F1",
+    )
+
+    business, technical = canonical_artifacts_for_run(tmp_path, [record])
+
+    assert not business
+    assert technical[0].task_id == "F1"
 
 
 def test_artifact_registry_without_work_item_does_not_derive_task_from_path(tmp_path):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -21,7 +22,12 @@ from agentic_company.console.web.auth import (
     verify_password,
 )
 from agentic_company.console.web.sql_backend import DatabaseSettings, connect_database
-from agentic_company.platform.artifact_registry import ArtifactRecord, artifact_record_from_mapping
+from agentic_company.platform.artifact_registry import (
+    ArtifactRecord,
+    artifact_id_for,
+    artifact_record_from_mapping,
+    register_artifact,
+)
 from agentic_company.platform.run_trace import (
     ModelCallEvent,
     RunEvent,
@@ -35,6 +41,8 @@ from agentic_company.platform.work_item_contracts import HEAD_PLANNING_ITEMS
 
 SESSION_DAYS = 14
 CONSOLE_SCHEMA_VERSION = "2026-06-06.1"
+_SCHEMA_INIT_LOCK = threading.Lock()
+_INITIALIZED_SCHEMA_KEYS: set[tuple[str, str]] = set()
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +186,16 @@ class ConsoleRepository:
             yield conn
 
     def init_schema(self) -> None:
+        schema_key = (self.database_url or str(self.db_path.resolve()), CONSOLE_SCHEMA_VERSION)
+        if schema_key in _INITIALIZED_SCHEMA_KEYS:
+            return
+        with _SCHEMA_INIT_LOCK:
+            if schema_key in _INITIALIZED_SCHEMA_KEYS:
+                return
+            self._init_schema_uncached()
+            _INITIALIZED_SCHEMA_KEYS.add(schema_key)
+
+    def _init_schema_uncached(self) -> None:
         with self.connect() as conn:
             conn.executescript(
                 """
@@ -833,10 +851,52 @@ class ConsoleRepository:
             )
             run_id = int(cursor.lastrowid)
             self._seed_planning_work_items_conn(conn, run_id)
+            self._seed_requirements_artifact_conn(conn, run_id, run_uid, run_dir)
         run = self.get_run(run_id)
         if run is None:  # pragma: no cover - defensive
             raise RuntimeError("Created run could not be loaded")
         return run
+
+    def _seed_requirements_artifact_conn(
+        self,
+        conn: Any,
+        run_id: int,
+        run_uid: str,
+        run_dir: Path,
+    ) -> None:
+        relative_path = "00-requirements.md"
+        if not (run_dir / relative_path).is_file():
+            return
+        record = register_artifact(
+            run_dir,
+            artifact_id=artifact_id_for(run_uid, relative_path),
+            relative_path=relative_path,
+            run_id=run_uid,
+            work_item_id="PLAN-01",
+            owner_agent="head-agent",
+            artifact_type="source_requirements",
+            visibility="business",
+            label="Source requirements",
+            source_tool="create_run",
+        )
+        self._upsert_artifact_record_conn(conn, run_id, record)
+        row = conn.execute(
+            "SELECT artifact_ids FROM work_items WHERE run_id = ? AND work_item_id = ?",
+            (run_id, "PLAN-01"),
+        ).fetchone()
+        if row is None:
+            return
+        artifact_ids = _json_column(row["artifact_ids"], default=[])
+        if record.artifact_id not in artifact_ids:
+            artifact_ids.append(record.artifact_id)
+        conn.execute(
+            """
+            UPDATE work_items
+            SET artifact_ids = ?, updated_at = ?
+            WHERE run_id = ? AND work_item_id = ?
+            """,
+            (json.dumps(artifact_ids, sort_keys=True), utc_now(), run_id, "PLAN-01"),
+        )
 
     def get_run(self, run_id: int) -> Run | None:
         with self.connect() as conn:
@@ -2223,12 +2283,12 @@ def _normalize_work_item_status(status: str) -> str:
         )
     ):
         return "blocked"
+    if any(value in token for value in ("completed", "passed", "ready", "done", "deployed")):
+        return "done"
     if "qa" in token or "review" in token or "implemented" in token or "inspect" in token:
         if "passed" in token or "completed" in token or "ready" in token:
             return "done"
         return "review"
-    if any(value in token for value in ("completed", "passed", "ready", "done", "deployed")):
-        return "done"
     if any(value in token for value in ("started", "running", "active", "progress")):
         return "in_progress"
     return token if token in {"todo", "in_progress", "review", "done", "blocked"} else "in_progress"

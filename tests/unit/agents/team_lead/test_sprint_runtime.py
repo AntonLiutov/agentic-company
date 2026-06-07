@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from agentic_company.agents.head.executor import LangChainHeadExecutor
 from agentic_company.agents.head.tools import HeadToolbox, HeadWorkers, write_head_result
@@ -162,6 +163,30 @@ def test_team_lead_codex_review_contract_is_task_scoped():
     assert "work_item_id" in contract.required_parameters
 
 
+def test_team_lead_codex_review_uses_selected_codex_model(tmp_path, monkeypatch):
+    _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
+    _write_agent_runtime_env(state, {"AGENT_CODEX_MODEL": "gpt-5.4"})
+    reviewer = _FakeHeadReviewer()
+    toolbox = TeamLeadToolbox(
+        delivery_state=state,
+        sprint={"sprint_id": "sprint-01"},
+        workers=_team_lead_workers(),
+        max_steps=5,
+        history=[],
+        codex_reviewer=reviewer,
+    )
+
+    toolbox.codex_review(
+        work_item_id="US-1",
+        purpose="Review feature.",
+        question="Is this ready?",
+        artifact_refs="",
+        reason="Review feature.",
+    )
+
+    assert reviewer.last_request.model == "gpt-5.4"
+
+
 def test_head_result_recomputes_blockers_from_db_not_stale_state(tmp_path, monkeypatch):
     _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
     _mark_work_item_done("US-1")
@@ -302,6 +327,29 @@ def test_head_codex_review_tool_call_is_scoped_to_planning_work_item(tmp_path, m
     tool_calls = repo.list_tool_call_events(run.id, agent_id="head-agent")
     assert tool_calls[-1].tool_name == "codex_review"
     assert tool_calls[-1].work_item_id == "PLAN-02"
+
+
+def test_head_codex_review_uses_selected_codex_model(tmp_path, monkeypatch):
+    _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
+    _write_agent_runtime_env(state, {"AGENT_CODEX_MODEL": "gpt-5.4"})
+    reviewer = _FakeHeadReviewer()
+    toolbox = HeadToolbox(
+        delivery_state={**state, "stage": "head", "status": "running"},
+        workers=_head_workers(),
+        max_steps=5,
+        history=[],
+        codex_reviewer=reviewer,
+    )
+
+    toolbox.codex_review(
+        purpose="Review architecture.",
+        question="Is this ready?",
+        artifact_refs="",
+        correlation_id="PLAN-02",
+        reason="Review architecture.",
+    )
+
+    assert reviewer.last_request.model == "gpt-5.4"
 
 
 def test_pm_materialization_marks_last_sprint_final_when_pm_omits_final_flag(
@@ -502,7 +550,11 @@ class _FakeStatusInspector:
 
 
 class _FakeHeadReviewer:
+    def __init__(self):
+        self.last_request = None
+
     def run(self, request):
+        self.last_request = request
         root = request.run_dir / "head" / "codex-review" / "fake"
         root.mkdir(parents=True)
         files = {
@@ -599,6 +651,15 @@ def _setup_runtime(tmp_path, monkeypatch):
         "blockers": [],
     }
     return repo, run, state
+
+
+def _write_agent_runtime_env(state, values):
+    env_path = Path(state["run_dir"]) / "delivery" / "agent-runtime.env"
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.write_text(
+        "\n".join(f"{key}={value}" for key, value in values.items()) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _mark_work_item_done(work_item_id):

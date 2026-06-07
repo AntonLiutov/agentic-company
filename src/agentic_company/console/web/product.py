@@ -28,7 +28,6 @@ from agentic_company.platform.artifact_registry import USER_FACING_VISIBILITIES
 AGENT_MODEL_OPTIONS = [
     "gpt-4.1",
     "gpt-4.1-mini",
-    "gpt-5.2",
     "gpt-5.4-mini",
     "gpt-5.4",
     "gpt-5.5",
@@ -52,7 +51,6 @@ CODEX_MODEL_OPTIONS = [
     DEFAULT_CODEX_MODEL,
     "gpt-5.4",
     "gpt-5.4-mini",
-    "gpt-5.2",
 ]
 
 REASONING_OPTIONS = ["none", "low", "medium", "high", "xhigh"]
@@ -353,9 +351,14 @@ def board_cards_from_work_items(
     work_items: Sequence[Any],
     artifacts: Sequence[ArtifactView],
     activity_events: Sequence[Any] = (),
+    *,
+    open_duration_end_at: str = "",
 ) -> dict[str, list[BoardCard]]:
     groups: dict[str, list[BoardCard]] = {key: [] for key, _ in BOARD_COLUMNS}
-    timing_by_item = _card_timing_by_activity_events(activity_events)
+    timing_by_item = _card_timing_by_activity_events(
+        activity_events,
+        open_duration_end_at=open_duration_end_at,
+    )
     for item in work_items:
         item_id = _canonical_task_id(str(getattr(item, "work_item_id", "")))
         card = _board_card_from_work_item(item, artifacts, timing_by_item.get(item_id))
@@ -372,9 +375,14 @@ def board_groups_from_work_items(
     work_items: Sequence[Any],
     artifacts: Sequence[ArtifactView],
     activity_events: Sequence[Any] = (),
+    *,
+    open_duration_end_at: str = "",
 ) -> dict[str, list[BoardCard]]:
     unsorted: dict[str, list[BoardCard]] = {}
-    timing_by_item = _card_timing_by_activity_events(activity_events)
+    timing_by_item = _card_timing_by_activity_events(
+        activity_events,
+        open_duration_end_at=open_duration_end_at,
+    )
     for item in work_items:
         item_id = _canonical_task_id(str(getattr(item, "work_item_id", "")))
         card = _board_card_from_work_item(item, artifacts, timing_by_item.get(item_id))
@@ -389,12 +397,15 @@ def sprint_board_groups_from_work_items(
     work_items: Sequence[Any],
     artifacts: Sequence[ArtifactView],
     activity_events: Sequence[Any] = (),
+    *,
+    open_duration_end_at: str = "",
 ) -> list[dict[str, object]]:
     groups: list[dict[str, object]] = []
     for sprint, cards in board_groups_from_work_items(
         work_items,
         artifacts,
         activity_events,
+        open_duration_end_at=open_duration_end_at,
     ).items():
         columns: dict[str, list[BoardCard]] = {key: [] for key, _ in BOARD_COLUMNS}
         for card in cards:
@@ -407,6 +418,8 @@ def work_plan_groups_from_work_items(
     work_items: Sequence[Any],
     artifacts: Sequence[ArtifactView],
     activity_events: Sequence[Any] = (),
+    *,
+    open_duration_end_at: str = "",
 ) -> list[dict[str, object]]:
     return [
         {"name": sprint, "count": len(cards), "cards": cards}
@@ -414,6 +427,7 @@ def work_plan_groups_from_work_items(
             work_items,
             artifacts,
             activity_events,
+            open_duration_end_at=open_duration_end_at,
         ).items()
     ]
 
@@ -422,6 +436,8 @@ def task_report_groups_from_work_items(
     work_items: Sequence[Any],
     artifacts: Sequence[ArtifactView],
     activity_events: Sequence[Any] = (),
+    *,
+    open_duration_end_at: str = "",
 ) -> list[dict[str, object]]:
     return [
         {
@@ -440,6 +456,7 @@ def task_report_groups_from_work_items(
             work_items,
             artifacts,
             activity_events,
+            open_duration_end_at=open_duration_end_at,
         ).items()
     ]
 
@@ -494,11 +511,18 @@ def task_detail_from_work_items(
     work_items: Sequence[Any],
     artifacts: Sequence[ArtifactView],
     activity_events: Sequence[Any],
+    *,
+    open_duration_end_at: str = "",
 ) -> TaskDetail | None:
     canonical_task_id = _canonical_task_id(task_id.strip())
     cards = [
         card
-        for group in board_groups_from_work_items(work_items, artifacts, activity_events).values()
+        for group in board_groups_from_work_items(
+            work_items,
+            artifacts,
+            activity_events,
+            open_duration_end_at=open_duration_end_at,
+        ).values()
         for card in group
     ]
     card = next((candidate for candidate in cards if candidate.id == canonical_task_id), None)
@@ -721,7 +745,9 @@ def is_user_facing_artifact_record(record: Any) -> bool:
         return False
     if filename in INTERNAL_ARTIFACT_FILENAMES or parts & INTERNAL_ARTIFACT_PATH_PARTS:
         return False
-    if normalized.startswith("delivery/") or normalized.startswith("generated-project/"):
+    if normalized.startswith("delivery/"):
+        return False
+    if normalized.startswith("generated-project/"):
         return False
     if filename.endswith((".jsonl", ".log", ".lock", ".toml")):
         return False
@@ -808,6 +834,8 @@ def _timing_payload(start: str, end: str = "") -> dict[str, str]:
 
 def _card_timing_by_activity_events(
     activity_events: Sequence[Any],
+    *,
+    open_duration_end_at: str = "",
 ) -> dict[str, dict[str, str]]:
     by_item: dict[str, list[Any]] = {}
     for event in activity_events:
@@ -834,7 +862,10 @@ def _card_timing_by_activity_events(
             and str(getattr(event, "created_at", "") or "")
         ]
         if start:
-            timings[item_id] = _timing_payload(start, terminal[-1] if terminal else "")
+            timings[item_id] = _timing_payload(
+                start,
+                terminal[-1] if terminal else open_duration_end_at,
+            )
     return timings
 
 

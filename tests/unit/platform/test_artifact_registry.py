@@ -113,3 +113,117 @@ def test_db_artifact_registration_requires_existing_run_file(tmp_path: Path, mon
         raise AssertionError("missing artifact file must fail DB registration")
 
     assert repo.list_artifact_records(run.id) == []
+
+
+def test_db_artifact_registration_rejects_files_outside_run(tmp_path: Path, monkeypatch):
+    db_path = tmp_path / "console.db"
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text("# Outside\n", encoding="utf-8")
+    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
+    monkeypatch.delenv("AGENTIC_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    repo = ConsoleRepository(db_path)
+    repo.init_schema()
+    user = repo.create_user(
+        email="artifact-outside@example.test",
+        username="artifact-outside-user",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Artifacts",
+        request_text="Artifacts",
+        mode="internal_tool",
+        complexity="simple",
+        status="running",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="run",
+        run_dir=run_dir,
+        status="running",
+        mode="internal_tool",
+        reasoning="medium",
+    )
+    materialize_planning_items("run")
+
+    try:
+        record_artifact_link(
+            run_dir,
+            ArtifactRegistrationRequest(
+                artifact_id=artifact_id_for("run", str(outside)),
+                artifact_type="execution_summary",
+                visibility="business",
+                owner_agent="business-analyst-agent",
+                source_tool="codex_exec",
+                label="Outside report",
+                relative_path=str(outside),
+                run_id="run",
+                work_item_id="PLAN-01",
+                task_scoped=True,
+            ),
+        )
+    except ValueError as exc:
+        assert "inside run directory" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("outside artifact file must fail DB registration")
+
+    assert repo.list_artifact_records(run.id) == []
+
+
+def test_implementation_source_artifact_content_is_stored_in_db(tmp_path: Path, monkeypatch):
+    db_path = tmp_path / "console.db"
+    run_dir = tmp_path / "run"
+    source = run_dir / "generated-project" / "web" / "app.js"
+    source.parent.mkdir(parents=True)
+    source.write_text("console.log('app')\n", encoding="utf-8")
+    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
+    monkeypatch.delenv("AGENTIC_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    repo = ConsoleRepository(db_path)
+    repo.init_schema()
+    user = repo.create_user(
+        email="implementation-artifact@example.test",
+        username="implementation-artifact-user",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Implementation artifacts",
+        request_text="Artifacts",
+        mode="internal_tool",
+        complexity="simple",
+        status="running",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="run",
+        run_dir=run_dir,
+        status="running",
+        mode="internal_tool",
+        reasoning="medium",
+    )
+    materialize_planning_items("run")
+
+    record = record_artifact_link(
+        run_dir,
+        ArtifactRegistrationRequest(
+            artifact_id=artifact_id_for("run", "generated-project/web/app.js"),
+            artifact_type="implementation_artifact",
+            visibility="developer",
+            owner_agent="fullstack-agent",
+            source_tool="codex_exec",
+            label="Implementation artifact: app.js",
+            relative_path="generated-project/web/app.js",
+            run_id="run",
+            work_item_id="PLAN-04",
+            task_scoped=True,
+        ),
+    )
+
+    content = repo.get_artifact_content(run.id, record.artifact_id)
+    assert content is not None
+    assert content["content_kind"] == "js"
+    assert "console.log" in content["content_text"]

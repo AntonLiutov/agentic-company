@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import time
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 _POSTGRES_POOLS: dict[str, Any] = {}
+RETRYABLE_SQLSTATES = {"40P01", "40001", "55P03"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +105,46 @@ def postgres_pool_bounds() -> tuple[int, int]:
     if max_size < min_size:
         raise ValueError("AGENTIC_POSTGRES_POOL_MAX must be greater than or equal to min size")
     return min_size, max_size
+
+
+def retry_database_operation(operation: Any) -> Any:
+    """Run a short DB operation with retries for transient database concurrency errors."""
+
+    attempts = _int_env("AGENTIC_DATABASE_RETRY_ATTEMPTS", default=5, minimum=1)
+    delay_seconds = float(os.getenv("AGENTIC_DATABASE_RETRY_DELAY_SECONDS", "0.1") or "0.1")
+    last_error: BaseException | None = None
+    for attempt in range(attempts):
+        try:
+            return operation()
+        except Exception as exc:
+            if not is_retryable_database_error(exc) or attempt == attempts - 1:
+                raise
+            last_error = exc
+            time.sleep(delay_seconds * (2**attempt))
+    if last_error:
+        raise last_error
+    return operation()
+
+
+def is_retryable_database_error(exc: BaseException) -> bool:
+    sqlstate = str(getattr(exc, "sqlstate", "") or "")
+    if sqlstate in RETRYABLE_SQLSTATES:
+        return True
+    cause = exc.__cause__
+    if cause is not None and is_retryable_database_error(cause):
+        return True
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(
+        token in text
+        for token in (
+            "deadlock detected",
+            "deadlockdetected",
+            "serialization failure",
+            "could not serialize access",
+            "lock timeout",
+            "locknotavailable",
+        )
+    )
 
 
 def _int_env(name: str, *, default: int, minimum: int) -> int:
@@ -228,5 +270,7 @@ def _replace_sqlite_placeholders(sql: str) -> str:
 __all__ = [
     "DatabaseSettings",
     "connect_database",
+    "is_retryable_database_error",
     "postgres_pool_bounds",
+    "retry_database_operation",
 ]

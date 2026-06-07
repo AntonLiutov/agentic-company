@@ -623,6 +623,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             work_items,
             business_artifacts,
             repo.list_activity_events(run.id),
+            open_duration_end_at="" if _run_status_running(run.status) else run.updated_at,
         )
         if detail is None:
             raise HTTPException(status_code=404)
@@ -882,10 +883,16 @@ def render_workspace(
         activity_events = repo.list_activity_events(run.id)
         _sync_canonical_run_completion(repo, project, run)
         business_artifacts = canonical_artifacts_for_run(run_dir, artifact_records, work_items)[0]
-        board = board_cards_from_work_items(work_items, business_artifacts, activity_events)
         canonical_status = run.status
         run_running = _run_status_running(run.status)
         run_completed = _run_status_completed(run.status)
+        open_duration_end_at = "" if run_running else run.updated_at
+        board = board_cards_from_work_items(
+            work_items,
+            business_artifacts,
+            activity_events,
+            open_duration_end_at=open_duration_end_at,
+        )
         overview = delivery_overview_from_work_items(
             run_id=str(run.id),
             work_items=work_items,
@@ -902,16 +909,19 @@ def render_workspace(
                     work_items,
                     business_artifacts,
                     activity_events,
+                    open_duration_end_at=open_duration_end_at,
                 ),
                 "work_plan_groups": work_plan_groups_from_work_items(
                     work_items,
                     business_artifacts,
                     activity_events,
+                    open_duration_end_at=open_duration_end_at,
                 ),
                 "sprint_board_groups": sprint_board_groups_from_work_items(
                     work_items,
                     business_artifacts,
                     activity_events,
+                    open_duration_end_at=open_duration_end_at,
                 ),
                 "business_artifacts": business_artifacts,
                 "business_artifact_groups": artifact_owner_groups(business_artifacts),
@@ -920,6 +930,7 @@ def render_workspace(
                     work_items,
                     business_artifacts,
                     activity_events,
+                    open_duration_end_at=open_duration_end_at,
                 ),
                 "technical_artifacts": [],
                 "logs": rendered_log_entries_from_db_events(activity_events),
@@ -1102,7 +1113,13 @@ def normalize_agent_model(provider: str, model: str) -> str:
 
 
 def normalize_codex_model(model: str) -> str:
-    return model if model in CODEX_MODEL_OPTIONS else DEFAULT_CODEX_MODEL
+    normalized = str(model or "").strip()
+    if normalized in CODEX_MODEL_OPTIONS:
+        return normalized
+    allowed = ", ".join(CODEX_MODEL_OPTIONS)
+    raise ValueError(
+        f"Unsupported Codex model '{normalized or '<empty>'}'. Choose one of: {allowed}."
+    )
 
 
 def agent_catalog_for_run(run: Run | None) -> list[dict[str, str]]:
@@ -1112,12 +1129,16 @@ def agent_catalog_for_run(run: Run | None) -> list[dict[str, str]]:
         agent_provider,
         env.get("AGENT_LLM_MODEL", "gemini-3.1-flash-lite"),
     )
-    codex_model = normalize_codex_model(
+    env_codex_model = (
         env.get("AGENT_CODEX_MODEL")
         or env.get("FULLSTACK_CODEX_MODEL")
         or env.get("BUSINESS_ANALYST_CODEX_MODEL")
         or DEFAULT_CODEX_MODEL
     )
+    try:
+        codex_model = normalize_codex_model(env_codex_model)
+    except ValueError:
+        codex_model = f"unsupported: {env_codex_model}"
     return agent_catalog(
         agent_provider=agent_provider,
         agent_model=agent_model,

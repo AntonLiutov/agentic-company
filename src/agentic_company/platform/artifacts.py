@@ -7,9 +7,34 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from agentic_company.platform.artifact_registry import normalize_artifact_path
 from agentic_company.platform.models import ExecutionRequest
 
 EXECUTION_REQUEST_ARTIFACT = "delivery/execution-request.json"
+IMPLEMENTATION_ARTIFACT_EXCLUDED_DIRS = {
+    ".deno-cache",
+    ".git",
+    ".mypy_cache",
+    ".next",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+}
+IMPLEMENTATION_ARTIFACT_EXCLUDED_FILENAMES = {
+    ".coverage",
+    ".env",
+    "events.jsonl",
+    "execution.log",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "prompt.md",
+    "uv.lock",
+}
+IMPLEMENTATION_ARTIFACT_MAX_BYTES = 512_000
 
 def read_json_artifact(path: Path, *, normalize_bom: bool = False) -> object:
     """Read a JSON artifact while tolerating UTF-8 BOM output from external tools."""
@@ -51,6 +76,126 @@ def write_json_artifact(path: Path, payload: object) -> None:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def canonical_output_artifact_refs(
+    *,
+    run_dir: Path,
+    target_project_dir: str | Path,
+    artifact_refs: Sequence[str],
+) -> list[str]:
+    """Return DB-safe run-relative artifact refs from explicit output contracts.
+
+    Specialist contracts may name implementation outputs relative to the generated
+    project directory. The artifact registry is stricter: it stores run-relative
+    paths only. This function bridges those two explicit roots without guessing
+    from filenames or artifact names.
+    """
+
+    run_root = run_dir.resolve()
+    target_root = Path(target_project_dir).resolve()
+    refs: list[str] = []
+    seen: set[str] = set()
+    for raw_ref in artifact_refs:
+        token = normalize_artifact_path(str(raw_ref or "").strip())
+        if not token:
+            continue
+        resolved_ref = _canonical_output_ref(
+            run_root=run_root,
+            run_dir=run_dir,
+            target_root=target_root,
+            artifact_ref=token,
+        )
+        if resolved_ref not in seen:
+            refs.append(resolved_ref)
+            seen.add(resolved_ref)
+    return refs
+
+
+def discover_implementation_artifacts(
+    *,
+    run_dir: Path,
+    target_project_dir: str | Path,
+) -> list[str]:
+    """Return run-relative generated-project files suitable for DB contracts.
+
+    Fullstack produces application files whose exact names are product-dependent.
+    The contract root is explicit: target_project_dir. Within that root, every
+    small source/config/doc asset is a downstream-addressable implementation
+    artifact, while caches, dependency folders, locks, and execution internals
+    stay out of the product registry.
+    """
+
+    run_root = run_dir.resolve()
+    target_root = Path(target_project_dir).resolve()
+    try:
+        target_root.relative_to(run_root)
+    except ValueError as exc:
+        raise ValueError(
+            f"Implementation artifact root must stay inside run directory: {target_project_dir}"
+        ) from exc
+    if not target_root.is_dir():
+        return []
+
+    refs: list[str] = []
+    for path in sorted(target_root.rglob("*")):
+        if not path.is_file() or _is_excluded_implementation_path(path, target_root):
+            continue
+        try:
+            if path.stat().st_size > IMPLEMENTATION_ARTIFACT_MAX_BYTES:
+                continue
+        except OSError:
+            continue
+        refs.append(path.resolve().relative_to(run_root).as_posix())
+    return refs
+
+
+def _canonical_output_ref(
+    *,
+    run_root: Path,
+    run_dir: Path,
+    target_root: Path,
+    artifact_ref: str,
+) -> str:
+    raw_path = Path(artifact_ref)
+    if raw_path.is_absolute():
+        resolved = raw_path.resolve()
+        try:
+            return resolved.relative_to(run_root).as_posix()
+        except ValueError as exc:
+            raise ValueError(
+                f"Output artifact must stay inside run directory: {artifact_ref}"
+            ) from exc
+
+    run_candidate = (run_dir / raw_path).resolve()
+    if _is_relative_to(run_candidate, run_root) and run_candidate.is_file():
+        return run_candidate.relative_to(run_root).as_posix()
+
+    target_candidate = (target_root / raw_path).resolve()
+    if _is_relative_to(target_candidate, run_root) and target_candidate.is_file():
+        return target_candidate.relative_to(run_root).as_posix()
+
+    if ".." in raw_path.parts:
+        raise ValueError(f"Output artifact must stay inside run directory: {artifact_ref}")
+    return raw_path.as_posix()
+
+
+def _is_excluded_implementation_path(path: Path, target_root: Path) -> bool:
+    relative = path.relative_to(target_root)
+    parts = {part.lower() for part in relative.parts}
+    if parts & IMPLEMENTATION_ARTIFACT_EXCLUDED_DIRS:
+        return True
+    if path.name.lower() in IMPLEMENTATION_ARTIFACT_EXCLUDED_FILENAMES:
+        return True
+    return False
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def load_execution_request(run_dir: Path) -> ExecutionRequest:
