@@ -19,9 +19,7 @@ def test_update_execution_request_context_clears_stale_codex_resume_thread(
     tmp_path: Path,
     monkeypatch,
 ):
-    db_path = tmp_path / "console.db"
-    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
-    repo = ConsoleRepository(db_path)
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(email="runner@example.test", username="runner", password="password-1")
     project = repo.create_project(

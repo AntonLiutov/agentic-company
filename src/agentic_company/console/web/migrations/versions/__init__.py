@@ -1,0 +1,1 @@
+"""Console database migration versions."""

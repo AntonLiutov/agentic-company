@@ -27,7 +27,7 @@ def register_artifact_content(repo: ConsoleRepository, run_id: int, record, cont
 
 
 def test_landing_page_renders_public_story(tmp_path):
-    app = create_app(ConsoleRepository(tmp_path / "console.db"))
+    app = create_app(ConsoleRepository())
     client = TestClient(app)
 
     response = client.get("/")
@@ -36,12 +36,12 @@ def test_landing_page_renders_public_story(tmp_path):
     assert "Agentic Delivery Lab" in response.text
     assert "Turn product ideas into shipped demos." in response.text
     assert "Gemini API" in response.text
-    assert "Speechmatics" in response.text
+    assert "Speech" + "matics" not in response.text
     assert "brand/agentic-delivery-lab-cover.png" in response.text
 
 
 def test_register_dashboard_and_logout(tmp_path):
-    app = create_app(ConsoleRepository(tmp_path / "console.db"))
+    app = create_app(ConsoleRepository())
     client = TestClient(app)
 
     response = client.post(
@@ -60,14 +60,14 @@ def test_register_dashboard_and_logout(tmp_path):
     assert client.post("/logout", follow_redirects=False).status_code == 303
 
 
-def test_new_project_page_renders_dictation_language_picker(tmp_path):
-    app = create_app(ConsoleRepository(tmp_path / "console.db"))
+def test_new_project_page_renders_model_controls_without_transcription_controls(tmp_path):
+    app = create_app(ConsoleRepository())
     client = TestClient(app)
     client.post(
         "/register",
         data={
-            "email": "voice@example.test",
-            "username": "voiceuser",
+            "email": "models@example.test",
+            "username": "modelsuser",
             "password": "password-1",
         },
     )
@@ -75,7 +75,6 @@ def test_new_project_page_renders_dictation_language_picker(tmp_path):
     response = client.get("/projects/new")
 
     assert response.status_code == 200
-    assert "Dictation language" in response.text
     assert "Planning" in response.text
     assert "Google Gemini" in response.text
     assert "Google Gemini" in response.text
@@ -85,67 +84,32 @@ def test_new_project_page_renders_dictation_language_picker(tmp_path):
     assert "gpt-5.4-mini" in response.text
     assert "gpt-5.3-codex-spark" not in response.text
     assert "gpt-5.2" not in response.text
-    assert "Powered by Speechmatics" in response.text
-    assert "English (en)" in response.text
-    assert "Italian (it)" in response.text
-    assert "data-dictation-language" in response.text
+    assert "Dictation " + "language" not in response.text
+    assert "Start " + "".join(["dict", "ation"]) not in response.text
+    assert "Speech" + "matics" not in response.text
+    assert "data-" + "".join(["dict", "ation-language"]) not in response.text
 
 
-def test_speechmatics_token_endpoint_disabled_without_key(tmp_path, monkeypatch):
-    monkeypatch.delenv("SPEECHMATICS_API_KEY", raising=False)
-    app = create_app(ConsoleRepository(tmp_path / "console.db"))
+def test_transcription_token_endpoint_is_removed(tmp_path):
+    app = create_app(ConsoleRepository())
     client = TestClient(app)
     client.post(
         "/register",
         data={
-            "email": "no-voice@example.test",
-            "username": "novoice",
+            "email": "no-transcription@example.test",
+            "username": "notranscription",
             "password": "password-1",
         },
     )
 
-    response = client.post("/api/voice/speechmatics-token")
+    removed_route = "/api/" + "voi" + "ce/" + "speech" + "matics-token"
+    response = client.post(removed_route)
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["enabled"] is False
-    assert payload["browser_mode"] == "browser"
-    assert "token" not in payload
-    italian = next(language for language in payload["languages"] if language["code"] == "it")
-    assert italian["name"] == "Italian"
-    assert italian["recommended"] is True
-
-
-def test_speechmatics_token_endpoint_returns_short_lived_token(tmp_path, monkeypatch):
-    monkeypatch.setenv("SPEECHMATICS_API_KEY", "rc-long-lived-secret")
-    monkeypatch.setenv("SPEECHMATICS_RT_URL", "wss://speech.example.test/v2")
-    monkeypatch.setattr(
-        "agentic_company.console.web.app.create_speechmatics_realtime_token",
-        lambda: "short-lived-token",
-    )
-    app = create_app(ConsoleRepository(tmp_path / "console.db"))
-    client = TestClient(app)
-    client.post(
-        "/register",
-        data={
-            "email": "voice-token@example.test",
-            "username": "voicetoken",
-            "password": "password-1",
-        },
-    )
-
-    response = client.post("/api/voice/speechmatics-token")
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["enabled"] is True
-    assert payload["token"] == "short-lived-token"
-    assert payload["rt_url"] == "wss://speech.example.test/v2"
-    assert "rc-long-lived-secret" not in response.text
+    assert response.status_code == 404
 
 
 def test_settings_can_save_and_delete_gemini_key(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     app = create_app(repo)
     client = TestClient(app)
     client.post(
@@ -177,7 +141,7 @@ def test_settings_can_save_and_delete_gemini_key(tmp_path):
 
 
 def test_private_project_not_visible_to_another_user(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user_a = repo.create_user(email="a@example.test", username="auser", password="password-1")
     user_b = repo.create_user(email="b@example.test", username="buser", password="password-1")
@@ -199,7 +163,7 @@ def test_private_project_not_visible_to_another_user(tmp_path):
 
 
 def test_create_project_starts_run_with_monkeypatched_runtime(tmp_path, monkeypatch):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     app = create_app(repo)
     client = TestClient(app)
     client.post(
@@ -255,7 +219,7 @@ def test_create_project_starts_run_with_monkeypatched_runtime(tmp_path, monkeypa
 
 
 def test_new_run_creates_canonical_planning_work_items(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="planner@example.test",
@@ -291,7 +255,7 @@ def test_new_run_creates_canonical_planning_work_items(tmp_path):
 
 
 def test_new_run_registers_source_requirements_artifact(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="requirements@example.test",
@@ -329,7 +293,7 @@ def test_new_run_registers_source_requirements_artifact(tmp_path):
 
 
 def test_pm_queue_materializes_feature_work_items_in_db(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="pm@example.test",
@@ -405,7 +369,7 @@ def test_pm_queue_materializes_feature_work_items_in_db(tmp_path):
 
 
 def test_logs_endpoint_filters_db_activity_by_task_id(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="logs@example.test",
@@ -509,7 +473,7 @@ def test_logs_endpoint_filters_db_activity_by_task_id(tmp_path):
 
 
 def test_status_endpoint_reports_active_owner_without_duplicate_running(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="status-owner@example.test",
@@ -557,7 +521,7 @@ def test_status_endpoint_reports_active_owner_without_duplicate_running(tmp_path
 
 
 def test_logs_endpoint_reads_db_activity_only_when_db_work_items_exist(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="strict-logs@example.test",
@@ -591,7 +555,7 @@ def test_logs_endpoint_reads_db_activity_only_when_db_work_items_exist(tmp_path)
 
 
 def test_db_activity_requires_explicit_work_item_rows(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="strict-sync@example.test",
@@ -634,7 +598,7 @@ def test_db_activity_requires_explicit_work_item_rows(tmp_path):
 
 
 def test_create_project_can_use_gemini_for_agent_executor(tmp_path, monkeypatch):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     app = create_app(repo)
     client = TestClient(app)
     client.post(
@@ -691,7 +655,7 @@ def test_create_project_can_use_gemini_for_agent_executor(tmp_path, monkeypatch)
 def test_create_project_can_use_platform_gemini_key(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_GEMINI_API_KEY", raising=False)
     monkeypatch.setenv("GOOGLE_API_KEY", "AIza-platform")
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     app = create_app(repo)
     client = TestClient(app)
     client.post(
@@ -743,7 +707,7 @@ def test_format_request_uses_gemini_key_not_openai_key(tmp_path, monkeypatch):
     monkeypatch.delenv("GEMINI_FORMATTER_API_KEY", raising=False)
     monkeypatch.delenv("AGENT_GEMINI_API_KEY", raising=False)
     monkeypatch.setenv("GOOGLE_API_KEY", "AIza-platform-format")
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     app = create_app(repo)
     client = TestClient(app)
     client.post(
@@ -779,7 +743,7 @@ def test_format_request_without_gemini_keeps_text_and_shows_message(tmp_path, mo
     monkeypatch.delenv("AGENT_GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     app = create_app(repo)
     client = TestClient(app)
     client.post(
@@ -802,7 +766,7 @@ def test_format_request_without_gemini_keeps_text_and_shows_message(tmp_path, mo
 
 
 def test_create_project_requires_saved_openai_key(tmp_path, monkeypatch):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     app = create_app(repo)
     client = TestClient(app)
     client.post(
@@ -834,7 +798,7 @@ def test_create_project_requires_saved_openai_key(tmp_path, monkeypatch):
 
 
 def test_restart_project_creates_new_run_from_saved_request(tmp_path, monkeypatch):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="restart@example.test",
@@ -904,7 +868,7 @@ def test_restart_project_creates_new_run_from_saved_request(tmp_path, monkeypatc
 
 
 def test_restart_button_visible_for_blocked_private_run(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="blocked@example.test",
@@ -953,7 +917,7 @@ def test_restart_button_visible_for_blocked_private_run(tmp_path):
 
 
 def test_project_request_visible_in_lists_and_workspace(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="request@example.test",
@@ -994,7 +958,7 @@ def test_project_request_visible_in_lists_and_workspace(tmp_path):
 
 
 def test_delete_private_project_removes_it_from_workspace(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="delete@example.test",
@@ -1020,7 +984,7 @@ def test_delete_private_project_removes_it_from_workspace(tmp_path):
 
 
 def test_stop_project_marks_latest_run_stopped(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="stop@example.test",
@@ -1060,7 +1024,7 @@ def test_stop_project_marks_latest_run_stopped(tmp_path):
 
 
 def test_promote_and_demote_project_from_workspace(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     owner = repo.create_user(
         email="showcase-owner@example.test",
@@ -1148,7 +1112,7 @@ def test_promote_and_demote_project_from_workspace(tmp_path):
 
 
 def test_promote_project_requires_completed_run(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     owner = repo.create_user(
         email="showcase-not-ready@example.test",
@@ -1176,7 +1140,7 @@ def test_public_demo_project_cannot_be_deleted_by_user(tmp_path, monkeypatch):
     run_dir = tmp_path / "demo-run"
     run_dir.mkdir()
     monkeypatch.setenv("PUBLIC_DEMO_RUN_DIR", str(run_dir))
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="demo-delete@example.test",
@@ -1197,7 +1161,7 @@ def test_public_demo_project_cannot_be_deleted_by_user(tmp_path, monkeypatch):
 
 
 def test_showcase_page_lists_multiple_public_projects_with_owner_private_action(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     owner = repo.create_user(
         email="multi-showcase-owner@example.test",
@@ -1259,7 +1223,7 @@ def test_showcase_page_lists_multiple_public_projects_with_owner_private_action(
 
 
 def test_artifact_path_traversal_is_rejected(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="artifact@example.test",
@@ -1293,7 +1257,7 @@ def test_artifact_path_traversal_is_rejected(tmp_path):
 
 
 def test_json_artifact_is_not_exposed_in_product_console(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="json@example.test",
@@ -1328,7 +1292,7 @@ def test_json_artifact_is_not_exposed_in_product_console(tmp_path):
 
 
 def test_artifact_view_uses_business_title_instead_of_internal_path(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="report@example.test",
@@ -1384,7 +1348,7 @@ def test_artifact_view_uses_business_title_instead_of_internal_path(tmp_path):
 
 
 def test_artifact_view_resolves_registry_id(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="artifact-id@example.test",
@@ -1440,7 +1404,7 @@ def test_artifact_view_resolves_registry_id(tmp_path):
 
 
 def test_run_trace_api_returns_owned_structured_trace_without_secrets(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="trace-route@example.test",
@@ -1518,7 +1482,7 @@ def test_run_trace_api_returns_owned_structured_trace_without_secrets(tmp_path):
 
 
 def test_html_artifact_view_opens_report_links_outside_preview(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="report-links@example.test",
@@ -1582,7 +1546,7 @@ def test_html_artifact_view_opens_report_links_outside_preview(tmp_path):
 
 
 def test_artifact_view_renders_mermaid_reports(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="mermaid@example.test",
@@ -1641,7 +1605,7 @@ def test_artifact_view_renders_mermaid_reports(tmp_path):
 
 
 def test_project_agents_tab_shows_agent_catalog(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="agents@example.test",

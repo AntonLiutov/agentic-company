@@ -1271,7 +1271,6 @@ def system_checks(
         openai_key_configured = bool(os.getenv("OPENAI_API_KEY") or os.getenv("CODEX_API_KEY"))
     if gemini_key_configured is None:
         gemini_key_configured = bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
-    voice_available = bool(os.getenv("SPEECHMATICS_API_KEY"))
     codex_available = bool(_codex_binary())
     docker_available = bool(shutil.which("docker"))
     azure_available = bool(shutil.which("az"))
@@ -1291,13 +1290,6 @@ def system_checks(
             "Gemini can power agent planning."
             if gemini_key_configured
             else "Add a Gemini key to use Google models.",
-        ),
-        _check(
-            "Voice input",
-            voice_available,
-            "Live dictation is available."
-            if voice_available
-            else "Browser dictation is available when supported.",
         ),
         _check(
             "Builder",

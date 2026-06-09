@@ -667,7 +667,11 @@ def artifact_links_for_paths(run_id: str, paths: list[str]) -> tuple[Any, ...]:
     """Return DB-backed artifact links for explicit run-local paths."""
 
     repo, db_run_id = _repo_and_run(run_id)
-    normalized = [normalize_artifact_path(path) for path in paths if str(path or "").strip()]
+    run_row = _run_row(repo, run_id)
+    run_dir = Path(str(run_row["run_dir"]))
+    normalized = [
+        _registered_artifact_lookup_path(run_dir, path) for path in paths if str(path or "").strip()
+    ]
     if not normalized:
         return ()
     # Build through the public repository method to keep row conversion centralized.
@@ -678,6 +682,24 @@ def artifact_links_for_paths(run_id: str, paths: list[str]) -> tuple[Any, ...]:
             "Artifact refs must be registered in DB before use: " + ", ".join(sorted(missing))
         )
     return tuple(by_path[path].to_tool_ref() for path in normalized)
+
+
+def _registered_artifact_lookup_path(run_dir: Path, path: str) -> str:
+    raw = str(path or "").strip()
+    raw_path = Path(raw)
+    if raw_path.is_absolute():
+        try:
+            return raw_path.resolve().relative_to(run_dir.resolve()).as_posix()
+        except ValueError as exc:
+            raise ValueError(f"Artifact ref must stay inside run directory: {raw}") from exc
+    normalized = normalize_artifact_path(raw)
+    missing_leading_root = Path(f"/{normalized}")
+    if missing_leading_root.is_absolute():
+        try:
+            return missing_leading_root.resolve().relative_to(run_dir.resolve()).as_posix()
+        except ValueError:
+            pass
+    return normalized
 
 
 def artifact_paths_by_owner(run_id: str, owner_agent: str) -> list[str]:

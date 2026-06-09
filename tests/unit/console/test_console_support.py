@@ -45,9 +45,7 @@ def test_env_persistence_helpers_round_trip(tmp_path):
 
 
 def test_env_persistence_mirrors_safe_key_metadata_when_run_exists(tmp_path, monkeypatch):
-    db_path = tmp_path / "console.db"
-    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
-    repo = ConsoleRepository(db_path)
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(email="env@example.test", username="env", password="password-1")
     project = repo.create_project(

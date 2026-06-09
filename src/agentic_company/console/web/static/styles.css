@@ -415,49 +415,6 @@ textarea { resize: vertical; line-height: 1.5; min-height: 10rem; max-height: 36
 }
 .form-grid-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .form-grid-three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.language-picker {
-  position: relative;
-}
-.language-picker-options {
-  display: none;
-  position: absolute;
-  z-index: 20;
-  top: calc(100% + 0.35rem);
-  left: 0;
-  right: 0;
-  max-height: 19rem;
-  overflow-y: auto;
-  padding: 0.45rem;
-  border: 1px solid rgba(96, 165, 250, 0.42);
-  border-radius: 0.8rem;
-  background: rgba(8, 13, 28, 0.98);
-  box-shadow: 0 20px 44px rgba(0, 0, 0, 0.42);
-}
-.language-picker-options.open {
-  display: grid;
-  gap: 0.35rem;
-}
-.language-option {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.65rem;
-  width: 100%;
-  padding: 0.55rem 0.65rem;
-  border: 1px solid transparent;
-  border-radius: 0.62rem;
-  background: transparent;
-  color: var(--text);
-  text-align: left;
-}
-.language-option:hover,
-.language-option.recommended {
-  border-color: rgba(34, 211, 238, 0.34);
-  background: rgba(34, 211, 238, 0.09);
-}
-.language-option small {
-  flex: 0 0 auto;
-}
 .full { margin-top: 1rem; }
 .button-row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-top: 1rem; }
 .button-row.compact-actions {
@@ -2114,7 +2071,10 @@ textarea { resize: vertical; line-height: 1.5; min-height: 10rem; max-height: 36
 }
 .sponsor-logo-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(11rem, 1fr));
+  justify-content: center;
+  width: min(100%, 64rem);
+  margin: 0 auto;
   gap: 0.8rem;
 }
 .sponsor-logo-grid article {
@@ -2191,7 +2151,7 @@ textarea { resize: vertical; line-height: 1.5; min-height: 10rem; max-height: 36
   color: var(--muted);
 }
 
-.preview-panel, .voice-preview, .formatted-request, pre, .markdown-body, .html-preview, .mermaid-frame {
+.preview-panel, .formatted-request, pre, .markdown-body, .html-preview, .mermaid-frame {
   border: 1px solid var(--border);
   background: rgba(7, 11, 20, 0.7);
   border-radius: 0.75rem;
@@ -2733,7 +2693,7 @@ body.sidebar-collapsed .app-main {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
   .sponsor-logo-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .sponsor-section,
   .visual-story-section,

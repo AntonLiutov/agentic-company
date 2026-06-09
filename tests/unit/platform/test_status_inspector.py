@@ -170,9 +170,7 @@ def test_status_inspection_prompt_requires_json_readback(tmp_path):
 
 
 def _create_run(tmp_path: Path, monkeypatch, run_dir: Path, run_uid: str) -> None:
-    db_path = tmp_path / "console.db"
-    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
-    repo = ConsoleRepository(db_path)
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email=f"{run_uid}@example.test",

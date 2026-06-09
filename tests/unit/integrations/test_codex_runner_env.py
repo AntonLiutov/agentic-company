@@ -408,8 +408,6 @@ def test_codex_exec_command_can_resume_existing_session(tmp_path: Path):
 
 
 def _db_repo(tmp_path: Path, monkeypatch) -> ConsoleRepository:
-    db_path = tmp_path / "console.db"
-    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
-    repo = ConsoleRepository(db_path)
+    repo = ConsoleRepository()
     repo.init_schema()
     return repo

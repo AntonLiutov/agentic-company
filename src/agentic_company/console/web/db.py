@@ -12,7 +12,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from agentic_company.console.support import repo_root
 from agentic_company.console.web.auth import (
     encrypt_secret,
     hash_password,
@@ -21,6 +20,7 @@ from agentic_company.console.web.auth import (
     new_session_token,
     verify_password,
 )
+from agentic_company.console.web.migrations import upgrade_database
 from agentic_company.console.web.sql_backend import DatabaseSettings, connect_database
 from agentic_company.platform.artifact_registry import (
     ArtifactRecord,
@@ -40,7 +40,7 @@ from agentic_company.platform.run_trace import (
 from agentic_company.platform.work_item_contracts import HEAD_PLANNING_ITEMS
 
 SESSION_DAYS = 14
-CONSOLE_SCHEMA_VERSION = "2026-06-06.1"
+CONSOLE_SCHEMA_VERSION = "2026-06-07.1"
 _SCHEMA_INIT_LOCK = threading.Lock()
 _INITIALIZED_SCHEMA_KEYS: set[tuple[str, str]] = set()
 
@@ -159,13 +159,6 @@ class ConsoleProcessState:
     updated_at: str
 
 
-def default_db_path() -> Path:
-    configured = os.getenv("AGENTIC_CONSOLE_DB_PATH", "").strip()
-    if configured:
-        return Path(configured)
-    return repo_root() / "data" / "console.db"
-
-
 def default_database_url() -> str:
     return os.getenv("AGENTIC_DATABASE_URL", "").strip() or os.getenv("DATABASE_URL", "").strip()
 
@@ -173,12 +166,9 @@ def default_database_url() -> str:
 class ConsoleRepository:
     """Product console repository with explicit user isolation methods."""
 
-    def __init__(self, db_path: Path | None = None, *, database_url: str = "") -> None:
-        self.database_url = database_url.strip() or ("" if db_path else default_database_url())
-        self.db_path = db_path or default_db_path()
-        self.settings = DatabaseSettings(url=self.database_url, sqlite_path=self.db_path)
-        if not self.settings.is_postgres:
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, *, database_url: str = "") -> None:
+        self.database_url = database_url.strip() or default_database_url()
+        self.settings = DatabaseSettings(url=self.database_url)
 
     @contextmanager
     def connect(self) -> Iterator[Any]:
@@ -186,7 +176,7 @@ class ConsoleRepository:
             yield conn
 
     def init_schema(self) -> None:
-        schema_key = (self.database_url or str(self.db_path.resolve()), CONSOLE_SCHEMA_VERSION)
+        schema_key = (self.database_url, CONSOLE_SCHEMA_VERSION)
         if schema_key in _INITIALIZED_SCHEMA_KEYS:
             return
         with _SCHEMA_INIT_LOCK:
@@ -196,335 +186,8 @@ class ConsoleRepository:
             _INITIALIZED_SCHEMA_KEYS.add(schema_key)
 
     def _init_schema_uncached(self) -> None:
+        upgrade_database(self.database_url)
         with self.connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    email TEXT NOT NULL UNIQUE,
-                    username TEXT NOT NULL UNIQUE,
-                    password_hash TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS schema_metadata (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS sessions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    token_hash TEXT NOT NULL UNIQUE,
-                    created_at TEXT NOT NULL,
-                    expires_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS projects (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                    name TEXT NOT NULL,
-                    request_text TEXT NOT NULL DEFAULT '',
-                    mode TEXT NOT NULL DEFAULT 'simple_prototype',
-                    complexity TEXT NOT NULL DEFAULT 'simple',
-                    status TEXT NOT NULL DEFAULT 'draft',
-                    visibility TEXT NOT NULL DEFAULT 'private',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS runs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                    run_uid TEXT NOT NULL UNIQUE,
-                    run_dir TEXT NOT NULL,
-                    target_project_dir TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT 'starting',
-                    mode TEXT NOT NULL DEFAULT 'simple_prototype',
-                    reasoning TEXT NOT NULL DEFAULT 'medium',
-                    generated_app_url TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS provider_credentials (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    provider TEXT NOT NULL,
-                    masked_value TEXT NOT NULL,
-                    encrypted_value TEXT NOT NULL DEFAULT '',
-                    storage_mode TEXT NOT NULL DEFAULT 'masked_only',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    UNIQUE(user_id, provider)
-                );
-
-                CREATE TABLE IF NOT EXISTS artifact_metadata (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-                    artifact_id TEXT NOT NULL DEFAULT '',
-                    path TEXT NOT NULL,
-                    project_id INTEGER,
-                    work_item_id TEXT,
-                    label TEXT NOT NULL,
-                    agent TEXT NOT NULL,
-                    owner_agent TEXT NOT NULL DEFAULT '',
-                    artifact_type TEXT NOT NULL DEFAULT '',
-                    visibility TEXT NOT NULL DEFAULT 'business',
-                    storage_uri TEXT NOT NULL DEFAULT '',
-                    source_tool TEXT NOT NULL DEFAULT '',
-                    source_model TEXT NOT NULL DEFAULT '',
-                    external_refs TEXT NOT NULL DEFAULT '[]',
-                    metadata TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    UNIQUE(run_id, path)
-                );
-
-                CREATE TABLE IF NOT EXISTS artifact_contents (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-                    artifact_id TEXT NOT NULL,
-                    path TEXT NOT NULL,
-                    content_kind TEXT NOT NULL DEFAULT 'text',
-                    content_text TEXT NOT NULL DEFAULT '',
-                    content_json TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    UNIQUE(run_id, artifact_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS execution_requests (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-                    execution_id TEXT NOT NULL,
-                    agent_id TEXT NOT NULL,
-                    request_payload TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    UNIQUE(run_id, execution_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS agent_messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-                    message_id TEXT NOT NULL,
-                    from_agent TEXT NOT NULL,
-                    to_agent TEXT NOT NULL,
-                    intent TEXT NOT NULL,
-                    content TEXT NOT NULL DEFAULT '',
-                    artifact_refs TEXT NOT NULL DEFAULT '[]',
-                    correlation_id TEXT,
-                    parent_message_id TEXT,
-                    execution_id TEXT,
-                    parent_execution_id TEXT,
-                    status TEXT NOT NULL DEFAULT 'sent',
-                    created_at TEXT NOT NULL,
-                    UNIQUE(run_id, message_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS delivery_state_snapshots (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-                    snapshot_id TEXT NOT NULL,
-                    stage TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT '',
-                    state_payload TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(run_id, snapshot_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS run_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-                    runtime_run_id TEXT NOT NULL DEFAULT '',
-                    event_id TEXT NOT NULL,
-                    project_id INTEGER,
-                    work_item_id TEXT,
-                    agent_id TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT '',
-                    message TEXT NOT NULL DEFAULT '',
-                    artifact_ids TEXT NOT NULL DEFAULT '[]',
-                    external_refs TEXT NOT NULL DEFAULT '[]',
-                    data TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    UNIQUE(run_id, event_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS tool_call_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-                    runtime_run_id TEXT NOT NULL DEFAULT '',
-                    event_id TEXT NOT NULL,
-                    work_item_id TEXT,
-                    agent_id TEXT NOT NULL,
-                    tool_name TEXT NOT NULL,
-                    tool_call_id TEXT NOT NULL,
-                    input_summary TEXT NOT NULL DEFAULT '{}',
-                    output_summary TEXT NOT NULL DEFAULT '{}',
-                    artifact_ids TEXT NOT NULL DEFAULT '[]',
-                    status TEXT NOT NULL DEFAULT '',
-                    failure_mode TEXT,
-                    duration_ms INTEGER,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(run_id, event_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS model_call_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-                    runtime_run_id TEXT NOT NULL DEFAULT '',
-                    event_id TEXT NOT NULL,
-                    agent_id TEXT NOT NULL,
-                    provider TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    purpose TEXT NOT NULL,
-                    prompt_ref TEXT NOT NULL DEFAULT '',
-                    input_tokens INTEGER,
-                    output_tokens INTEGER,
-                    estimated_cost_usd REAL,
-                    status TEXT NOT NULL DEFAULT '',
-                    duration_ms INTEGER,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(run_id, event_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS work_items (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-                    work_item_id TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    sprint_id TEXT NOT NULL DEFAULT '',
-                    delivery_order INTEGER NOT NULL DEFAULT 0,
-                    status TEXT NOT NULL DEFAULT 'todo',
-                    lane TEXT NOT NULL DEFAULT 'todo',
-                    owner_agent TEXT NOT NULL DEFAULT '',
-                    assigned_agent TEXT NOT NULL DEFAULT '',
-                    active INTEGER NOT NULL DEFAULT 0,
-                    source_refs TEXT NOT NULL DEFAULT '[]',
-                    artifact_ids TEXT NOT NULL DEFAULT '[]',
-                    blocker TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    UNIQUE(run_id, work_item_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS sprints (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-                    sprint_id TEXT NOT NULL,
-                    title TEXT NOT NULL DEFAULT '',
-                    delivery_order INTEGER NOT NULL DEFAULT 0,
-                    status TEXT NOT NULL DEFAULT 'planned',
-                    is_final INTEGER NOT NULL DEFAULT 0,
-                    source_refs TEXT NOT NULL DEFAULT '[]',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    UNIQUE(run_id, sprint_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS work_item_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-                    event_id TEXT NOT NULL,
-                    work_item_id TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    from_status TEXT NOT NULL DEFAULT '',
-                    to_status TEXT NOT NULL DEFAULT '',
-                    from_owner TEXT NOT NULL DEFAULT '',
-                    to_owner TEXT NOT NULL DEFAULT '',
-                    agent_id TEXT NOT NULL DEFAULT '',
-                    tool_name TEXT NOT NULL DEFAULT '',
-                    tool_call_id TEXT NOT NULL DEFAULT '',
-                    message TEXT NOT NULL DEFAULT '',
-                    visibility TEXT NOT NULL DEFAULT 'user',
-                    created_at TEXT NOT NULL,
-                    UNIQUE(run_id, event_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS activity_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-                    event_id TEXT NOT NULL,
-                    work_item_id TEXT NOT NULL,
-                    owner_agent TEXT NOT NULL DEFAULT '',
-                    agent_id TEXT NOT NULL DEFAULT '',
-                    tool_name TEXT NOT NULL DEFAULT '',
-                    message TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT '',
-                    artifact_ids TEXT NOT NULL DEFAULT '[]',
-                    visibility TEXT NOT NULL DEFAULT 'user',
-                    created_at TEXT NOT NULL,
-                    UNIQUE(run_id, event_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS raw_log_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-                    work_item_id TEXT,
-                    sprint_id TEXT NOT NULL DEFAULT '',
-                    agent_id TEXT NOT NULL,
-                    tool_name TEXT NOT NULL DEFAULT '',
-                    tool_call_id TEXT NOT NULL DEFAULT '',
-                    seq INTEGER NOT NULL,
-                    level TEXT NOT NULL DEFAULT '',
-                    stream TEXT NOT NULL DEFAULT '',
-                    message TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(run_id, agent_id, tool_call_id, seq)
-                );
-
-                CREATE TABLE IF NOT EXISTS console_processes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-                    process_name TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT '',
-                    thread_name TEXT NOT NULL DEFAULT '',
-                    env_keys TEXT NOT NULL DEFAULT '[]',
-                    stop_requested_at TEXT NOT NULL DEFAULT '',
-                    error TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    UNIQUE(run_id, process_name)
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_runs_project_created
-                    ON runs(project_id, created_at DESC, id DESC);
-                CREATE INDEX IF NOT EXISTS idx_projects_owner_updated
-                    ON projects(owner_user_id, visibility, updated_at DESC, id DESC);
-                CREATE INDEX IF NOT EXISTS idx_work_items_run_sprint_order
-                    ON work_items(run_id, sprint_id, delivery_order, work_item_id);
-                CREATE INDEX IF NOT EXISTS idx_work_items_run_status
-                    ON work_items(run_id, status, active);
-                CREATE INDEX IF NOT EXISTS idx_sprints_run_order
-                    ON sprints(run_id, delivery_order, sprint_id);
-                CREATE INDEX IF NOT EXISTS idx_work_item_events_run_item_created
-                    ON work_item_events(run_id, work_item_id, created_at, id);
-                CREATE INDEX IF NOT EXISTS idx_activity_events_run_item_created
-                    ON activity_events(run_id, work_item_id, visibility, created_at, id);
-                CREATE INDEX IF NOT EXISTS idx_artifact_metadata_run_item_visibility
-                    ON artifact_metadata(run_id, work_item_id, visibility, created_at);
-                CREATE INDEX IF NOT EXISTS idx_tool_call_events_run_item_created
-                    ON tool_call_events(run_id, work_item_id, created_at, id);
-                CREATE INDEX IF NOT EXISTS idx_run_events_run_item_created
-                    ON run_events(run_id, work_item_id, created_at, id);
-                CREATE INDEX IF NOT EXISTS idx_model_call_events_run_agent_created
-                    ON model_call_events(run_id, agent_id, created_at, id);
-                CREATE INDEX IF NOT EXISTS idx_raw_log_events_run_item_seq
-                    ON raw_log_events(run_id, work_item_id, id);
-                CREATE INDEX IF NOT EXISTS idx_raw_log_events_run_agent_seq
-                    ON raw_log_events(run_id, agent_id, id);
-                CREATE INDEX IF NOT EXISTS idx_agent_messages_run_to_created
-                    ON agent_messages(run_id, to_agent, created_at, id);
-                CREATE INDEX IF NOT EXISTS idx_agent_messages_run_correlation
-                    ON agent_messages(run_id, correlation_id, created_at, id);
-                CREATE INDEX IF NOT EXISTS idx_console_processes_run_name
-                    ON console_processes(run_id, process_name);
-                """
-            )
-            self._ensure_artifact_metadata_columns(conn)
-            self._ensure_run_columns(conn)
             self._record_schema_metadata(conn)
 
     def _record_schema_metadata(self, conn: Any) -> None:
@@ -546,36 +209,6 @@ class ConsoleRepository:
                 "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
             ).fetchone()
         return str(row["value"]) if row else ""
-
-    def _ensure_artifact_metadata_columns(self, conn: Any) -> None:
-        existing = {
-            str(row["name"])
-            for row in conn.execute("PRAGMA table_info(artifact_metadata)").fetchall()
-        }
-        columns = {
-            "artifact_id": "TEXT NOT NULL DEFAULT ''",
-            "project_id": "INTEGER",
-            "work_item_id": "TEXT",
-            "owner_agent": "TEXT NOT NULL DEFAULT ''",
-            "artifact_type": "TEXT NOT NULL DEFAULT ''",
-            "storage_uri": "TEXT NOT NULL DEFAULT ''",
-            "source_tool": "TEXT NOT NULL DEFAULT ''",
-            "source_model": "TEXT NOT NULL DEFAULT ''",
-            "external_refs": "TEXT NOT NULL DEFAULT '[]'",
-            "metadata": "TEXT NOT NULL DEFAULT '{}'",
-        }
-        for name, definition in columns.items():
-            if name not in existing:
-                conn.execute(f"ALTER TABLE artifact_metadata ADD COLUMN {name} {definition}")
-
-    def _ensure_run_columns(self, conn: Any) -> None:
-        existing = {str(row["name"]) for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
-        columns = {
-            "target_project_dir": "TEXT NOT NULL DEFAULT ''",
-        }
-        for name, definition in columns.items():
-            if name not in existing:
-                conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {definition}")
 
     def create_user(self, *, email: str, username: str, password: str) -> User:
         now = utc_now()

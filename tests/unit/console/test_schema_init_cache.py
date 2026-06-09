@@ -11,10 +11,10 @@ def test_init_schema_is_cached_per_database_and_schema_version(tmp_path, monkeyp
         return original(self)
 
     monkeypatch.setattr(ConsoleRepository, "_init_schema_uncached", wrapped)
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
 
     repo.init_schema()
     repo.init_schema()
-    ConsoleRepository(tmp_path / "console.db").init_schema()
+    ConsoleRepository().init_schema()
 
     assert calls["count"] == 1
