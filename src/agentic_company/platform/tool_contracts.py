@@ -399,7 +399,6 @@ CODEX_EXEC_TOOL_CONTRACT = ToolContract(
     input_schema={
         "reason": "string AgentExecutor rationale",
         "message": "string repair or execution instruction",
-        "artifact_refs": "array of registered artifact ids from prior result",
     },
     output_schema={
         "tool_call_id": "string",
@@ -413,7 +412,7 @@ CODEX_EXEC_TOOL_CONTRACT = ToolContract(
         "dashboard_update": "object",
     },
     required_parameters=("reason",),
-    optional_parameters=("message", "artifact_refs"),
+    optional_parameters=("message",),
     artifact_inputs=("execution_request", "previous_result_artifacts"),
     artifact_outputs=("worker_artifacts", "fix_request_artifacts", "agent_response"),
     status_outputs=("succeeded", "failed", "blocked", "needs_repair"),

@@ -266,9 +266,7 @@ def _create_run(
     *,
     target_project_dir=None,
 ) -> None:
-    db_path = tmp_path / "console.db"
-    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
-    repo = ConsoleRepository(db_path)
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email=f"{run_dir.name}@example.test",

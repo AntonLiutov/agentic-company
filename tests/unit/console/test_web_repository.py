@@ -4,14 +4,14 @@ from agentic_company.platform.run_trace import ModelCallEvent, ToolCallEvent
 
 
 def test_init_schema_records_schema_version(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
 
     assert repo.schema_version() == CONSOLE_SCHEMA_VERSION
 
 
 def test_sessions_and_private_project_isolation(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user_a = repo.create_user(email="a@example.test", username="alice", password="password-1")
     user_b = repo.create_user(email="b@example.test", username="bob", password="password-2")
@@ -34,7 +34,7 @@ def test_public_demo_project_visible_to_other_users(tmp_path, monkeypatch):
     run_dir.mkdir(parents=True)
     monkeypatch.setenv("PUBLIC_DEMO_RUN_DIR", str(run_dir))
     monkeypatch.setenv("PUBLIC_DEMO_PROJECT_NAME", "Demo Journey")
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(email="demo@example.test", username="demo", password="password-1")
 
@@ -52,7 +52,7 @@ def test_seed_public_demo_from_env_does_not_replace_other_showcases(tmp_path, mo
     second_run_dir = tmp_path / "runs" / "second"
     first_run_dir.mkdir(parents=True)
     second_run_dir.mkdir(parents=True)
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
 
     monkeypatch.setenv("PUBLIC_DEMO_RUN_DIR", str(first_run_dir))
@@ -68,7 +68,7 @@ def test_seed_public_demo_from_env_does_not_replace_other_showcases(tmp_path, mo
 
 def test_provider_key_storage_masks_and_deletes(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_SECRET_KEY", "test-secret")
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(email="key@example.test", username="keyuser", password="password-1")
 
@@ -82,7 +82,7 @@ def test_provider_key_storage_masks_and_deletes(tmp_path, monkeypatch):
 
 
 def test_artifact_metadata_upsert_and_filter(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="artifact@example.test",
@@ -134,7 +134,7 @@ def test_artifact_metadata_upsert_and_filter(tmp_path):
 
 
 def test_trace_events_upsert_from_contract_records(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="trace@example.test",
@@ -216,7 +216,7 @@ def test_trace_events_upsert_from_contract_records(tmp_path):
 
 
 def test_activity_events_are_listed_chronologically(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="activity@example.test",
@@ -267,7 +267,7 @@ def test_activity_events_are_listed_chronologically(tmp_path):
 
 
 def test_raw_log_events_are_append_only_and_filterable(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(email="logs@example.test", username="logs", password="password-1")
     project = repo.create_project(
@@ -321,7 +321,7 @@ def test_raw_log_events_are_append_only_and_filterable(tmp_path):
 
 
 def test_console_process_state_tracks_status_stop_and_env_keys(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(email="process@example.test", username="process", password="password-1")
     project = repo.create_project(
@@ -359,7 +359,7 @@ def test_console_process_state_tracks_status_stop_and_env_keys(tmp_path):
 
 
 def test_delete_private_project_removes_project_and_runs(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(email="owner@example.test", username="owner", password="password-1")
     project = repo.create_project(
@@ -385,7 +385,7 @@ def test_delete_private_project_removes_project_and_runs(tmp_path):
 
 
 def test_project_can_be_promoted_and_demoted_as_showcase(tmp_path):
-    repo = ConsoleRepository(tmp_path / "console.db")
+    repo = ConsoleRepository()
     repo.init_schema()
     owner = repo.create_user(email="owner@example.test", username="owner", password="password-1")
     viewer = repo.create_user(email="viewer@example.test", username="viewer", password="password-1")

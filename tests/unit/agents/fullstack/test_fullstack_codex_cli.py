@@ -10,7 +10,6 @@ def test_fullstack_runner_does_not_return_generated_project_sources_as_evidence(
     tmp_path: Path,
     monkeypatch,
 ):
-    db_path = tmp_path / "console.db"
     run_dir = tmp_path / "run"
     target_project_dir = run_dir / "generated-project"
     target_project_dir.mkdir(parents=True)
@@ -23,10 +22,7 @@ def test_fullstack_runner_does_not_return_generated_project_sources_as_evidence(
     cache_dir = target_project_dir / "node_modules" / "pkg"
     cache_dir.mkdir(parents=True)
     (cache_dir / "index.js").write_text("module.exports = {}\n", encoding="utf-8")
-    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
-    monkeypatch.delenv("AGENTIC_DATABASE_URL", raising=False)
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    repo = ConsoleRepository(db_path)
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="fullstack@example.test",

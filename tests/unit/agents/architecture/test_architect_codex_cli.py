@@ -176,9 +176,7 @@ def test_architect_codex_runner_maps_valid_contract_to_completed_result(tmp_path
 
 
 def _register_run(run_dir: Path, monkeypatch) -> None:
-    db_path = run_dir / "console.db"
-    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
-    repo = ConsoleRepository(db_path)
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="arch@example.test",

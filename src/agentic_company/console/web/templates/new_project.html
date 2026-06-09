@@ -118,57 +118,16 @@
           </label>
         </div>
       </details>
-      <details class="form-section">
-        <summary>
-          <span>Voice settings</span>
-          <small data-voice-summary>{{ dictation_language_label }}</small>
-        </summary>
-        <p class="section-hint">Choose the dictation language before recording.</p>
-        <label class="language-picker">Dictation language
-          <input
-            id="dictation-language-search"
-            value="{{ dictation_language_label }}"
-            list="dictation-language-options"
-            data-language-picker
-            data-language-target="dictation-language-code"
-            autocomplete="off"
-          >
-          <input
-            id="dictation-language-code"
-            name="dictation_language"
-            type="hidden"
-            value="{{ form_values.dictation_language }}"
-            data-dictation-language
-          >
-          <div class="language-picker-options" data-language-options>
-            {% for language in dictation_languages %}
-              <button
-                class="language-option {{ 'recommended' if language.recommended else '' }}"
-                type="button"
-                data-language-option
-                data-language-code="{{ language.code }}"
-                data-language-label="{{ language.name }} ({{ language.code }})"
-              >
-                <span>{{ language.name }}</span>
-                <small>{{ language.code }}</small>
-              </button>
-            {% endfor %}
-          </div>
-        </label>
-      </details>
     </div>
     <label class="full">Product request
-      <textarea id="request-text" name="request_text" rows="8" placeholder="Paste or dictate the product request here..." required>{{ form_values.request_text }}</textarea>
+      <textarea id="request-text" name="request_text" rows="8" placeholder="Paste the product request here..." required>{{ form_values.request_text }}</textarea>
     </label>
     <div id="formatted-request-view" class="formatted-request hidden"></div>
     <div class="button-row">
-      <button class="secondary" type="button" data-voice-target="request-text">Start dictation</button>
       <button class="secondary" type="button" data-format-target="request-text">Format with AI</button>
       <button class="secondary hidden" type="button" data-edit-target="request-text">Edit request</button>
       <span class="sponsor-chip"><img class="sponsor-icon" src="/static/sponsors/gemini.svg" alt="">Built with Gemini API</span>
-      <span class="sponsor-chip"><img class="sponsor-icon" src="/static/sponsors/speechmatics.ico" alt="">Powered by Speechmatics</span>
     </div>
-    <div class="voice-preview hidden" data-voice-preview></div>
     <div id="format-preview" class="preview-panel hidden"></div>
   </form>
 {% endblock %}

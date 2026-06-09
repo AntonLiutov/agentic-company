@@ -347,9 +347,7 @@ def _feature() -> dict[str, object]:
 
 
 def _register_run(run_dir: Path, monkeypatch) -> None:
-    db_path = run_dir / "console.db"
-    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
-    repo = ConsoleRepository(db_path)
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="pm@example.test",

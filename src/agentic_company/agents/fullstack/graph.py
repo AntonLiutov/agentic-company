@@ -302,13 +302,7 @@ def _current_agent_call_artifacts(run_dir: Path, state: DeliveryState) -> list[s
     message = AgentMessageStore(run_dir).get(message_id) if message_id else None
     if message and message.artifact_refs:
         return _unique_paths(message.artifact_refs)
-    return _unique_paths(
-        [
-            path.relative_to(run_dir).as_posix()
-            for pattern in ("*-fix-request-*.md", "*-fix-request-*.json")
-            for path in run_dir.glob(pattern)
-        ]
-    )
+    return []
 
 
 def _unique_paths(paths: list[str]) -> list[str]:

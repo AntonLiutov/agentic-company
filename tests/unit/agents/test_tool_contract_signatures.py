@@ -73,20 +73,17 @@ def test_codex_exec_contract_parameters_match_callable_signature(tmp_path: Path)
         CODEX_EXEC_TOOL_CONTRACT.optional_parameters
     )
     assert expected <= signature_params
+    assert "artifact_refs" not in signature_params
 
 
 def test_agent_executor_feedback_artifacts_are_registered_in_db(tmp_path: Path, monkeypatch):
-    db_path = tmp_path / "console.db"
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     target_project_dir = run_dir / "generated-project"
     source = target_project_dir / "web" / "app.js"
     source.parent.mkdir(parents=True)
     source.write_text("console.log('app')\n", encoding="utf-8")
-    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
-    monkeypatch.delenv("AGENTIC_DATABASE_URL", raising=False)
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    repo = ConsoleRepository(db_path)
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="feedback@example.test",

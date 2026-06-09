@@ -6,7 +6,11 @@ from agentic_company.platform.artifact_registry import (
     artifact_record_from_mapping,
     register_artifact,
 )
-from agentic_company.platform.runtime_db import materialize_planning_items, record_artifact_link
+from agentic_company.platform.runtime_db import (
+    artifact_links_for_paths,
+    materialize_planning_items,
+    record_artifact_link,
+)
 from agentic_company.platform.tool_contracts import ArtifactRegistrationRequest
 
 
@@ -60,13 +64,9 @@ def test_artifact_record_from_mapping_requires_explicit_metadata():
 
 
 def test_db_artifact_registration_requires_existing_run_file(tmp_path: Path, monkeypatch):
-    db_path = tmp_path / "console.db"
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
-    monkeypatch.delenv("AGENTIC_DATABASE_URL", raising=False)
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    repo = ConsoleRepository(db_path)
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="artifact@example.test",
@@ -115,16 +115,46 @@ def test_db_artifact_registration_requires_existing_run_file(tmp_path: Path, mon
     assert repo.list_artifact_records(run.id) == []
 
 
+def test_artifact_links_accept_absolute_run_local_refs(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "00-requirements.md").write_text("# Requirements\n", encoding="utf-8")
+    repo = ConsoleRepository()
+    repo.init_schema()
+    user = repo.create_user(
+        email="artifact-absolute@example.test",
+        username="artifact-absolute-user",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Artifacts",
+        request_text="Artifacts",
+        mode="internal_tool",
+        complexity="simple",
+        status="running",
+    )
+    repo.create_run(
+        project_id=project.id,
+        run_uid="run",
+        run_dir=run_dir,
+        status="running",
+        mode="internal_tool",
+        reasoning="medium",
+    )
+
+    refs = artifact_links_for_paths("run", [str(run_dir / "00-requirements.md")])
+
+    assert len(refs) == 1
+    assert refs[0].path == "00-requirements.md"
+
+
 def test_db_artifact_registration_rejects_files_outside_run(tmp_path: Path, monkeypatch):
-    db_path = tmp_path / "console.db"
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     outside = tmp_path / "outside.md"
     outside.write_text("# Outside\n", encoding="utf-8")
-    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
-    monkeypatch.delenv("AGENTIC_DATABASE_URL", raising=False)
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    repo = ConsoleRepository(db_path)
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="artifact-outside@example.test",
@@ -174,15 +204,11 @@ def test_db_artifact_registration_rejects_files_outside_run(tmp_path: Path, monk
 
 
 def test_implementation_source_artifact_content_is_stored_in_db(tmp_path: Path, monkeypatch):
-    db_path = tmp_path / "console.db"
     run_dir = tmp_path / "run"
     source = run_dir / "generated-project" / "web" / "app.js"
     source.parent.mkdir(parents=True)
     source.write_text("console.log('app')\n", encoding="utf-8")
-    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
-    monkeypatch.delenv("AGENTIC_DATABASE_URL", raising=False)
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    repo = ConsoleRepository(db_path)
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="implementation-artifact@example.test",

@@ -69,11 +69,7 @@ def test_quality_provider_limit_does_not_register_missing_report_artifacts(tmp_p
 
 
 def _setup_run(run_dir, monkeypatch):
-    db_path = run_dir.parent / "console.db"
-    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
-    monkeypatch.delenv("AGENTIC_DATABASE_URL", raising=False)
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    repo = ConsoleRepository(db_path)
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="qa@example.test",

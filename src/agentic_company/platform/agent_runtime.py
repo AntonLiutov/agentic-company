@@ -25,7 +25,7 @@ from agentic_company.platform.run_trace import (
     record_run_event,
     record_tool_call_event,
 )
-from agentic_company.platform.runtime_db import artifact_links_for_paths, record_artifact_link
+from agentic_company.platform.runtime_db import record_artifact_link
 from agentic_company.platform.skills import (
     SkillSelection,
     render_skill_instructions,
@@ -215,24 +215,10 @@ class LangChainSpecialistAgentExecutor:
         tool_result: AgentRunResult | None = None
         tool_call_count = 0
 
-        def codex_exec(reason: str = "", message: str = "", artifact_refs: str = "") -> str:
+        def codex_exec(reason: str = "", message: str = "") -> str:
             """Run the specialist Codex worker for this assigned task."""
 
             nonlocal tool_call_count, tool_result
-            try:
-                explicit_refs = _validated_artifact_refs(
-                    str(request.delivery_state.get("run_id") or request.run_dir.name),
-                    artifact_refs,
-                )
-            except ValueError as exc:
-                return _codex_exec_contract_error_response(
-                    request=request,
-                    reason=reason,
-                    message=message,
-                    artifact_refs=artifact_refs,
-                    error=str(exc),
-                    tool_call_count=tool_call_count,
-                )
             if tool_result is not None and _agent_run_result_successful(tool_result):
                 record_run_event(
                     request.run_dir,
@@ -252,7 +238,6 @@ class LangChainSpecialistAgentExecutor:
                         "codex_tool_call": tool_call_count,
                         "reason": reason,
                         "message": message,
-                        "artifact_refs": explicit_refs,
                     },
                 )
                 return _codex_exec_tool_response(
@@ -260,7 +245,6 @@ class LangChainSpecialistAgentExecutor:
                     result=tool_result,
                     reason=reason,
                     message=message,
-                    explicit_artifact_refs=explicit_refs,
                     tool_call_count=tool_call_count,
                     duration_ms=0,
                     cached=True,
@@ -308,7 +292,6 @@ class LangChainSpecialistAgentExecutor:
                 request,
                 reason=reason,
                 message=message,
-                artifact_refs=explicit_refs,
                 previous_result=tool_result,
                 attempt=tool_call_count,
             )
@@ -325,7 +308,6 @@ class LangChainSpecialistAgentExecutor:
                 result=tool_result,
                 reason=reason,
                 message=message,
-                explicit_artifact_refs=explicit_refs,
                 tool_call_count=tool_call_count,
                 duration_ms=duration_ms,
             )
@@ -379,6 +361,9 @@ def _specialist_system_prompt(request: SpecialistAgentRequest) -> str:
         request.system_prompt.rstrip()
         + "\n\nAgentExecutor repair protocol:\n"
         + f"- You may call `codex_exec` up to {request.max_codex_tool_calls} time(s).\n"
+        + "- The platform has already attached the DB execution packet, work_item_id, "
+        + "sprint_id, execution request, upstream artifacts, and previous result "
+        + "feedback. Do not pass artifact refs manually to `codex_exec`.\n"
         + "- After each `codex_exec` result, read status, summary, blocking_findings, "
         + "fix_request_artifacts, and recommended_next_action.\n"
         + "- If the result is successful, stop calling tools and return.\n"
@@ -469,7 +454,6 @@ def _append_agent_executor_feedback(
     *,
     reason: str,
     message: str,
-    artifact_refs: list[str],
     previous_result: AgentRunResult | None,
     attempt: int,
 ) -> None:
@@ -483,10 +467,7 @@ def _append_agent_executor_feedback(
             intent="agent_executor_feedback",
             content=content,
             artifact_refs=_unique_paths(
-                [
-                    *(previous_result.output_artifacts if previous_result else []),
-                    *artifact_refs,
-                ]
+                previous_result.output_artifacts if previous_result else []
             ),
             correlation_id=request.stage or request.agent_id,
             parent_execution_id=previous_result.execution_id if previous_result else None,
@@ -503,7 +484,6 @@ def _append_agent_executor_feedback(
                 "attempt": attempt,
                 "reason": reason,
                 "message": message,
-                "artifact_refs": artifact_refs,
                 "previous_result": previous_result.to_dict() if previous_result else None,
             },
             indent=2,
@@ -597,7 +577,6 @@ def _codex_exec_tool_response(
     result: AgentRunResult,
     reason: str,
     message: str,
-    explicit_artifact_refs: list[str],
     tool_call_count: int,
     duration_ms: int | None = None,
     cached: bool = False,
@@ -642,7 +621,6 @@ def _codex_exec_tool_response(
             "fix_request_artifacts": result.fix_request_artifacts,
             "reason": reason,
             "message": message,
-            "explicit_artifact_refs": explicit_artifact_refs,
             "cached_successful_result": cached,
         },
         output_artifacts=output_artifacts,
@@ -664,7 +642,6 @@ def _codex_exec_tool_response(
         "recommended_next_action": result.recommended_next_action,
         "reason": reason,
         "message": message,
-        "explicit_artifact_refs": explicit_artifact_refs,
         "codex_tool_call": tool_call_count,
         "remaining_codex_tool_calls": remaining,
         "cached_successful_result": cached,
@@ -681,7 +658,6 @@ def _codex_exec_tool_response(
         input_summary={
             "reason": reason,
             "message": message,
-            "artifact_refs": explicit_artifact_refs,
             "stage": request.stage,
             "agent_name": request.agent_name,
             "selected_skills": selected_skill_trace_data(request.selected_skills),
@@ -708,69 +684,6 @@ def _codex_exec_tool_response(
         prompt_ref=_prompt_artifact_link(result.output_artifacts),
         status=result.status,
         duration_ms=duration_ms,
-    )
-    return json.dumps(payload, sort_keys=True)
-
-
-def _codex_exec_contract_error_response(
-    *,
-    request: SpecialistAgentRequest,
-    reason: str,
-    message: str,
-    artifact_refs: str,
-    error: str,
-    tool_call_count: int,
-) -> str:
-    tool_call_id = f"{request.run_dir.name}:{request.agent_id}:codex_exec:contract-error"
-    payload = {
-        "tool_name": "codex_exec",
-        "tool_call_id": tool_call_id,
-        "status": "contract_error",
-        "business_summary": "codex_exec contract error: " + error,
-        "summary": "codex_exec contract error: " + error,
-        "message": error,
-        "reason": reason,
-        "input_artifact_refs": artifact_refs,
-        "codex_tool_call": tool_call_count,
-        "remaining_codex_tool_calls": request.max_codex_tool_calls - tool_call_count,
-        "developer_diagnostics": {
-            "agent_id": request.agent_id,
-            "agent_name": request.agent_name,
-            "stage": request.stage,
-            "work_item_id": request.packet.work_item_id,
-            "sprint_id": request.packet.sprint_id,
-            "error": error,
-        },
-        "output_artifacts": [],
-        "failure_mode": "contract_error",
-        "recommended_next_action": "Retry codex_exec with registered artifact refs only.",
-        "dashboard_update": {
-            "status": "blocked",
-            "summary": "codex_exec contract error.",
-            "comment": error,
-            "artifact_links": [],
-            "labels": ["contract-error"],
-        },
-    }
-    record_tool_call_event(
-        request.run_dir,
-        run_id=str(request.delivery_state.get("run_id") or request.run_dir.name),
-        agent_id=request.agent_id,
-        tool_name="codex_exec",
-        tool_call_id=tool_call_id,
-        work_item_id=request.packet.work_item_id,
-        input_summary={
-            "reason": reason,
-            "message": message,
-            "artifact_refs": artifact_refs,
-            "stage": request.stage,
-            "agent_name": request.agent_name,
-        },
-        output_summary=payload,
-        artifact_ids=[],
-        status="contract_error",
-        failure_mode="contract_error",
-        duration_ms=0,
     )
     return json.dumps(payload, sort_keys=True)
 
@@ -856,22 +769,6 @@ def _register_implementation_inventory(
 def _is_internal_execution_artifact(relative_path: str) -> bool:
     name = Path(relative_path).name.lower()
     return name in {"prompt.md", "execution.log", "events.jsonl"}
-
-
-def _validated_artifact_refs(run_id: str, artifact_refs: str) -> list[str]:
-    refs = _split_artifact_refs(artifact_refs)
-    if refs:
-        artifact_links_for_paths(run_id, refs)
-    return refs
-
-
-def _split_artifact_refs(value: str) -> list[str]:
-    refs: list[str] = []
-    for raw in value.replace(";", ",").replace("\n", ",").split(","):
-        item = raw.strip()
-        if item and item not in refs:
-            refs.append(item)
-    return refs
 
 
 def _unique_paths(paths: Sequence[str]) -> list[str]:

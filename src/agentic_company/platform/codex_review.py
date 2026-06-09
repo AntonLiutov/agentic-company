@@ -157,7 +157,13 @@ class CodexReviewRunner:
         return CodexReviewResult(
             status=status,
             content=content,
-            artifact_refs=list(request.artifact_refs),
+            artifact_refs=[
+                *request.artifact_refs,
+                summary_artifact,
+                prompt_artifact,
+                log_artifact,
+                raw_events_artifact,
+            ],
             summary_artifact=summary_artifact,
             prompt_artifact=prompt_artifact,
             log_artifact=log_artifact,

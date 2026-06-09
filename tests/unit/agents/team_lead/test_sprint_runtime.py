@@ -622,7 +622,6 @@ class _FakeHeadReviewer:
 
 
 def _setup_runtime(tmp_path, monkeypatch):
-    db_path = tmp_path / "console.db"
     run_dir = tmp_path / "run"
     pm_dir = run_dir / "upstream-planning" / "project-management"
     pm_dir.mkdir(parents=True)
@@ -658,10 +657,7 @@ def _setup_runtime(tmp_path, monkeypatch):
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
-    monkeypatch.delenv("AGENTIC_DATABASE_URL", raising=False)
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    repo = ConsoleRepository(db_path)
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="run@example.test",

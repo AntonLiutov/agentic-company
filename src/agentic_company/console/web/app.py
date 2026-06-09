@@ -59,15 +59,6 @@ from agentic_company.console.web.product import (
     user_facing_blockers,
     work_plan_groups_from_work_items,
 )
-from agentic_company.console.web.voice import (
-    SpeechmaticsTokenError,
-    create_speechmatics_realtime_token,
-    dictation_languages,
-    language_label,
-    normalize_language_code,
-    speechmatics_configured,
-    speechmatics_rt_url,
-)
 from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.platform.logging import configure_logging
 from agentic_company.platform.run_trace import trace_summary
@@ -224,7 +215,6 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         codex_model: Annotated[str, Form()] = DEFAULT_CODEX_MODEL,
         codex_reasoning: Annotated[str, Form()] = "medium",
         service_tier: Annotated[str, Form()] = "standard",
-        dictation_language: Annotated[str, Form()] = "en",
     ) -> Response:
         agent_provider = normalize_agent_provider(agent_provider)
         agent_model = normalize_agent_model(agent_provider, agent_model)
@@ -244,7 +234,6 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
                     codex_model=codex_model,
                     codex_reasoning=codex_reasoning,
                     service_tier=service_tier,
-                    dictation_language=dictation_language,
                 ),
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
@@ -268,7 +257,6 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
                     codex_model=codex_model,
                     codex_reasoning=codex_reasoning,
                     service_tier=service_tier,
-                    dictation_language=dictation_language,
                 ),
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
@@ -288,7 +276,6 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
                     codex_model=codex_model,
                     codex_reasoning=codex_reasoning,
                     service_tier=service_tier,
-                    dictation_language=dictation_language,
                 ),
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
@@ -758,35 +745,6 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             }
         )
 
-    @app.post("/api/voice/speechmatics-token")
-    def speechmatics_token(user: CurrentUser) -> JSONResponse:
-        if not speechmatics_configured():
-            return JSONResponse(
-                {
-                    "enabled": False,
-                    "browser_mode": "browser",
-                    "languages": dictation_languages(),
-                }
-            )
-        try:
-            token = create_speechmatics_realtime_token()
-        except SpeechmaticsTokenError:
-            return JSONResponse(
-                {
-                    "enabled": False,
-                    "browser_mode": "browser",
-                    "languages": dictation_languages(),
-                }
-            )
-        return JSONResponse(
-            {
-                "enabled": True,
-                "token": token,
-                "rt_url": speechmatics_rt_url(),
-                "languages": dictation_languages(),
-            }
-        )
-
     return app
 
 
@@ -1058,8 +1016,6 @@ def render_new_project(
         formatted="",
         error=error,
         form_values=values,
-        dictation_languages=dictation_languages(),
-        dictation_language_label=language_label(values["dictation_language"]),
         credential=get_repo(request).get_provider_secret(user.id, "openai"),
         gemini_credential=get_repo(request).get_provider_secret(user.id, "google_gemini"),
         platform_gemini_configured=bool(platform_agent_gemini_key()),
@@ -1085,7 +1041,6 @@ def new_project_form_values(
     codex_model: str = DEFAULT_CODEX_MODEL,
     codex_reasoning: str = "medium",
     service_tier: str = "standard",
-    dictation_language: str = "en",
 ) -> dict[str, str]:
     agent_provider = normalize_agent_provider(agent_provider)
     return {
@@ -1098,7 +1053,6 @@ def new_project_form_values(
         "codex_model": normalize_codex_model(codex_model),
         "codex_reasoning": codex_reasoning,
         "service_tier": service_tier,
-        "dictation_language": normalize_language_code(dictation_language),
     }
 
 

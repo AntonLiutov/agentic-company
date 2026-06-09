@@ -39,6 +39,9 @@ def test_codex_review_runner_uses_read_only_sandbox(tmp_path, monkeypatch):
     assert result.content == "Review says revise."
     assert result.summary_artifact.endswith("summary.md")
     assert result.summary_artifact.startswith("team-lead/codex-review/")
+    assert result.summary_artifact in result.artifact_refs
+    assert result.log_artifact in result.artifact_refs
+    assert result.raw_events_artifact in result.artifact_refs
 
 
 def test_codex_review_runner_can_resume_existing_session(tmp_path, monkeypatch):
@@ -130,9 +133,7 @@ def test_codex_review_prompt_is_generic_and_uses_question_as_source_of_truth(tmp
 
 
 def _create_run(tmp_path, monkeypatch, run_dir, run_uid):
-    db_path = tmp_path / "console.db"
-    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
-    repo = ConsoleRepository(db_path)
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email=f"{run_uid}@example.test",

@@ -143,7 +143,6 @@ def test_agent_message_store_mirrors_run_messages_to_db(tmp_path, monkeypatch):
 
 
 def test_agent_message_store_requires_registered_db_run(tmp_path, monkeypatch):
-    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(tmp_path / "console.db"))
     store = AgentMessageStore(tmp_path / "missing-run")
 
     try:
@@ -155,11 +154,9 @@ def test_agent_message_store_requires_registered_db_run(tmp_path, monkeypatch):
 
 
 def _message_store(tmp_path, monkeypatch):
-    db_path = tmp_path / "console.db"
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    monkeypatch.setenv("AGENTIC_CONSOLE_DB_PATH", str(db_path))
-    repo = ConsoleRepository(db_path)
+    repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
         email="messages@example.test",
