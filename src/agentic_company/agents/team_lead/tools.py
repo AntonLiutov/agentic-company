@@ -56,6 +56,7 @@ from agentic_company.platform.state import (
     record_codex_thread,
     write_delivery_state,
 )
+from agentic_company.platform.status import CoordinatorOutcome
 from agentic_company.platform.status_inspector import (
     StatusInspectionRequest,
     StatusInspectorLike,
@@ -231,7 +232,7 @@ class TeamLeadToolbox:
                 item_id,
                 "Final project report is not allowed before planned sprint completion.",
                 message,
-                status="team_lead_final_handoff_not_ready",
+                status=CoordinatorOutcome.FINAL_HANDOFF_NOT_READY,
             )
 
         updated = {**self.delivery_state}
@@ -550,7 +551,7 @@ class TeamLeadToolbox:
             self.delivery_state,
             node_name="team_lead",
             stage="team_lead",
-            status="team_lead_sprint_handoff_ready",
+            status=CoordinatorOutcome.SPRINT_HANDOFF_READY,
         )
         self.delivery_state["blockers"] = []
         write_team_lead_event(
@@ -618,7 +619,7 @@ class TeamLeadToolbox:
             DeliveryState,
             {
                 **self.delivery_state,
-                "status": "team_lead_sprint_blocked",
+                "status": CoordinatorOutcome.SPRINT_BLOCKED,
                 "blockers": blockers,
             },
         )
@@ -661,7 +662,7 @@ class TeamLeadToolbox:
             return True
         status = str(self.delivery_state.get("status") or "")
         sprint_state = sprint_completion_state(str(self.delivery_state["run_id"]), self.sprint_id)
-        return status == "team_lead_sprint_handoff_ready" or sprint_state.status in {
+        return status == CoordinatorOutcome.SPRINT_HANDOFF_READY or sprint_state.status in {
             "done",
             "blocked",
         }
@@ -1019,11 +1020,15 @@ def apply_team_lead_result(state: DeliveryState, sprint_id: str) -> DeliveryStat
     status = str(state.get("status") or "")
     completion = sprint_completion_state(str(state["run_id"]), sprint_id)
     state_blockers = list(state.get("blockers", []))
-    if completion.is_complete and status == "team_lead_sprint_handoff_ready":
+    if completion.is_complete and status == CoordinatorOutcome.SPRINT_HANDOFF_READY:
         state_blockers = []
     blocked = "blocked" in status.lower() or bool(state_blockers)
     if not status:
-        status = "team_lead_sprint_blocked" if blocked else "team_lead_sprint_handoff_ready"
+        status = (
+            CoordinatorOutcome.SPRINT_BLOCKED
+            if blocked
+            else CoordinatorOutcome.SPRINT_HANDOFF_READY
+        )
     result = {
         "sprint_id": sprint_id,
         "status": status,

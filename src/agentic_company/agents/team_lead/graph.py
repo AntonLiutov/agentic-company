@@ -16,6 +16,7 @@ from agentic_company.agents.team_lead.tools import (
 )
 from agentic_company.platform.agent_runtime import build_agent_executor_graph
 from agentic_company.platform.state import DeliveryState
+from agentic_company.platform.status import CoordinatorOutcome
 
 TEAM_LEAD_AGENT_GRAPH_NODE_ORDER: tuple[str, ...] = (
     "prepare_sprint",
@@ -110,11 +111,11 @@ def _prepare_sprint(max_steps: int):
         sprint = {"sprint_id": sprint_id, "id": sprint_id, "features": []}
         updated = {**delivery_state}
         updated["stage"] = "team_lead"
-        updated["status"] = "team_lead_sprint_started"
+        updated["status"] = CoordinatorOutcome.SPRINT_STARTED
         updated["team_lead_sprint_id"] = sprint_id
         write_team_lead_event(
             updated,
-            "team_lead_sprint_started",
+            CoordinatorOutcome.SPRINT_STARTED,
             {"sprint_id": sprint_id, "available_tools": list(TEAM_LEAD_TOOLS)},
         )
         write_sprint_plan_artifact(updated, sprint_id, sprint)

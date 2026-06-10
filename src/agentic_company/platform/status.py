@@ -185,9 +185,37 @@ class AgentEvent(StrEnum):
     REPAIR_REQUESTED = "repair_requested"
 
 
+class CoordinatorOutcome(StrEnum):
+    """Orchestration-control signals emitted by coordinator agents.
+
+    Unlike :class:`WorkItemStatus`, these are not board lanes: the head and team
+    lead use them to decide when planning, a sprint, or delivery has terminated.
+    They share one named vocabulary here so the coordinator class stays uniform
+    instead of scattering literals across the orchestration tools.
+    """
+
+    PLANNING_BLOCKED = "head_planning_blocked"
+    DELIVERY_COMPLETED = "head_delivery_completed"
+    SPRINT_STARTED = "team_lead_sprint_started"
+    SPRINT_HANDOFF_READY = "team_lead_sprint_handoff_ready"
+    SPRINT_BLOCKED = "team_lead_sprint_blocked"
+    FINAL_HANDOFF_NOT_READY = "team_lead_final_handoff_not_ready"
+
+
+# Status values that terminate the head coordinator's orchestration loop.
+HEAD_TERMINAL_OUTCOMES = frozenset(
+    {
+        CoordinatorOutcome.DELIVERY_COMPLETED,
+        CoordinatorOutcome.PLANNING_BLOCKED,
+    }
+)
+
+
 __all__ = [
     "WorkItemStatus",
     "AgentEvent",
+    "CoordinatorOutcome",
+    "HEAD_TERMINAL_OUTCOMES",
     "FailureMode",
     "VALID_TRANSITIONS",
     "InvalidStatusTransition",
