@@ -18,7 +18,7 @@ from agentic_company.console.web.auth import (
     hash_token,
     mask_secret,
     new_session_token,
-    verify_password,
+    verify_password_or_dummy,
 )
 from agentic_company.console.web.migrations import upgrade_database
 from agentic_company.console.web.sql_backend import DatabaseSettings, connect_database
@@ -242,7 +242,8 @@ class ConsoleRepository:
                 """,
                 (lookup, lookup),
             ).fetchone()
-        if row is None or not verify_password(password, str(row["password_hash"])):
+        encoded = str(row["password_hash"]) if row is not None else None
+        if not verify_password_or_dummy(password, encoded):
             return None
         return _user(row)
 

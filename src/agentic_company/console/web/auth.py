@@ -62,6 +62,20 @@ def verify_password(password: str, encoded: str) -> bool:
     return hmac.compare_digest(actual, expected)
 
 
+# A throwaway hash so authentication spends equivalent work whether or not the
+# account exists, denying username enumeration via response timing.
+DUMMY_PASSWORD_HASH = hash_password("agentic-console-absent-account")
+
+
+def verify_password_or_dummy(password: str, encoded: str | None) -> bool:
+    """Verify a password, always hashing even when the account is unknown."""
+
+    if encoded is None:
+        verify_password(password, DUMMY_PASSWORD_HASH)
+        return False
+    return verify_password(password, encoded)
+
+
 def new_session_token() -> str:
     return secrets.token_urlsafe(48)
 

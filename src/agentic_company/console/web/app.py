@@ -7,6 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Annotated, Any
+from urllib.parse import urlparse
 
 import uvicorn
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response, status
@@ -59,6 +60,7 @@ from agentic_company.console.web.product import (
     user_facing_blockers,
     work_plan_groups_from_work_items,
 )
+from agentic_company.console.web.rate_limit import RateLimiter
 from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.platform.logging import configure_logging
 from agentic_company.platform.run_trace import trace_summary
@@ -83,7 +85,26 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
 
     app = FastAPI(title="Agentic Company")
     app.state.repo = repo
+    app.state.login_rate_limiter = RateLimiter(max_attempts=10, window_seconds=300)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    @app.middleware("http")
+    async def reject_cross_origin_writes(request: Request, call_next: Any) -> Response:
+        """Block state-changing requests whose Origin is a different site.
+
+        A present-but-mismatched Origin is a cross-site browser request; a missing
+        Origin (API clients, same-origin GETs) is allowed. Defense-in-depth atop
+        the SameSite=lax session cookie.
+        """
+
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            origin = request.headers.get("origin")
+            if origin and urlparse(origin).netloc != request.url.netloc:
+                return JSONResponse(
+                    {"detail": "Cross-origin request rejected."},
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
+        return await call_next(request)
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request) -> Response:
@@ -106,6 +127,17 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         identifier: Annotated[str, Form()],
         password: Annotated[str, Form()],
     ) -> Response:
+        limiter: RateLimiter = request.app.state.login_rate_limiter
+        attempt_key = f"{_client_ip(request)}:{identifier.strip().lower()}"
+        if not limiter.allow(attempt_key):
+            return render(
+                request,
+                "login.html",
+                user=None,
+                error="Too many sign-in attempts. Wait a few minutes and try again.",
+                mode="login",
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
         user = get_repo(request).authenticate_user(identifier, password)
         if not user:
             return render(
@@ -116,8 +148,11 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
                 mode="login",
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
+        limiter.reset(attempt_key)
         response = redirect("/dashboard")
-        set_session_cookie(response, get_repo(request).create_session(user.id))
+        set_session_cookie(
+            response, get_repo(request).create_session(user.id), secure=_cookie_secure(request)
+        )
         return response
 
     @app.get("/register", response_class=HTMLResponse)
@@ -152,7 +187,9 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         response = redirect("/dashboard")
-        set_session_cookie(response, get_repo(request).create_session(user.id))
+        set_session_cookie(
+            response, get_repo(request).create_session(user.id), secure=_cookie_secure(request)
+        )
         return response
 
     @app.get("/forgot-password", response_class=HTMLResponse)
@@ -776,15 +813,27 @@ def require_user(request: Request) -> User:
 CurrentUser = Annotated[User, Depends(require_user)]
 
 
-def set_session_cookie(response: Response, token: str) -> None:
+def set_session_cookie(response: Response, token: str, *, secure: bool = False) -> None:
     response.set_cookie(
         COOKIE_NAME,
         token,
         httponly=True,
-        secure=os.getenv("AGENTIC_COOKIE_SECURE", "").lower() == "true",
+        secure=secure,
         samesite="lax",
         max_age=14 * 24 * 60 * 60,
     )
+
+
+def _cookie_secure(request: Request) -> bool:
+    """Mark the session cookie Secure over HTTPS, or when explicitly forced."""
+
+    if os.getenv("AGENTIC_COOKIE_SECURE", "").lower() == "true":
+        return True
+    return request.url.scheme == "https"
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
 
 
 def get_visible_project_or_404(request: Request, project_id: int, user: User) -> Project:
