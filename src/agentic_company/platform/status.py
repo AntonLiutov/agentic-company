@@ -209,8 +209,36 @@ def classify_failure_mode(
     return None
 
 
+class RunStatus(StrEnum):
+    """Canonical run / coordinator lifecycle status (not a board lane)."""
+
+    INITIALIZED = "initialized"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    BLOCKED = "blocked"
+    STOPPED = "stopped"
+    FAILED = "failed"
+
+
+class AgentEvent(StrEnum):
+    """Standard lifecycle event an agent/stage emits.
+
+    The *stage* and *agent* are separate fields (see :mod:`platform.runtime_log`);
+    the event is only the lifecycle phase, never a stage-prefixed string like
+    ``"qa_completed"``.
+    """
+
+    STARTED = "started"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    BLOCKED = "blocked"
+    REPAIR_REQUESTED = "repair_requested"
+
+
 __all__ = [
     "WorkItemStatus",
+    "RunStatus",
+    "AgentEvent",
     "FailureMode",
     "VALID_TRANSITIONS",
     "InvalidStatusTransition",

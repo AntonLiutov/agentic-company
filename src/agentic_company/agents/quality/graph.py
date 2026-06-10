@@ -41,6 +41,7 @@ from agentic_company.platform.state import (
     codex_resume_thread_id,
     mark_node_completed,
 )
+from agentic_company.platform.status import AgentEvent, classify_work_item_status
 
 QUALITY_AGENT_ID = "qa-agent"
 
@@ -229,7 +230,9 @@ def _run_agent_executor(runner: FeatureQaRunner | None, agent_executor: Speciali
         run_dir = Path(state["run_dir"])
         event_log = run_dir
         event_data = {"work_item_id": work_item_id} if work_item_id else {}
-        write_event(event_log, delivery_state["run_id"], QUALITY_AGENT_ID, "qa_started", event_data)
+        write_event(
+            event_log, delivery_state["run_id"], QUALITY_AGENT_ID, AgentEvent.STARTED, event_data
+        )
         result = agent_executor.run(
             SpecialistAgentRequest(
                 agent_id=QUALITY_AGENT_ID,
@@ -287,7 +290,7 @@ def _apply_quality_result(state: QualityAgentGraphState) -> QualityAgentGraphSta
         event_log,
         delivery_state["run_id"],
         QUALITY_AGENT_ID,
-        "qa_completed",
+        AgentEvent.COMPLETED,
         completion_data,
     )
 
@@ -295,7 +298,8 @@ def _apply_quality_result(state: QualityAgentGraphState) -> QualityAgentGraphSta
         delivery_state,
         node_name=f"qa:{work_item_id}" if work_item_id else "qa",
         stage="qa",
-        status=f"qa_{status}" if work_item_id else result.status,
+        # Canonical board status; the granular QA outcome lives in qa_status below.
+        status=classify_work_item_status(status if work_item_id else result.status).value,
     )
     updated["qa_status"] = status
     extend_artifacts(

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from agentic_company.platform.run_trace import record_run_event
+from agentic_company.platform.runtime_log import log_runtime_event
 
 LOGGER = logging.getLogger(__name__)
 
@@ -41,10 +42,12 @@ def write_event(
         )
     except Exception:
         LOGGER.exception("structured_trace_write_failed run_id=%s event=%s", run_id, event)
-    LOGGER.debug(
-        "event_written run_id=%s agent=%s event=%s data_keys=%s",
-        run_id,
-        agent_id,
-        event,
-        sorted(data),
+    # Standardized terminal line via the single logging contract (stage/agent/status).
+    log_runtime_event(
+        run_id=run_id,
+        agent=agent_id,
+        event=event,
+        status=str(data.get("status") or ""),
+        message=str(data.get("message") or data.get("summary") or ""),
+        stage=str(data.get("stage") or ""),
     )
