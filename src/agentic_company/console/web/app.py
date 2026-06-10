@@ -23,7 +23,7 @@ from agentic_company.console.support import (
     start_codex_execution,
     write_target_env,
 )
-from agentic_company.console.web.auth import decrypt_secret
+from agentic_company.console.web.auth import SecretEncryptionUnavailable, decrypt_secret
 from agentic_company.console.web.db import ConsoleRepository, Project, Run, User
 from agentic_company.console.web.product import (
     AGENT_MODEL_OPTIONS,
@@ -456,7 +456,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         )
 
     @app.get("/settings", response_class=HTMLResponse)
-    def settings_page(request: Request, user: CurrentUser) -> HTMLResponse:
+    def settings_page(request: Request, user: CurrentUser, key_error: str = "") -> HTMLResponse:
         repo = get_repo(request)
         credential = repo.get_provider_secret(user.id, "openai")
         gemini_credential = repo.get_provider_secret(user.id, "google_gemini")
@@ -464,6 +464,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             request,
             "settings.html",
             user=user,
+            key_error=bool(key_error),
             credential=credential,
             gemini_credential=gemini_credential,
             checks=system_checks(
@@ -486,7 +487,10 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         api_key: Annotated[str, Form()] = "",
     ) -> Response:
         if api_key.strip():
-            get_repo(request).save_provider_secret(user.id, "openai", api_key.strip())
+            try:
+                get_repo(request).save_provider_secret(user.id, "openai", api_key.strip())
+            except SecretEncryptionUnavailable:
+                return redirect("/settings?key_error=1")
         return redirect("/settings")
 
     @app.post("/settings/openai/delete")
@@ -501,7 +505,10 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         api_key: Annotated[str, Form()] = "",
     ) -> Response:
         if api_key.strip():
-            get_repo(request).save_provider_secret(user.id, "google_gemini", api_key.strip())
+            try:
+                get_repo(request).save_provider_secret(user.id, "google_gemini", api_key.strip())
+            except SecretEncryptionUnavailable:
+                return redirect("/settings?key_error=1")
         return redirect("/settings")
 
     @app.post("/settings/gemini/delete")

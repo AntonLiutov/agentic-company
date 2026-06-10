@@ -15,6 +15,7 @@ from agentic_company.platform.artifact_registry import (
     register_artifact,
     resolve_run_artifact_path,
 )
+from agentic_company.platform.status import classify_work_item_status
 from agentic_company.platform.tool_contracts import (
     ActivityEventRecord,
     ArtifactRegistrationRequest,
@@ -1031,29 +1032,9 @@ def _json_list(value: Any) -> list[str]:
 
 
 def _normalize_status(status: str) -> str:
-    token = status.strip().lower()
-    if token in {"", "pending", "planned", "backlog"}:
-        return "todo"
-    if any(
-        value in token
-        for value in (
-            "failed",
-            "blocked",
-            "needs_repair",
-            "provider_limit",
-            "usage_limit",
-            "quota",
-            "rate_limit",
-        )
-    ):
-        return "blocked"
-    if any(value in token for value in ("completed", "passed", "ready", "done", "deployed")):
-        return "done"
-    if any(value in token for value in ("qa", "review", "inspect", "implemented")):
-        return "review"
-    if any(value in token for value in ("started", "running", "progress")):
-        return "in_progress"
-    return token if token in {"todo", "in_progress", "review", "done", "blocked"} else "in_progress"
+    # Single canonical classifier (platform/status.py). Token-based, so a signal
+    # word inside a larger word ("unblocked") is no longer misread as blocked (R9).
+    return classify_work_item_status(status).value
 
 
 def _lane_for_status(status: str) -> str:

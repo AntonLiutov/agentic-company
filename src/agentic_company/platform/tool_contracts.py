@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, cast
+
+from agentic_company.platform.status import classify_failure_mode, classify_work_item_status
 
 DashboardSystem = Literal["github", "jira", "azure_devops", "internal"]
 DashboardReferenceType = Literal["issue", "pull_request", "board_card", "work_item"]
@@ -436,54 +438,16 @@ CODEX_EXEC_TOOL_CONTRACT = ToolContract(
 def dashboard_status_from_runtime_status(status: str) -> DashboardStatus:
     """Map internal runtime statuses to dashboard-friendly board statuses."""
 
-    normalized = status.strip().lower()
-    if any(token in normalized for token in ("blocked", "failed", "precondition", "needs_repair")):
-        return "blocked"
-    if "deployment_deployed" in normalized:
-        return "review"
-    if any(token in normalized for token in ("ready", "done", "completed", "deployed")):
-        return "done"
-    if any(token in normalized for token in ("qa", "review", "inspect")):
-        return "review"
-    if normalized in {"pending", "todo"}:
-        return "todo"
-    return "in_progress"
+    # The five DashboardStatus values are exactly the canonical WorkItemStatus
+    # values, so the single classifier (platform/status.py) is the mapping.
+    return cast(DashboardStatus, classify_work_item_status(status).value)
 
 
 def failure_mode_from_status(status: str, blockers: list[Any] | tuple[Any, ...] = ()) -> str | None:
     """Return a machine-readable failure mode for a runtime status when obvious."""
 
-    normalized = status.strip().lower()
-    blocker_text = " ".join(str(blocker).lower() for blocker in blockers)
-    provider_limit_text = f"{normalized} {blocker_text}"
-    if any(
-        token in provider_limit_text
-        for token in (
-            "provider_limit",
-            "usage_limit",
-            "usage limit",
-            "quota",
-            "rate_limit",
-            "rate limit",
-            "purchase more credits",
-            "capacity",
-        )
-    ):
-        return "provider_limit"
-    if "human" in normalized or "approval" in normalized:
-        return "human_approval_required"
-    if "needs_repair" in normalized or "qa_failed" in normalized:
-        return "needs_repair"
-    if any(token in normalized for token in ("blocked", "failed", "error", "precondition")):
-        return "failed"
-    if any(
-        token in normalized
-        for token in ("ready", "done", "completed", "deployed", "passed", "implemented")
-    ):
-        return None
-    if blockers:
-        return "blocked"
-    return None
+    mode = classify_failure_mode(status, blockers)
+    return mode.value if mode is not None else None
 
 
 def _drop_empty(data: dict[str, Any]) -> dict[str, Any]:

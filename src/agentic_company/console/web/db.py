@@ -37,6 +37,7 @@ from agentic_company.platform.run_trace import (
     sanitize_trace_data,
     tool_call_event_from_mapping,
 )
+from agentic_company.platform.status import classify_work_item_status
 from agentic_company.platform.work_item_contracts import HEAD_PLANNING_ITEMS
 
 SESSION_DAYS = 14
@@ -1581,9 +1582,11 @@ class ConsoleRepository:
         return [_model_call_event(row) for row in rows]
 
     def save_provider_secret(self, user_id: int, provider: str, secret: str) -> ProviderCredential:
-        encrypted = encrypt_secret(secret)
-        storage_mode = "encrypted" if encrypted else "local_demo"
-        stored_value = encrypted or secret
+        # Fail closed: encrypt or raise. A provider key is never persisted in
+        # plaintext (R3). SecretEncryptionUnavailable propagates to the caller,
+        # which surfaces a "set APP_SECRET_KEY" message instead of storing it.
+        stored_value = encrypt_secret(secret)
+        storage_mode = "encrypted"
         masked = mask_secret(secret)
         now = utc_now()
         with self.connect() as conn:
@@ -1896,33 +1899,11 @@ def _canonical_work_item_id(value: str) -> str:
 
 
 def _normalize_work_item_status(status: str) -> str:
-    token = str(status or "").strip().lower()
-    if token in {"", "pending", "planned", "backlog"}:
-        return "todo"
-    if any(
-        value in token
-        for value in (
-            "needs_repair",
-            "failed",
-            "blocked",
-            "provider_limit",
-            "usage_limit",
-            "quota",
-            "rate_limit",
-        )
-    ):
-        return "blocked"
-    if "deployment_deployed" in token:
-        return "review"
-    if any(value in token for value in ("completed", "passed", "ready", "done", "deployed")):
-        return "done"
-    if "qa" in token or "review" in token or "implemented" in token or "inspect" in token:
-        if "passed" in token or "completed" in token or "ready" in token:
-            return "done"
-        return "review"
-    if any(value in token for value in ("started", "running", "active", "progress")):
-        return "in_progress"
-    return token if token in {"todo", "in_progress", "review", "done", "blocked"} else "in_progress"
+    # Single canonical classifier (platform/status.py). Resolves the prior
+    # divergence where this layer mapped deployment_deployed -> review while
+    # runtime_db mapped it -> done; both now agree (-> done) through one source
+    # of truth, and the "blocked" in "unblocked" substring bug is gone (R9).
+    return classify_work_item_status(status).value
 
 
 def _lane_for_work_item_status(status: str) -> str:

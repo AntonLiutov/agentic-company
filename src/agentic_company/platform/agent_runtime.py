@@ -33,6 +33,11 @@ from agentic_company.platform.skills import (
     selected_skill_trace_data,
 )
 from agentic_company.platform.state import DeliveryState, record_codex_thread
+from agentic_company.platform.status import (
+    WorkItemStatus,
+    classify_failure_mode,
+    classify_work_item_status,
+)
 from agentic_company.platform.tool_contracts import (
     CODEX_EXEC_TOOL_CONTRACT,
     ArtifactRegistrationRequest,
@@ -562,12 +567,13 @@ def _agent_run_result_successful(result: AgentRunResult) -> bool:
     status = result.status.strip().lower()
     if not status:
         return False
-    if any(value in status for value in ("failed", "blocked", "precondition", "limit")):
+    # Token-based failure detection (no "limit" inside "unlimited" false positives, R9).
+    if classify_failure_mode(status) is not None:
         return False
     return (
         status.endswith("_completed")
-        or any(value in status for value in ("passed", "ready", "implemented", "deployed"))
-        or status in {"completed", "done", "success", "succeeded"}
+        or classify_work_item_status(status) is WorkItemStatus.DONE
+        or status in {"completed", "done", "success", "succeeded", "implemented"}
     )
 
 

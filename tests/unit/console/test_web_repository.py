@@ -67,7 +67,7 @@ def test_seed_public_demo_from_env_does_not_replace_other_showcases(tmp_path, mo
 
 
 def test_provider_key_storage_masks_and_deletes(tmp_path, monkeypatch):
-    monkeypatch.setenv("APP_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("APP_SECRET_KEY", "test-secret-key-0123456789")
     repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(email="key@example.test", username="keyuser", password="password-1")

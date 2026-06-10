@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from agentic_company.platform.security import redact_sensitive_output
+from agentic_company.platform.status import WorkItemStatus, classify_work_item_status
 
 RUN_TRACE_DIR = "delivery"
 RUN_EVENTS_FILE = "run-events.jsonl"
@@ -1007,18 +1008,15 @@ def _count_by(values: list[str]) -> dict[str, int]:
 
 
 def _looks_failed(value: str) -> bool:
-    normalized = value.strip().lower()
-    return any(marker in normalized for marker in ("failed", "blocked", "error"))
+    # Canonical classifier (platform/status.py): token-based, so "unblocked"
+    # is no longer misread as blocked (R9).
+    return classify_work_item_status(value) is WorkItemStatus.BLOCKED
 
 
 def _looks_successful(value: str) -> bool:
-    normalized = value.strip().lower()
-    if _looks_failed(normalized):
-        return False
-    return any(
-        marker in normalized
-        for marker in ("ready", "done", "completed", "deployed", "passed", "implemented")
-    )
+    # Strictly "done"; an item that is merely "implemented" sits in review until
+    # QA passes, so it is neither failed nor (yet) successful.
+    return classify_work_item_status(value) is WorkItemStatus.DONE
 
 
 def _dict(value: Any) -> dict[str, Any]:

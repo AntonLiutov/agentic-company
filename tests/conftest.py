@@ -38,6 +38,8 @@ def isolate_unit_database_env(
 
     monkeypatch.setenv("AGENTIC_DATABASE_URL", postgres_test_database_url)
     monkeypatch.delenv("DATABASE_URL", raising=False)
+    # Provider-secret storage fails closed without an encryption key (R3).
+    monkeypatch.setenv("APP_SECRET_KEY", "test-app-secret-key-0123456789ab")
 
     import psycopg
 
