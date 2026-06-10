@@ -85,18 +85,15 @@ MIN_APP_SECRET_KEY_LENGTH = 16
 class SecretEncryptionUnavailable(RuntimeError):
     """Raised when a provider secret cannot be encrypted.
 
-    Either ``APP_SECRET_KEY`` is missing / too weak, or the ``cryptography``
-    package is not installed. Callers must fail closed and never store the
-    secret in plaintext (R3).
+    Either ``APP_SECRET_KEY`` is missing or too weak, or the ``cryptography``
+    package is not installed.
     """
 
 
 def encrypt_secret(secret: str, app_secret: str | None = None) -> str:
     """Encrypt a provider secret with APP_SECRET_KEY.
 
-    Fails closed: raises :class:`SecretEncryptionUnavailable` instead of
-    returning an empty string, so a missing/weak key can never silently
-    downgrade a stored secret to plaintext.
+    Raises :class:`SecretEncryptionUnavailable` when no usable key is available.
     """
 
     key = (app_secret or os.getenv("APP_SECRET_KEY", "")).strip()

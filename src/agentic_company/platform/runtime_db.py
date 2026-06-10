@@ -1032,8 +1032,6 @@ def _json_list(value: Any) -> list[str]:
 
 
 def _normalize_status(status: str) -> str:
-    # Single canonical classifier (platform/status.py). Token-based, so a signal
-    # word inside a larger word ("unblocked") is no longer misread as blocked (R9).
     return classify_work_item_status(status).value
 
 

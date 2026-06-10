@@ -42,7 +42,6 @@ def write_event(
         )
     except Exception:
         LOGGER.exception("structured_trace_write_failed run_id=%s event=%s", run_id, event)
-    # Standardized terminal line via the single logging contract (stage/agent/status).
     log_runtime_event(
         run_id=run_id,
         agent=agent_id,

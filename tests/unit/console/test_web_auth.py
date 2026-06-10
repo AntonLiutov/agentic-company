@@ -31,8 +31,8 @@ def test_encrypt_secret_roundtrip_with_app_secret():
     assert decrypt_secret(encrypted, app_secret=app_secret) == "sk-demo-secret"
 
 
-def test_encrypt_secret_fails_closed_without_strong_key():
-    # Missing or weak key must raise, never silently store plaintext (R3).
+def test_encrypt_secret_fails_closed_without_strong_key(monkeypatch):
+    monkeypatch.delenv("APP_SECRET_KEY", raising=False)
     with pytest.raises(SecretEncryptionUnavailable):
         encrypt_secret("sk-demo-secret", app_secret="")
     with pytest.raises(SecretEncryptionUnavailable):

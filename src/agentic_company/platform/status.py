@@ -1,20 +1,9 @@
-"""Canonical work-item status vocabulary and transitions.
+"""Canonical work-item status vocabulary, transitions, and lifecycle events.
 
-Single source of truth for the five board/lane statuses. This replaces the
-scattered substring-based classifiers (the ``"blocked" in "unblocked"`` class of
-bug, R9) with one token-based classifier and one explicit transition table.
-
-Runtime agents and Codex emit free-form status strings such as
-``head_planning_blocked``, ``deployment_deployed`` or
-``team_lead_sprint_handoff_ready``. :func:`classify_work_item_status` folds any
-such string to one canonical :class:`WorkItemStatus` using *whole-token*
-matching, so a signal word appearing inside a larger word (``unblocked``,
-``nonblocking``) no longer triggers a false positive the way ``token in text``
-substring matching did.
-
-This module is intentionally dependency-free and side-effect-free so the
-classification and transition rules can be unit-tested without a database or a
-Codex worker.
+Defines the five board statuses, an explicit transition table, a token-based
+classifier that folds any free-form runtime status string to one canonical
+status, and the standard agent lifecycle events. Dependency-free and
+side-effect-free.
 """
 
 from __future__ import annotations
@@ -25,7 +14,7 @@ from enum import StrEnum
 
 
 class WorkItemStatus(StrEnum):
-    """The canonical board/lane status of a work item."""
+    """Canonical board/lane status of a work item."""
 
     TODO = "todo"
     IN_PROGRESS = "in_progress"
@@ -34,18 +23,14 @@ class WorkItemStatus(StrEnum):
     BLOCKED = "blocked"
 
 
-# Whole-token signals, evaluated in strict precedence order: a single status
-# string may contain several signals (e.g. ``qa_failed`` has both "qa" and
-# "failed"); the first matching bucket below wins.
+# Whole-token signals, evaluated in precedence order (first match wins).
 _BLOCKED_TOKENS = frozenset({"blocked", "failed", "failure", "error", "precondition"})
 _DONE_TOKENS = frozenset({"done", "completed", "complete", "passed", "ready", "deployed"})
 _REVIEW_TOKENS = frozenset({"qa", "review", "inspect", "implemented"})
 _IN_PROGRESS_TOKENS = frozenset({"started", "running", "progress"})
 _TODO_TOKENS = frozenset({"todo", "pending", "planned", "backlog"})
 
-# Underscore/space compounds that the token splitter would break apart. These
-# are specific enough that a plain substring check is safe (no false-positive
-# risk), so we keep them as phrases.
+# Compounds the token splitter would break apart; matched as substrings.
 _BLOCKED_PHRASES = (
     "needs_repair",
     "needs repair",
@@ -65,11 +50,10 @@ def _tokens(normalized: str) -> frozenset[str]:
 
 
 def classify_work_item_status(raw: str | None) -> WorkItemStatus:
-    """Fold any runtime/agent status string to one canonical board status.
+    """Fold any runtime status string to one canonical board status.
 
-    Token-based, so ``"unblocked"`` is *not* read as blocked. Precedence is
-    blocked > done > review > in_progress > todo; an unknown non-empty status
-    defaults to ``IN_PROGRESS`` (a run that reported *something* is underway).
+    Precedence is blocked > done > review > in_progress > todo; an unknown
+    non-empty status defaults to in_progress.
     """
 
     normalized = (raw or "").strip().lower()
@@ -91,34 +75,21 @@ def classify_work_item_status(raw: str | None) -> WorkItemStatus:
 
 
 def lane_for_status(raw: str | None) -> str:
-    """Kanban lane for a status. ``review`` items live in the ``qa`` lane."""
+    """Kanban lane for a status. Review items live in the ``qa`` lane."""
 
     status = classify_work_item_status(raw)
     return "qa" if status is WorkItemStatus.REVIEW else status.value
 
 
-# Explicit, exhaustive transition table for the canonical statuses (the product
-# flow). Forward progress is todo -> in_progress -> review -> done; any active
-# lane can drop to blocked; blocked recovers back into work; done is terminal.
-# This replaces the write path's historical last-write-wins behaviour with one
-# legal-move map, and is the data model the finalizer (0.4) and future
-# gate/reconciler logic build on.
-#
-# NOTE on external boards: these five are ADL's *internal* canonical statuses.
-# Mapping to/from a specific board's workflow (Jira custom states, GitHub
-# open/closed+labels, Linear, Azure Boards) is the Board adapter's job (P5):
-# `classify_work_item_status` is the inbound fold (runtime string -> canonical),
-# and a future `to_board_status(canonical, board)` is the outbound mapping. Keep
-# this table board-agnostic.
+# Legal transitions per status. Forward: todo -> in_progress -> review -> done.
+# Any active lane may drop to blocked; blocked recovers into work; done is terminal.
 VALID_TRANSITIONS: dict[WorkItemStatus, frozenset[WorkItemStatus]] = {
     WorkItemStatus.TODO: frozenset({WorkItemStatus.IN_PROGRESS, WorkItemStatus.BLOCKED}),
     WorkItemStatus.IN_PROGRESS: frozenset({WorkItemStatus.REVIEW, WorkItemStatus.BLOCKED}),
     WorkItemStatus.REVIEW: frozenset(
         {WorkItemStatus.DONE, WorkItemStatus.IN_PROGRESS, WorkItemStatus.BLOCKED}
     ),
-    # A blocker clearing returns the item to work; without this, blocked is a dead end.
     WorkItemStatus.BLOCKED: frozenset({WorkItemStatus.IN_PROGRESS, WorkItemStatus.REVIEW}),
-    # Terminal: a finished item does not silently transition again.
     WorkItemStatus.DONE: frozenset(),
 }
 
@@ -141,7 +112,7 @@ def can_transition(source: WorkItemStatus, target: WorkItemStatus) -> bool:
 
 
 def transition(source: WorkItemStatus, target: WorkItemStatus) -> WorkItemStatus:
-    """Return ``target`` if the move is legal, else raise."""
+    """Return ``target`` if the move is legal, else raise :class:`InvalidStatusTransition`."""
 
     if not can_transition(source, target):
         raise InvalidStatusTransition(source, target)
@@ -149,13 +120,13 @@ def transition(source: WorkItemStatus, target: WorkItemStatus) -> WorkItemStatus
 
 
 def is_terminal(status: WorkItemStatus) -> bool:
-    """Whether a status has no outgoing transitions (only ``done`` today)."""
+    """Whether a status has no outgoing transitions."""
 
     return not VALID_TRANSITIONS.get(status, frozenset())
 
 
 class FailureMode(StrEnum):
-    """Machine-readable reason a work item / run is not making progress."""
+    """Machine-readable reason a work item is not making progress."""
 
     PROVIDER_LIMIT = "provider_limit"
     HUMAN_APPROVAL_REQUIRED = "human_approval_required"
@@ -179,12 +150,9 @@ _PROVIDER_LIMIT_PHRASES = (
 def classify_failure_mode(
     status: str | None, blockers: Iterable[object] = ()
 ) -> FailureMode | None:
-    """Derive a failure mode from a status string (+ optional blocker text).
+    """Derive a failure mode from a status string and optional blocker text.
 
-    ``None`` means "no failure" — a successful or in-flight status. Shares the
-    token approach of :func:`classify_work_item_status` so it inherits the same
-    substring-safety, and reuses it for the blocked/failed decision so the two
-    classifiers can never disagree.
+    ``None`` means the status is successful or in-flight.
     """
 
     normalized = (status or "").strip().lower()
@@ -195,8 +163,6 @@ def classify_failure_mode(
     tokens = _tokens(normalized)
     if "human" in tokens or "approval" in tokens:
         return FailureMode.HUMAN_APPROVAL_REQUIRED
-    # Match the compound "needs_repair", not a bare "repair" token, so a success
-    # like "completed_after_repair" is not misread as needing repair.
     if "needs_repair" in normalized or "qa_failed" in normalized:
         return FailureMode.NEEDS_REPAIR
     item_status = classify_work_item_status(normalized)
@@ -209,24 +175,8 @@ def classify_failure_mode(
     return None
 
 
-class RunStatus(StrEnum):
-    """Canonical run / coordinator lifecycle status (not a board lane)."""
-
-    INITIALIZED = "initialized"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    BLOCKED = "blocked"
-    STOPPED = "stopped"
-    FAILED = "failed"
-
-
 class AgentEvent(StrEnum):
-    """Standard lifecycle event an agent/stage emits.
-
-    The *stage* and *agent* are separate fields (see :mod:`platform.runtime_log`);
-    the event is only the lifecycle phase, never a stage-prefixed string like
-    ``"qa_completed"``.
-    """
+    """Standard lifecycle event an agent emits; stage and agent are separate fields."""
 
     STARTED = "started"
     COMPLETED = "completed"
@@ -237,7 +187,6 @@ class AgentEvent(StrEnum):
 
 __all__ = [
     "WorkItemStatus",
-    "RunStatus",
     "AgentEvent",
     "FailureMode",
     "VALID_TRANSITIONS",

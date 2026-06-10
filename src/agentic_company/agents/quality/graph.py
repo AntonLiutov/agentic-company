@@ -298,7 +298,6 @@ def _apply_quality_result(state: QualityAgentGraphState) -> QualityAgentGraphSta
         delivery_state,
         node_name=f"qa:{work_item_id}" if work_item_id else "qa",
         stage="qa",
-        # Canonical board status; the granular QA outcome lives in qa_status below.
         status=classify_work_item_status(status if work_item_id else result.status).value,
     )
     updated["qa_status"] = status

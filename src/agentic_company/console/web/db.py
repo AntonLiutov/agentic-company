@@ -1582,9 +1582,6 @@ class ConsoleRepository:
         return [_model_call_event(row) for row in rows]
 
     def save_provider_secret(self, user_id: int, provider: str, secret: str) -> ProviderCredential:
-        # Fail closed: encrypt or raise. A provider key is never persisted in
-        # plaintext (R3). SecretEncryptionUnavailable propagates to the caller,
-        # which surfaces a "set APP_SECRET_KEY" message instead of storing it.
         stored_value = encrypt_secret(secret)
         storage_mode = "encrypted"
         masked = mask_secret(secret)
@@ -1899,10 +1896,6 @@ def _canonical_work_item_id(value: str) -> str:
 
 
 def _normalize_work_item_status(status: str) -> str:
-    # Single canonical classifier (platform/status.py). Resolves the prior
-    # divergence where this layer mapped deployment_deployed -> review while
-    # runtime_db mapped it -> done; both now agree (-> done) through one source
-    # of truth, and the "blocked" in "unblocked" substring bug is gone (R9).
     return classify_work_item_status(status).value
 
 

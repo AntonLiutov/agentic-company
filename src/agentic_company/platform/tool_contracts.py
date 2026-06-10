@@ -438,8 +438,6 @@ CODEX_EXEC_TOOL_CONTRACT = ToolContract(
 def dashboard_status_from_runtime_status(status: str) -> DashboardStatus:
     """Map internal runtime statuses to dashboard-friendly board statuses."""
 
-    # The five DashboardStatus values are exactly the canonical WorkItemStatus
-    # values, so the single classifier (platform/status.py) is the mapping.
     return cast(DashboardStatus, classify_work_item_status(status).value)
 
 

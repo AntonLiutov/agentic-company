@@ -567,7 +567,6 @@ def _agent_run_result_successful(result: AgentRunResult) -> bool:
     status = result.status.strip().lower()
     if not status:
         return False
-    # Token-based failure detection (no "limit" inside "unlimited" false positives, R9).
     if classify_failure_mode(status) is not None:
         return False
     return (

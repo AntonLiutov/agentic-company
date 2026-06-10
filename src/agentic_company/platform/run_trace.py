@@ -1008,14 +1008,10 @@ def _count_by(values: list[str]) -> dict[str, int]:
 
 
 def _looks_failed(value: str) -> bool:
-    # Canonical classifier (platform/status.py): token-based, so "unblocked"
-    # is no longer misread as blocked (R9).
     return classify_work_item_status(value) is WorkItemStatus.BLOCKED
 
 
 def _looks_successful(value: str) -> bool:
-    # Strictly "done"; an item that is merely "implemented" sits in review until
-    # QA passes, so it is neither failed nor (yet) successful.
     return classify_work_item_status(value) is WorkItemStatus.DONE
 
 

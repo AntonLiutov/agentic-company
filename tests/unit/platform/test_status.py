@@ -57,7 +57,6 @@ def test_classify_known_statuses(raw, expected):
 @pytest.mark.parametrize(
     ("raw", "must_not_be"),
     [
-        # The R9 substring bug: "blocked" lives inside "unblocked".
         ("unblocked", WorkItemStatus.BLOCKED),
         ("nonblocking", WorkItemStatus.BLOCKED),
         # "fail" inside an unrelated word must not flip to blocked.
@@ -119,7 +118,7 @@ def test_forward_skips_are_rejected():
         ("needs_human_approval", (), FailureMode.HUMAN_APPROVAL_REQUIRED),
         ("deployment_deployed", (), None),
         ("head_delivery_completed", (), None),
-        ("completed_after_repair", (), None),  # "repair" token must not flip a success
+        ("completed_after_repair", (), None),
         ("project_management_completed_after_repair", (), None),
         ("in_progress", ("waiting on upstream",), FailureMode.BLOCKED),
         ("running", (), None),
