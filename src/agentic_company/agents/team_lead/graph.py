@@ -111,11 +111,11 @@ def _prepare_sprint(max_steps: int):
         sprint = {"sprint_id": sprint_id, "id": sprint_id, "features": []}
         updated = {**delivery_state}
         updated["stage"] = "team_lead"
-        updated["status"] = CoordinatorOutcome.SPRINT_STARTED
+        updated["status"] = CoordinatorOutcome.SPRINT_STARTED.value
         updated["team_lead_sprint_id"] = sprint_id
         write_team_lead_event(
             updated,
-            CoordinatorOutcome.SPRINT_STARTED,
+            CoordinatorOutcome.SPRINT_STARTED.value,
             {"sprint_id": sprint_id, "available_tools": list(TEAM_LEAD_TOOLS)},
         )
         write_sprint_plan_artifact(updated, sprint_id, sprint)

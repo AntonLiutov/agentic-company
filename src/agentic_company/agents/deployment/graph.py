@@ -38,6 +38,7 @@ from agentic_company.platform.runtime_db import (
     completed_work_item_ids,
     get_work_item,
     packet_for_work_item,
+    record_generated_app_url,
 )
 from agentic_company.platform.state import (
     DeliveryState,
@@ -270,6 +271,9 @@ def _apply_deployment_result(state: DeploymentAgentGraphState) -> DeploymentAgen
     updated["public_url"] = public_urls[0] if public_urls else None
     if public_urls:
         updated["public_urls"] = public_urls
+        # Persist the URL durably at the deployment point so a later node failure
+        # cannot lose it before the run finalizer writes the terminal status.
+        record_generated_app_url(str(updated["run_id"]), str(public_urls[0]))
     extend_artifacts(
         updated,
         artifact_refs(result.output_artifacts, kind="deployment", owner_agent=result.agent_id),

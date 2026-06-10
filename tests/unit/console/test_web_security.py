@@ -41,6 +41,18 @@ def test_rate_limiter_reset_and_key_isolation():
     assert limiter.allow("a", now=2)
 
 
+def test_rate_limiter_prunes_stale_keys():
+    limiter = RateLimiter(max_attempts=1, window_seconds=10, max_keys=1)
+
+    assert limiter.allow("a", now=0)
+    assert limiter.allow("b", now=0)
+    # Over the key budget and well past the window: stale keys are evicted.
+    assert limiter.allow("c", now=100)
+    assert "c" in limiter._hits
+    assert "a" not in limiter._hits
+    assert "b" not in limiter._hits
+
+
 def test_verify_password_or_dummy_handles_known_and_unknown():
     encoded = hash_password("correct horse")
 
@@ -91,3 +103,22 @@ def test_login_throttles_after_repeated_failures():
 
     assert last is not None
     assert last.status_code == 429
+
+
+def test_login_throttle_not_bypassable_by_varying_identifier():
+    client = TestClient(create_app(ConsoleRepository()))
+
+    for i in range(10):
+        client.post(
+            "/login",
+            data={"identifier": f"user{i}", "password": "nope"},
+            follow_redirects=False,
+        )
+    # Cycling usernames from the same source must not refill the per-IP budget.
+    blocked = client.post(
+        "/login",
+        data={"identifier": "yet-another", "password": "nope"},
+        follow_redirects=False,
+    )
+
+    assert blocked.status_code == 429

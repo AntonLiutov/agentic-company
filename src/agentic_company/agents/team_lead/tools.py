@@ -232,7 +232,7 @@ class TeamLeadToolbox:
                 item_id,
                 "Final project report is not allowed before planned sprint completion.",
                 message,
-                status=CoordinatorOutcome.FINAL_HANDOFF_NOT_READY,
+                status=CoordinatorOutcome.FINAL_HANDOFF_NOT_READY.value,
             )
 
         updated = {**self.delivery_state}
@@ -551,7 +551,7 @@ class TeamLeadToolbox:
             self.delivery_state,
             node_name="team_lead",
             stage="team_lead",
-            status=CoordinatorOutcome.SPRINT_HANDOFF_READY,
+            status=CoordinatorOutcome.SPRINT_HANDOFF_READY.value,
         )
         self.delivery_state["blockers"] = []
         write_team_lead_event(
@@ -619,7 +619,7 @@ class TeamLeadToolbox:
             DeliveryState,
             {
                 **self.delivery_state,
-                "status": CoordinatorOutcome.SPRINT_BLOCKED,
+                "status": CoordinatorOutcome.SPRINT_BLOCKED.value,
                 "blockers": blockers,
             },
         )
@@ -1025,9 +1025,9 @@ def apply_team_lead_result(state: DeliveryState, sprint_id: str) -> DeliveryStat
     blocked = "blocked" in status.lower() or bool(state_blockers)
     if not status:
         status = (
-            CoordinatorOutcome.SPRINT_BLOCKED
+            CoordinatorOutcome.SPRINT_BLOCKED.value
             if blocked
-            else CoordinatorOutcome.SPRINT_HANDOFF_READY
+            else CoordinatorOutcome.SPRINT_HANDOFF_READY.value
         )
     result = {
         "sprint_id": sprint_id,

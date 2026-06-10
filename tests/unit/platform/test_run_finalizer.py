@@ -10,7 +10,10 @@ from agentic_company.platform.run_finalizer import (
     is_terminal_run_status,
     resolve_run_status,
 )
-from agentic_company.platform.runtime_db import record_run_lifecycle
+from agentic_company.platform.runtime_db import (
+    record_generated_app_url,
+    record_run_lifecycle,
+)
 
 
 @pytest.mark.parametrize(
@@ -74,6 +77,15 @@ def _status_of(run_uid: str) -> str:
     return str(row["status"])
 
 
+def _app_url_of(run_uid: str) -> str:
+    repo = ConsoleRepository()
+    with repo.connect() as conn:
+        row = conn.execute(
+            "SELECT generated_app_url FROM runs WHERE run_uid = ?", (run_uid,)
+        ).fetchone()
+    return str(row["generated_app_url"])
+
+
 def test_first_terminal_status_wins(tmp_path):
     run_uid = _run_uid(tmp_path)
 
@@ -91,3 +103,23 @@ def test_running_is_not_terminal_and_can_advance(tmp_path):
     record_run_lifecycle(run_uid, RunStatus.COMPLETED)
 
     assert _status_of(run_uid) == RunStatus.COMPLETED
+
+
+def test_terminal_run_still_records_a_later_app_url(tmp_path):
+    run_uid = _run_uid(tmp_path)
+
+    record_run_lifecycle(run_uid, RunStatus.STOPPED)
+    # The settled status is kept, but a deployed URL arriving later is still saved.
+    record_run_lifecycle(run_uid, RunStatus.COMPLETED, generated_app_url="https://app.example")
+
+    assert _status_of(run_uid) == RunStatus.STOPPED
+    assert _app_url_of(run_uid) == "https://app.example"
+
+
+def test_record_generated_app_url_does_not_touch_status(tmp_path):
+    run_uid = _run_uid(tmp_path)
+
+    record_generated_app_url(run_uid, "https://deployed.example")
+
+    assert _status_of(run_uid) == RunStatus.RUNNING
+    assert _app_url_of(run_uid) == "https://deployed.example"

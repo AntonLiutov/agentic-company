@@ -598,17 +598,56 @@ class ConsoleRepository:
         status: str,
         *,
         generated_app_url: str = "",
+        keep_status_when_in: tuple[str, ...] = (),
     ) -> None:
+        """Update a run's status and app URL.
+
+        When ``keep_status_when_in`` is given, the status is changed atomically
+        only if the row's current status is not already one of those values, so a
+        settled terminal outcome is never overwritten even under concurrent
+        writers. The app URL is always coalesced regardless.
+        """
+
+        with self.connect() as conn:
+            if keep_status_when_in:
+                placeholders = ", ".join("?" for _ in keep_status_when_in)
+                conn.execute(
+                    f"""
+                    UPDATE runs
+                    SET status = CASE
+                            WHEN status IN ({placeholders}) THEN status
+                            ELSE ?
+                        END,
+                        generated_app_url = COALESCE(NULLIF(?, ''), generated_app_url),
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (*keep_status_when_in, str(status), generated_app_url, utc_now(), run_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE runs
+                    SET status = ?,
+                        generated_app_url = COALESCE(NULLIF(?, ''), generated_app_url),
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (str(status), generated_app_url, utc_now(), run_id),
+                )
+
+    def update_run_generated_app_url(self, run_id: int, generated_app_url: str) -> None:
+        """Persist a run's generated app URL without touching its status."""
+
         with self.connect() as conn:
             conn.execute(
                 """
                 UPDATE runs
-                SET status = ?,
-                    generated_app_url = COALESCE(NULLIF(?, ''), generated_app_url),
+                SET generated_app_url = COALESCE(NULLIF(?, ''), generated_app_url),
                     updated_at = ?
                 WHERE id = ?
                 """,
-                (status, generated_app_url, utc_now(), run_id),
+                (generated_app_url, utc_now(), run_id),
             )
 
     def update_run_target_project_dir(self, run_id: int, target_project_dir: Path | str) -> None:

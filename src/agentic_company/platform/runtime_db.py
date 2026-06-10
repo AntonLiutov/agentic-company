@@ -485,20 +485,30 @@ def record_run_lifecycle(
 
     A run's outcome is settled by the first terminal status written: once the row
     is terminal, a later differing status is ignored so a late finalizer cannot
-    overwrite a user stop or a recorded failure.
+    overwrite a user stop or a recorded failure. The status check and write happen
+    in one atomic statement so concurrent finalizers cannot race.
     """
 
-    from agentic_company.platform.run_finalizer import is_terminal_run_status
+    from agentic_company.platform.run_finalizer import TERMINAL_RUN_STATUSES
 
     repo, db_run_id = _repo_and_run(run_id)
-    current = str(_run_row(repo, run_id)["status"] or "")
-    if is_terminal_run_status(current) and status != current:
-        if target_project_dir:
-            repo.update_run_target_project_dir(db_run_id, target_project_dir)
-        return
-    repo.update_run_status(db_run_id, status, generated_app_url=generated_app_url)
+    repo.update_run_status(
+        db_run_id,
+        status,
+        generated_app_url=generated_app_url,
+        keep_status_when_in=tuple(TERMINAL_RUN_STATUSES),
+    )
     if target_project_dir:
         repo.update_run_target_project_dir(db_run_id, target_project_dir)
+
+
+def record_generated_app_url(run_id: str, generated_app_url: str) -> None:
+    """Persist a run's generated app URL independent of its lifecycle status."""
+
+    if not generated_app_url:
+        return
+    repo, db_run_id = _repo_and_run(run_id)
+    repo.update_run_generated_app_url(db_run_id, generated_app_url)
 
 
 def run_target_project_dir(run_id: str) -> str:

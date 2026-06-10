@@ -75,6 +75,12 @@ _CODEX_ENV_ALLOWED_NAMES = frozenset(
         "DOCKER_CONFIG",
         "DOCKER_CLI_PLUGIN_EXTRA_DIRS",
         "KUBECONFIG",
+        # Network proxy configuration (infrastructure settings, not secrets).
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "ALL_PROXY",
+        "FTP_PROXY",
     )
 )
 _CODEX_ENV_ALLOWED_PREFIXES = (

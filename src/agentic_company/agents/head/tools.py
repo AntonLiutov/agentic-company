@@ -273,11 +273,11 @@ class HeadToolbox:
             self.delivery_state,
             node_name="head",
             stage="head",
-            status=CoordinatorOutcome.DELIVERY_COMPLETED,
+            status=CoordinatorOutcome.DELIVERY_COMPLETED.value,
         )
         write_head_event(
             self.delivery_state,
-            CoordinatorOutcome.DELIVERY_COMPLETED,
+            CoordinatorOutcome.DELIVERY_COMPLETED.value,
             {"reason": reason, "message": message},
         )
         self._record("complete_delivery", "PLAN-04", reason, message)
@@ -565,12 +565,12 @@ class HeadToolbox:
             self.delivery_state,
             node_name="head",
             stage="head",
-            status=CoordinatorOutcome.PLANNING_BLOCKED,
+            status=CoordinatorOutcome.PLANNING_BLOCKED.value,
         )
         self.delivery_state["blockers"] = [*self.delivery_state.get("blockers", []), reason]
         write_head_event(
             self.delivery_state,
-            CoordinatorOutcome.PLANNING_BLOCKED,
+            CoordinatorOutcome.PLANNING_BLOCKED.value,
             HeadDecision("block_planning", reason, correlation_id, message).to_dict(),
         )
         self._record("block_planning", correlation_id, reason, message)
