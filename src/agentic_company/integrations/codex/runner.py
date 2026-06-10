@@ -26,6 +26,69 @@ CODEX_NPM_CACHE_ENV = "AGENTIC_CODEX_NPM_CACHE"
 CODEX_REASONING_EFFORT_ENV = "AGENTIC_CODEX_REASONING_EFFORT"
 CODEX_SERVICE_TIER_ENV = "AGENTIC_CODEX_SERVICE_TIER"
 CODEX_API_KEY_ENV = "CODEX_API_KEY"
+CODEX_ENV_PASSTHROUGH_ENV = "AGENTIC_CODEX_ENV_PASSTHROUGH"
+
+# Host environment variables inherited by Codex specialist subprocesses. Anything
+# outside this allowlist is dropped so unrelated host secrets never reach the
+# Codex worker. Names are matched case-insensitively; the prefixes cover the
+# platform's own CODEX_*/AGENTIC_* configuration plus the cloud/runtime tooling
+# the workers shell out to. Additional names can be allowed at runtime via
+# AGENTIC_CODEX_ENV_PASSTHROUGH (comma-separated) without a code change.
+_CODEX_ENV_ALLOWED_NAMES = frozenset(
+    name.upper()
+    for name in (
+        # POSIX essentials.
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "LANG",
+        "TERM",
+        "TMPDIR",
+        "TZ",
+        # Windows essentials.
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "TEMP",
+        "TMP",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "PROGRAMW6432",
+        "USERPROFILE",
+        "USERNAME",
+        "USERDOMAIN",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+        "OS",
+        # Cloud / container tooling the workers invoke.
+        "AZURE_CONFIG_DIR",
+        "DOCKER_HOST",
+        "DOCKER_CONFIG",
+        "DOCKER_CLI_PLUGIN_EXTRA_DIRS",
+        "KUBECONFIG",
+    )
+)
+_CODEX_ENV_ALLOWED_PREFIXES = (
+    "CODEX_",
+    "AGENTIC_",
+    "OPENAI_",
+    "AZURE_",
+    "DOCKER_",
+    "UV_",
+    "NODE_",
+    "NPM_",
+    "DENO_",
+    "LC_",
+)
 DEFAULT_CODEX_MODEL = "gpt-5.5"
 DEFAULT_CODEX_SANDBOX = "danger-full-access"
 DEFAULT_CODEX_REASONING_EFFORT = "medium"
@@ -464,10 +527,27 @@ def _uses_extension_binary_mode(env: dict[str, str]) -> bool:
     )
 
 
-def _codex_subprocess_env() -> dict[str, str]:
-    """Build host-tool environment inherited by Codex specialist subprocesses."""
+def _codex_env_passthrough_extra() -> frozenset[str]:
+    raw = os.getenv(CODEX_ENV_PASSTHROUGH_ENV, "")
+    return frozenset(part.strip().upper() for part in raw.split(",") if part.strip())
 
-    env = dict(os.environ)
+
+def _is_allowed_codex_env(name: str, extra: frozenset[str]) -> bool:
+    upper = name.upper()
+    if upper in _CODEX_ENV_ALLOWED_NAMES or upper in extra:
+        return True
+    return any(upper.startswith(prefix) for prefix in _CODEX_ENV_ALLOWED_PREFIXES)
+
+
+def _codex_subprocess_env() -> dict[str, str]:
+    """Build host-tool environment inherited by Codex specialist subprocesses.
+
+    Only allowlisted host variables are inherited; the rest of the host
+    environment (and any secrets it carries) is dropped before the worker starts.
+    """
+
+    extra = _codex_env_passthrough_extra()
+    env = {name: value for name, value in os.environ.items() if _is_allowed_codex_env(name, extra)}
     _prepend_repo_local_node_to_path(env)
     if "AZURE_CONFIG_DIR" not in env:
         azure_config = Path.home() / ".azure"

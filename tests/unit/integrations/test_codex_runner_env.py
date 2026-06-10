@@ -407,6 +407,34 @@ def test_codex_exec_command_can_resume_existing_session(tmp_path: Path):
     assert command[-3:] == ["resume", "thread-existing", "-"]
 
 
+def test_codex_subprocess_env_drops_unrelated_host_secrets(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "leak-me")
+    monkeypatch.setenv("RANDOM_COMPANY_TOKEN", "leak-me-too")
+    monkeypatch.setenv("CODEX_API_KEY", "keep")
+    monkeypatch.setenv("AGENTIC_CODEX_SERVICE_TIER", "standard")
+    monkeypatch.delenv("AGENTIC_CODEX_ENV_PASSTHROUGH", raising=False)
+
+    env = _codex_subprocess_env()
+
+    assert "AWS_SECRET_ACCESS_KEY" not in env
+    assert "RANDOM_COMPANY_TOKEN" not in env
+    # Allowlisted platform + essential variables survive.
+    assert env["CODEX_API_KEY"] == "keep"
+    assert env["AGENTIC_CODEX_SERVICE_TIER"] == "standard"
+    assert "PATH" in env or "Path" in env
+
+
+def test_codex_subprocess_env_passthrough_escape_hatch(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setenv("CUSTOM_DEPLOY_TOKEN", "needed-by-worker")
+    monkeypatch.setenv("AGENTIC_CODEX_ENV_PASSTHROUGH", "custom_deploy_token, OTHER_VAR")
+
+    env = _codex_subprocess_env()
+
+    assert env["CUSTOM_DEPLOY_TOKEN"] == "needed-by-worker"
+
+
 def _db_repo(tmp_path: Path, monkeypatch) -> ConsoleRepository:
     repo = ConsoleRepository()
     repo.init_schema()
