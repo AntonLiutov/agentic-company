@@ -90,7 +90,10 @@ _CODEX_ENV_ALLOWED_PREFIXES = (
     "LC_",
 )
 DEFAULT_CODEX_MODEL = "gpt-5.5"
-DEFAULT_CODEX_SANDBOX = "danger-full-access"
+# Least-privilege default: workers write only inside the workspace. Agents that
+# genuinely need host/network access (deployment, fullstack) opt into a broader
+# sandbox explicitly.
+DEFAULT_CODEX_SANDBOX = "workspace-write"
 DEFAULT_CODEX_REASONING_EFFORT = "medium"
 DEFAULT_CODEX_SERVICE_TIER = "standard"
 VALID_CODEX_SANDBOXES = {"read-only", "workspace-write", "danger-full-access"}
