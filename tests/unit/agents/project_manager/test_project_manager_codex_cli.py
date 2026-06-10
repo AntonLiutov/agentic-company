@@ -302,7 +302,7 @@ def test_project_manager_success_clears_transient_contract_blocker(tmp_path, mon
         }
     )["delivery_state"]
 
-    assert updated["status"] == "project_management_completed"
+    assert updated["status"] == "done"
     assert updated["blockers"] == []
     assert updated["completed_nodes"] == ["project_management"]
 

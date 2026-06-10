@@ -11,12 +11,18 @@ from agentic_company.platform.agent_runtime import (
     LangChainSpecialistAgentExecutor,
     SpecialistAgentExecutor,
 )
+from agentic_company.platform.events import write_event
 from agentic_company.platform.messages import AgentMessageStore, append_agent_response
 from agentic_company.platform.models import AgentRunResult
 from agentic_company.platform.state import (
     DeliveryState,
     mark_node_completed,
     record_codex_thread,
+)
+from agentic_company.platform.status import (
+    AgentEvent,
+    WorkItemStatus,
+    classify_work_item_status,
 )
 
 SEND_MESSAGE_TOOL = "send_message"
@@ -191,6 +197,46 @@ def blocked_state(
     updated = mark_node_completed(state, node_name=node_name, stage=stage, status="blocked")
     updated["blockers"] = [*state.get("blockers", []), reason]
     return updated
+
+
+def record_specialist_start(
+    state: DeliveryState,
+    *,
+    agent_id: str,
+    stage: str,
+    work_item_id: str | None = None,
+) -> None:
+    """Emit the standard ``started`` lifecycle event for a specialist node."""
+
+    data: dict[str, object] = {"stage": stage}
+    if work_item_id:
+        data["work_item_id"] = work_item_id
+    write_event(Path(state["run_dir"]), str(state["run_id"]), agent_id, AgentEvent.STARTED, data)
+
+
+def record_specialist_completion(
+    state: DeliveryState,
+    *,
+    agent_id: str,
+    stage: str,
+    node_name: str,
+    outcome: str,
+    work_item_id: str | None = None,
+) -> DeliveryState:
+    """Emit the standard lifecycle event and set the canonical node status.
+
+    The event is derived from the canonical status so every specialist reports
+    through the same vocabulary: a blocked outcome emits ``blocked``, anything
+    else emits ``completed``. Stage-specific detail belongs in logs, not status.
+    """
+
+    status = classify_work_item_status(outcome)
+    event = AgentEvent.BLOCKED if status is WorkItemStatus.BLOCKED else AgentEvent.COMPLETED
+    data: dict[str, object] = {"status": status.value, "stage": stage}
+    if work_item_id:
+        data["work_item_id"] = work_item_id
+    write_event(Path(state["run_dir"]), str(state["run_id"]), agent_id, event, data)
+    return mark_node_completed(state, node_name=node_name, stage=stage, status=status.value)
 
 
 def extend_artifacts(state: DeliveryState, artifacts: list[str]) -> None:

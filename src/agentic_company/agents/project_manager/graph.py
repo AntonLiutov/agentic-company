@@ -12,6 +12,8 @@ from agentic_company.platform.agent_contracts import (
     append_downstream_response,
     artifact_refs,
     extend_artifacts,
+    record_specialist_completion,
+    record_specialist_start,
 )
 from agentic_company.platform.agent_runtime import (
     AGENT_EXECUTOR_GRAPH_NODE_ORDER,
@@ -20,14 +22,12 @@ from agentic_company.platform.agent_runtime import (
     agent_env_value,
     build_agent_executor_graph,
 )
-from agentic_company.platform.events import write_event
 from agentic_company.platform.messages import render_incoming_messages_for_prompt
 from agentic_company.platform.models import AgentRunResult
 from agentic_company.platform.runtime_db import materialize_pm_work_items
 from agentic_company.platform.state import (
     DeliveryState,
     codex_resume_thread_id,
-    mark_node_completed,
 )
 from agentic_company.platform.tool_contracts import WorkItemExecutionPacket
 
@@ -176,12 +176,8 @@ def _prepare_context(state: ProjectManagerAgentGraphState) -> ProjectManagerAgen
     request_path = run_dir / PROJECT_MANAGEMENT_REQUEST
     request_path.parent.mkdir(parents=True, exist_ok=True)
     request_path.write_text(json.dumps(request, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    write_event(
-        run_dir,
-        delivery_state["run_id"],
-        PROJECT_MANAGER_AGENT_ID,
-        "project_management_started",
-        {"artifact": PROJECT_MANAGEMENT_REQUEST},
+    record_specialist_start(
+        delivery_state, agent_id=PROJECT_MANAGER_AGENT_ID, stage="project_management"
     )
     return state
 
@@ -260,12 +256,28 @@ def _apply_result(state: ProjectManagerAgentGraphState) -> ProjectManagerAgentGr
 
     delivery_state = state["delivery_state"]
     result = state["result"]
-    updated = mark_node_completed(
+    outcome = result.status
+    blockers = list(delivery_state.get("blockers", []))
+    if result.status == "project_management_completed":
+        try:
+            materialize_pm_work_items(
+                str(delivery_state["run_id"]), Path(delivery_state["run_dir"])
+            )
+        except ValueError as exc:
+            outcome = "project_management_blocked"
+            blockers.append(str(exc))
+        else:
+            blockers = []
+    else:
+        blockers.append(result.summary)
+    updated = record_specialist_completion(
         delivery_state,
-        node_name="project_management",
+        agent_id=PROJECT_MANAGER_AGENT_ID,
         stage="project_management",
-        status=result.status,
+        node_name="project_management",
+        outcome=outcome,
     )
+    updated["blockers"] = blockers
     extend_artifacts(
         updated,
         artifact_refs(
@@ -275,28 +287,6 @@ def _apply_result(state: ProjectManagerAgentGraphState) -> ProjectManagerAgentGr
         ),
     )
     append_downstream_response(updated, from_agent=PROJECT_MANAGER_AGENT_ID, result=result)
-    if result.status == "project_management_completed":
-        try:
-            materialize_pm_work_items(str(updated["run_id"]), Path(updated["run_dir"]))
-        except ValueError as exc:
-            updated["status"] = "project_management_blocked"
-            updated["blockers"] = [*updated.get("blockers", []), str(exc)]
-        else:
-            updated["blockers"] = []
-    else:
-        updated["blockers"] = [*updated.get("blockers", []), result.summary]
-    completed_event = (
-        "project_management_completed"
-        if str(updated.get("status") or "") == "project_management_completed"
-        else "project_management_blocked"
-    )
-    write_event(
-        Path(updated["run_dir"]),
-        updated["run_id"],
-        PROJECT_MANAGER_AGENT_ID,
-        completed_event,
-        {"status": result.status, "artifacts": result.output_artifacts},
-    )
     return {**state, "delivery_state": updated}
 
 

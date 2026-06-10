@@ -12,6 +12,8 @@ from agentic_company.platform.agent_contracts import (
     append_downstream_response,
     artifact_refs,
     extend_artifacts,
+    record_specialist_completion,
+    record_specialist_start,
 )
 from agentic_company.platform.agent_runtime import (
     AGENT_EXECUTOR_GRAPH_NODE_ORDER,
@@ -20,13 +22,11 @@ from agentic_company.platform.agent_runtime import (
     agent_env_value,
     build_agent_executor_graph,
 )
-from agentic_company.platform.events import write_event
 from agentic_company.platform.messages import render_incoming_messages_for_prompt
 from agentic_company.platform.models import AgentRunResult
 from agentic_company.platform.state import (
     DeliveryState,
     codex_resume_thread_id,
-    mark_node_completed,
 )
 from agentic_company.platform.tool_contracts import WorkItemExecutionPacket
 
@@ -145,13 +145,7 @@ def _prepare_context(state: ArchitectAgentGraphState) -> ArchitectAgentGraphStat
     request_path = run_dir / ARCHITECTURE_REQUEST
     request_path.parent.mkdir(parents=True, exist_ok=True)
     request_path.write_text(json.dumps(request, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    write_event(
-        run_dir,
-        delivery_state["run_id"],
-        ARCHITECT_AGENT_ID,
-        "architecture_started",
-        {"artifact": ARCHITECTURE_REQUEST},
-    )
+    record_specialist_start(delivery_state, agent_id=ARCHITECT_AGENT_ID, stage="architecture")
     return state
 
 
@@ -211,11 +205,12 @@ def _apply_result(state: ArchitectAgentGraphState) -> ArchitectAgentGraphState:
 
     delivery_state = state["delivery_state"]
     result = state["result"]
-    updated = mark_node_completed(
+    updated = record_specialist_completion(
         delivery_state,
-        node_name="architecture",
+        agent_id=ARCHITECT_AGENT_ID,
         stage="architecture",
-        status=result.status,
+        node_name="architecture",
+        outcome=result.status,
     )
     extend_artifacts(
         updated,
@@ -228,18 +223,6 @@ def _apply_result(state: ArchitectAgentGraphState) -> ArchitectAgentGraphState:
     append_downstream_response(updated, from_agent=ARCHITECT_AGENT_ID, result=result)
     if result.status != "architecture_completed":
         updated["blockers"] = [*updated.get("blockers", []), result.summary]
-    completed_event = (
-        "architecture_completed"
-        if result.status == "architecture_completed"
-        else "architecture_blocked"
-    )
-    write_event(
-        Path(updated["run_dir"]),
-        updated["run_id"],
-        ARCHITECT_AGENT_ID,
-        completed_event,
-        {"status": result.status, "artifacts": result.output_artifacts},
-    )
     return {**state, "delivery_state": updated}
 
 

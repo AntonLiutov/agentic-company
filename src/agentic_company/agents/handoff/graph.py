@@ -21,6 +21,8 @@ from agentic_company.platform.agent_contracts import (
     append_downstream_response,
     artifact_refs,
     extend_artifacts,
+    record_specialist_completion,
+    record_specialist_start,
 )
 from agentic_company.platform.agent_runtime import (
     AGENT_EXECUTOR_GRAPH_NODE_ORDER,
@@ -44,7 +46,6 @@ from agentic_company.platform.runtime_db import (
 from agentic_company.platform.state import (
     DeliveryState,
     codex_resume_thread_id,
-    mark_node_completed,
 )
 
 HANDOFF_AGENT_ID = "documentation-handoff-agent"
@@ -152,14 +153,7 @@ def _prepare_context(state: HandoffAgentGraphState) -> HandoffAgentGraphState:
         handoff_output_dir=str(delivery_state.get("handoff_output_dir") or ""),
         handoff_expected_outputs=list(delivery_state.get("handoff_expected_outputs", [])),
     )
-    event_log = run_dir
-    write_event(
-        event_log,
-        delivery_state["run_id"],
-        HANDOFF_AGENT_ID,
-        "handoff_started",
-        {"deployment_status": delivery_state.get("deployment_status")},
-    )
+    record_specialist_start(delivery_state, agent_id=HANDOFF_AGENT_ID, stage="handoff")
     return state
 
 
@@ -267,19 +261,13 @@ def _apply_handoff_result(state: HandoffAgentGraphState) -> HandoffAgentGraphSta
         "artifact_written",
         {"artifact": primary_artifact, "status": status},
     )
-    write_event(
-        event_log,
-        delivery_state["run_id"],
-        HANDOFF_AGENT_ID,
-        "handoff_completed",
-        {"artifact": primary_artifact, "status": status},
-    )
 
-    updated = mark_node_completed(
+    updated = record_specialist_completion(
         delivery_state,
-        node_name="handoff",
+        agent_id=HANDOFF_AGENT_ID,
         stage="handoff",
-        status=f"handoff_{status}",
+        node_name="handoff",
+        outcome=status,
     )
     extend_artifacts(
         updated,

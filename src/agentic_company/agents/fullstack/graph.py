@@ -12,6 +12,7 @@ from agentic_company.platform.agent_contracts import (
     append_downstream_response,
     artifact_refs,
     extend_artifacts,
+    record_specialist_completion,
 )
 from agentic_company.platform.agent_runtime import (
     AGENT_EXECUTOR_GRAPH_NODE_ORDER,
@@ -34,7 +35,6 @@ from agentic_company.platform.runtime_db import (
 from agentic_company.platform.state import (
     DeliveryState,
     codex_resume_thread_id,
-    mark_node_completed,
 )
 
 FULLSTACK_AGENT_GRAPH_NODE_ORDER = AGENT_EXECUTOR_GRAPH_NODE_ORDER
@@ -207,17 +207,16 @@ def _apply_result(state: FullstackAgentGraphState) -> FullstackAgentGraphState:
 
     delivery_state = state["delivery_state"]
     result = results[-1]
-    updated = mark_node_completed(
+    work_item_id = str(delivery_state.get("agent_call_correlation_id") or "")
+    updated = record_specialist_completion(
         delivery_state,
-        node_name="fullstack",
+        agent_id="fullstack-agent",
         stage="fullstack",
-        status=result.status,
+        node_name="fullstack",
+        outcome=result.status,
+        work_item_id=work_item_id or None,
     )
-    work_item_id = str(updated.get("agent_call_correlation_id") or "")
-    if result.status == "codex_completed" and work_item_id:
-        updated["status"] = "fullstack_feature_implemented"
-    elif result.status != "codex_completed":
-        updated["status"] = "fullstack_feature_failed"
+    if result.status != "codex_completed":
         updated["blockers"] = [
             *updated.get("blockers", []),
             f"Fullstack work item {work_item_id or 'unknown'} did not complete successfully.",
