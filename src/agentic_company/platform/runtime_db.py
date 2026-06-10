@@ -481,9 +481,21 @@ def record_run_lifecycle(
     generated_app_url: str = "",
     target_project_dir: str = "",
 ) -> None:
-    """Persist run-level lifecycle fields in the canonical console DB row."""
+    """Persist run-level lifecycle fields in the canonical console DB row.
+
+    A run's outcome is settled by the first terminal status written: once the row
+    is terminal, a later differing status is ignored so a late finalizer cannot
+    overwrite a user stop or a recorded failure.
+    """
+
+    from agentic_company.platform.run_finalizer import is_terminal_run_status
 
     repo, db_run_id = _repo_and_run(run_id)
+    current = str(_run_row(repo, run_id)["status"] or "")
+    if is_terminal_run_status(current) and status != current:
+        if target_project_dir:
+            repo.update_run_target_project_dir(db_run_id, target_project_dir)
+        return
     repo.update_run_status(db_run_id, status, generated_app_url=generated_app_url)
     if target_project_dir:
         repo.update_run_target_project_dir(db_run_id, target_project_dir)
