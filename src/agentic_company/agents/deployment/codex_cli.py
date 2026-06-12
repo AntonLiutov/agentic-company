@@ -200,6 +200,8 @@ class DeploymentCodexRunner:
             run_dir=run_dir,
             summary_path=summary_path,
             resume_session_id=request.codex_resume_thread_id,
+            force_sandbox=True,
+            include_host_tool_dirs=True,
         )
         prompt_path.write_text(prompt, encoding="utf-8")
         log_path.write_text(

@@ -50,6 +50,9 @@ def resolve_run_status(state: DeliveryState) -> RunStatus:
     ``BLOCKED``; a done outcome yields ``COMPLETED``; and any other state at
     finalization is treated as ``FAILED`` so an incomplete run never reports
     success.
+
+    This folds the in-memory delivery state only. Reconciling against the
+    persisted world (sprints, work items, stop intent) is a later step.
     """
 
     raw = str(state.get("status") or "")

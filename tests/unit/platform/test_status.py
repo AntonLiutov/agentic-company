@@ -40,6 +40,12 @@ from agentic_company.platform.status import (
         ("needs_repair", WorkItemStatus.BLOCKED),
         ("deployment_deployed", WorkItemStatus.DONE),
         ("team_lead_sprint_handoff_ready", WorkItemStatus.DONE),
+        # A "not ready" gate must not read as done despite the "ready" token,
+        # while genuine "ready" completions still classify as done.
+        ("team_lead_final_handoff_not_ready", WorkItemStatus.IN_PROGRESS),
+        ("final_handoff_not_ready", WorkItemStatus.IN_PROGRESS),
+        ("ready_for_handoff", WorkItemStatus.DONE),
+        ("handoff_ready", WorkItemStatus.DONE),
         ("head_delivery_completed", WorkItemStatus.DONE),
         ("qa_passed", WorkItemStatus.DONE),
         ("qa", WorkItemStatus.REVIEW),

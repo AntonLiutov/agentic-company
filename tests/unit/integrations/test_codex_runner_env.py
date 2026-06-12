@@ -67,6 +67,7 @@ def test_codex_exec_command_allows_host_cli_config_dirs(monkeypatch, tmp_path: P
         target_project_dir=str(target_dir),
         run_dir=run_dir,
         summary_path=run_dir / "summary.md",
+        include_host_tool_dirs=True,
     )
 
     add_dirs = [command[index + 1] for index, value in enumerate(command) if value == "--add-dir"]
@@ -74,6 +75,29 @@ def test_codex_exec_command_allows_host_cli_config_dirs(monkeypatch, tmp_path: P
     assert str(azure_config_dir) in add_dirs
     assert str(docker_config_dir) in add_dirs
     assert str(plugin_dir) in add_dirs
+
+
+def test_codex_exec_command_omits_host_cli_dirs_by_default(monkeypatch, tmp_path: Path):
+    home = tmp_path / "home"
+    run_dir = tmp_path / "run"
+    azure_config_dir = home / ".azure"
+    for path in (run_dir, azure_config_dir):
+        path.mkdir(parents=True)
+
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    command = build_codex_exec_command(
+        codex_binary="codex-test",
+        model="gpt-5.5",
+        sandbox="workspace-write",
+        target_project_dir=str(run_dir / "generated-project"),
+        run_dir=run_dir,
+        summary_path=run_dir / "summary.md",
+    )
+
+    add_dirs = [command[index + 1] for index, value in enumerate(command) if value == "--add-dir"]
+    assert str(run_dir) in add_dirs
+    assert str(azure_config_dir) not in add_dirs
 
 
 def test_codex_exec_environment_requires_codex_api_key(monkeypatch, tmp_path: Path):
@@ -411,6 +435,8 @@ def test_codex_subprocess_env_drops_unrelated_host_secrets(monkeypatch, tmp_path
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "leak-me")
     monkeypatch.setenv("RANDOM_COMPANY_TOKEN", "leak-me-too")
+    # Platform internals carry the AGENTIC_ prefix but are not worker-facing.
+    monkeypatch.setenv("AGENTIC_DATABASE_URL", "postgres://secret")
     monkeypatch.setenv("CODEX_API_KEY", "keep")
     monkeypatch.setenv("AGENTIC_CODEX_SERVICE_TIER", "standard")
     monkeypatch.delenv("AGENTIC_CODEX_ENV_PASSTHROUGH", raising=False)
@@ -419,6 +445,7 @@ def test_codex_subprocess_env_drops_unrelated_host_secrets(monkeypatch, tmp_path
 
     assert "AWS_SECRET_ACCESS_KEY" not in env
     assert "RANDOM_COMPANY_TOKEN" not in env
+    assert "AGENTIC_DATABASE_URL" not in env
     # Allowlisted platform + essential variables survive.
     assert env["CODEX_API_KEY"] == "keep"
     assert env["AGENTIC_CODEX_SERVICE_TIER"] == "standard"

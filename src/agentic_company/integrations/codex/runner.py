@@ -81,11 +81,15 @@ _CODEX_ENV_ALLOWED_NAMES = frozenset(
         "NO_PROXY",
         "ALL_PROXY",
         "FTP_PROXY",
+        # Platform runtime cache root the worker writes its caches under.
+        "AGENTIC_RUNTIME_CACHE_DIR",
     )
 )
 _CODEX_ENV_ALLOWED_PREFIXES = (
     "CODEX_",
-    "AGENTIC_",
+    # Only the worker-facing AGENTIC_CODEX_* config, not platform internals such
+    # as AGENTIC_DATABASE_URL, which the Codex worker has no business reading.
+    "AGENTIC_CODEX_",
     "OPENAI_",
     "AZURE_",
     "DOCKER_",
@@ -117,8 +121,14 @@ def build_codex_exec_command(
     summary_path: Path,
     force_sandbox: bool = False,
     resume_session_id: str = "",
+    include_host_tool_dirs: bool = False,
 ) -> list[str]:
-    """Build the low-level `codex exec` command."""
+    """Build the low-level `codex exec` command.
+
+    Host cloud-auth directories (``~/.azure``, ``~/.docker``) are mounted only
+    when ``include_host_tool_dirs`` is set, so a worker that does not deploy never
+    gains read access to host cloud credentials.
+    """
 
     binary = codex_binary or resolve_codex_binary()
     effective_sandbox = (
@@ -139,8 +149,9 @@ def build_codex_exec_command(
         "--add-dir",
         str(run_dir),
     ]
-    for extra_dir in _codex_host_tool_dirs():
-        command.extend(["--add-dir", extra_dir])
+    if include_host_tool_dirs:
+        for extra_dir in _codex_host_tool_dirs():
+            command.extend(["--add-dir", extra_dir])
     command.extend(
         [
             "--skip-git-repo-check",

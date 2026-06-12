@@ -42,6 +42,19 @@ _BLOCKED_PHRASES = (
     "quota",
 )
 
+# Negations that must not read as completion despite carrying a done/ready token
+# (e.g. "final_handoff_not_ready" is still in flight, not done).
+_NOT_DONE_PHRASES = (
+    "not_ready",
+    "not ready",
+    "not_complete",
+    "not complete",
+    "not_done",
+    "not done",
+    "incomplete",
+    "unfinished",
+)
+
 _TOKEN_SPLIT = re.compile(r"[^a-z0-9]+")
 
 
@@ -63,7 +76,7 @@ def classify_work_item_status(raw: str | None) -> WorkItemStatus:
     tokens = _tokens(normalized)
     if tokens & _BLOCKED_TOKENS or any(phrase in normalized for phrase in _BLOCKED_PHRASES):
         return WorkItemStatus.BLOCKED
-    if tokens & _DONE_TOKENS:
+    if tokens & _DONE_TOKENS and not any(phrase in normalized for phrase in _NOT_DONE_PHRASES):
         return WorkItemStatus.DONE
     if tokens & _REVIEW_TOKENS:
         return WorkItemStatus.REVIEW

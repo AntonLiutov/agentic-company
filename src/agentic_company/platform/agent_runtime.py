@@ -1023,6 +1023,13 @@ def _agent_provider_api_key(provider: str, delivery_state: DeliveryState) -> str
 
 
 def _set_provider_process_env(provider: str, api_key: str) -> None:
+    """Expose the active provider key to the model client via process env.
+
+    This mutates the shared process environment and is not safe for concurrent
+    runs from different users; a multi-tenant runtime must thread the key through
+    the client config instead of os.environ.
+    """
+
     os.environ[AGENT_LLM_PROVIDER_ENV] = provider
     if provider == "google_gemini":
         os.environ.setdefault("GOOGLE_API_KEY", api_key)

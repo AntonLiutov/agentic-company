@@ -252,6 +252,7 @@ class CodexCliRunner:
             run_dir=run_dir,
             summary_path=summary_path,
             resume_session_id=request.codex_resume_thread_id,
+            force_sandbox=True,
         )
 
     def _execute(
