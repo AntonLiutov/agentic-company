@@ -122,7 +122,7 @@ def test_render_skill_instructions_contains_selected_skills_only():
     assert "requirements-analysis" not in rendered
     assert "Playbook:" in rendered
     assert "Contract hints:" in rendered
-    assert "Open the app or use the closest available runtime check" in rendered
+    assert "passed_with_limited_visual_evidence" in rendered
     assert "do not assume the full skill catalog" in rendered
 
 

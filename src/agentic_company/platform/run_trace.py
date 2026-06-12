@@ -776,13 +776,16 @@ def _log_run_event(event: RunEvent) -> None:
     if not _is_operator_run_event(event):
         return
     message = _truncate_operator_text(event.message or event.event_type)
+    # Prefer the granular workflow signal for the human label; the event.status
+    # itself is the canonical board status.
+    status_label = event.data.get("workflow_status") if isinstance(event.data, dict) else None
     RUNTIME_LOGGER.info(
         "RUN %s [%s] %s: %s -> %s - %s",
         event.run_id,
         event.work_item_id or "-",
         _operator_agent_label(event.agent_id),
         _operator_event_label(event.event_type),
-        _operator_status_label(event.status),
+        _operator_status_label(str(status_label) if status_label else event.status),
         message,
     )
 

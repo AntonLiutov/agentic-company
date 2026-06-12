@@ -44,7 +44,9 @@ def test_write_event_records_structured_trace_without_retired_root_log(tmp_path:
 
     assert not event_log.exists()
     assert events[0].event_type == "tool_completed"
-    assert events[0].status == "ready"
+    # The event carries the canonical board status; the granular signal is kept.
+    assert events[0].status == "done"
+    assert events[0].data["workflow_status"] == "ready"
     assert events[0].data["api_key"] == "[REDACTED]"
     assert events[0].artifact_ids == ["art_abc123"]
     assert (tmp_path / RUN_TRACE_DIR / RUN_EVENTS_FILE).exists()
