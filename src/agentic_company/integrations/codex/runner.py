@@ -463,6 +463,13 @@ def _workspace_network_enabled() -> bool:
     }
 
 
+def codex_runtime_config_summary() -> str:
+    """One-line Codex worker sandbox/network summary for console startup logs."""
+
+    network = "enabled" if _workspace_network_enabled() else "disabled"
+    return f"sandbox-default={DEFAULT_CODEX_SANDBOX} workspace-write-network={network}"
+
+
 def codex_exec_config_args_from_env() -> list[str]:
     config_args = [
         "--config",

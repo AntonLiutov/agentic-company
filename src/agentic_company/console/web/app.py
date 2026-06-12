@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import asdict
 from pathlib import Path
@@ -1342,6 +1343,11 @@ def _run_requirements(name: str, request_text: str, mode: str, complexity: str) 
 
 def main() -> None:
     configure_logging()
+    from agentic_company.integrations.codex.runner import codex_runtime_config_summary
+
+    logging.getLogger("agentic_company.console").info(
+        "Codex worker defaults: %s", codex_runtime_config_summary()
+    )
     host = os.getenv("AGENTIC_WEB_HOST", "127.0.0.1")
     port = int(os.getenv("AGENTIC_WEB_PORT", "8503"))
     uvicorn.run(
