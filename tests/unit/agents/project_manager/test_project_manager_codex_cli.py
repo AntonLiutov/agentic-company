@@ -239,7 +239,9 @@ def test_project_manager_codex_runner_maps_valid_contract_to_completed_result(
                     "release_goal": "Ship a small task tracker.",
                     "planning_policy": {},
                     "sprint_count": 1,
-                    "sprints": [{"sprint_id": "sprint-01"}],
+                    "sprints": [
+                        {"sprint_id": "sprint-01", "title": "MVP", "delivery_order": 1}
+                    ],
                     "planned_work_items": [feature],
                     "release_gates": [],
                     "dependencies": [],

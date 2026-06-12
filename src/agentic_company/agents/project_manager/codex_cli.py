@@ -405,6 +405,10 @@ Project management output:
   release_goal, planning_policy, sprint_count, sprints, planned_work_items,
   release_gates, dependencies, risks, open_questions, assumptions, team_lead_contract,
   coordination_notes, source_traceability.
+- Each object in the `sprints` array must include `sprint_id` (canonical
+  `sprint-XX`), `title`, and a numeric `delivery_order` giving the 1-based sprint
+  execution order. Runtime materialization rejects a release plan whose sprint
+  objects omit `delivery_order`, so always emit it on every sprint.
 - `release_gates` must be a machine-readable array. For apps/sites/APIs/services
   where deployment is not explicitly excluded, include a final deployment gate
   owned by `deployment-agent` with expected evidence such as deployed web URL,
@@ -569,6 +573,20 @@ def _contract_errors(run_dir: Path) -> list[str]:
             f"Missing required release-plan JSON key: {key}"
             for key in sorted(required.difference(release_payload))
         )
+        # Mirror the materialize-time sprint contract so PM's own gate matches the
+        # runtime validator: every sprint needs sprint_id, title, and delivery_order.
+        raw_sprints = release_payload.get("sprints")
+        if isinstance(raw_sprints, list):
+            for index, sprint in enumerate(raw_sprints, start=1):
+                if not isinstance(sprint, dict):
+                    errors.append(f"sprint[{index}] must be an object")
+                    continue
+                if not (sprint.get("sprint_id") or sprint.get("id")):
+                    errors.append(f"sprint[{index}] missing sprint_id")
+                if not (sprint.get("title") or sprint.get("name")):
+                    errors.append(f"sprint[{index}] missing title")
+                if sprint.get("delivery_order") in (None, ""):
+                    errors.append(f"sprint[{index}] missing delivery_order")
     if not isinstance(queue_payload, list):
         errors.append(f"{PROJECT_MANAGEMENT_WORK_ITEMS_JSON} must be a JSON array.")
     else:
