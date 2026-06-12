@@ -65,6 +65,57 @@ def write_structured_codex_artifacts(
     return written
 
 
+def extract_codex_usage(raw_events_path: Path) -> tuple[int | None, int | None]:
+    """Return ``(input_tokens, output_tokens)`` from a Codex raw-events file.
+
+    Codex reports cumulative token usage in its events; the last reported values
+    win. Returns ``(None, None)`` when no usage is present.
+    """
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    if not raw_events_path.exists():
+        return input_tokens, output_tokens
+    try:
+        lines = raw_events_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return input_tokens, output_tokens
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or "input_tokens" not in stripped and "output_tokens" not in stripped:
+            continue
+        try:
+            event = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        usage = _find_token_usage(event)
+        if usage is None:
+            continue
+        if isinstance(usage.get("input_tokens"), int):
+            input_tokens = usage["input_tokens"]
+        if isinstance(usage.get("output_tokens"), int):
+            output_tokens = usage["output_tokens"]
+    return input_tokens, output_tokens
+
+
+def _find_token_usage(value: object) -> dict[str, object] | None:
+    """Find a dict carrying input_tokens/output_tokens anywhere in the event."""
+
+    if isinstance(value, dict):
+        if "input_tokens" in value or "output_tokens" in value:
+            return value
+        for item in value.values():
+            found = _find_token_usage(item)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _find_token_usage(item)
+            if found is not None:
+                return found
+    return None
+
+
 def summarize_codex_event(event: dict[str, object]) -> str | None:
     method = _normalized_event_type(event)
     params = event.get("params") if isinstance(event.get("params"), dict) else {}

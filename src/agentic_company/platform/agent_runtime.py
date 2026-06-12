@@ -12,7 +12,7 @@ from typing import Any, Protocol
 
 from langgraph.graph import END, START, StateGraph
 
-from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
+from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL, extract_codex_usage
 from agentic_company.platform.artifact_registry import (
     artifact_id_for,
     tool_artifact_refs_from_records,
@@ -674,6 +674,12 @@ def _codex_exec_tool_response(
         failure_mode=failure_mode,
         duration_ms=duration_ms,
     )
+    raw_events_link = _raw_events_artifact_link(result.output_artifacts)
+    input_tokens, output_tokens = (
+        extract_codex_usage(Path(request.run_dir) / raw_events_link)
+        if raw_events_link
+        else (None, None)
+    )
     record_model_call_event(
         request.run_dir,
         run_id=str(request.delivery_state.get("run_id") or request.run_dir.name),
@@ -688,6 +694,8 @@ def _codex_exec_tool_response(
         purpose="codex_exec",
         prompt_ref=_prompt_artifact_link(result.output_artifacts),
         status=result.status,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
         duration_ms=duration_ms,
     )
     return json.dumps(payload, sort_keys=True)
@@ -697,6 +705,13 @@ def _prompt_artifact_link(output_artifacts: list[str]) -> str:
     for artifact in output_artifacts:
         normalized = artifact.lower()
         if "prompt" in normalized and normalized.endswith((".md", ".txt", ".json")):
+            return artifact
+    return ""
+
+
+def _raw_events_artifact_link(output_artifacts: list[str]) -> str:
+    for artifact in output_artifacts:
+        if artifact.replace("\\", "/").endswith("events.jsonl"):
             return artifact
     return ""
 
