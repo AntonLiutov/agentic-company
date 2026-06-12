@@ -452,6 +452,17 @@ def test_codex_subprocess_env_drops_unrelated_host_secrets(monkeypatch, tmp_path
     assert "PATH" in env or "Path" in env
 
 
+def test_codex_subprocess_env_allows_playwright_browser_path(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "ops/qa-runtime/browsers")
+    monkeypatch.delenv("AGENTIC_CODEX_ENV_PASSTHROUGH", raising=False)
+
+    env = _codex_subprocess_env()
+
+    # QA needs the pre-installed Playwright Chromium location to capture screenshots.
+    assert env["PLAYWRIGHT_BROWSERS_PATH"] == "ops/qa-runtime/browsers"
+
+
 def test_codex_subprocess_env_passthrough_escape_hatch(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     monkeypatch.setenv("CUSTOM_DEPLOY_TOKEN", "needed-by-worker")

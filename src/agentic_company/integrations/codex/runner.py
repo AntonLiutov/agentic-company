@@ -97,6 +97,8 @@ _CODEX_ENV_ALLOWED_PREFIXES = (
     "NODE_",
     "NPM_",
     "DENO_",
+    # QA browser runtime (Playwright pre-installed Chromium location/config).
+    "PLAYWRIGHT_",
     "LC_",
 )
 DEFAULT_CODEX_MODEL = "gpt-5.5"
