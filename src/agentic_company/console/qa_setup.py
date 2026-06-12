@@ -33,25 +33,53 @@ def _log(message: str) -> None:
     print(f"[qa-setup] {message}", flush=True)
 
 
+def _repo_node_bin_dir() -> Path | None:
+    """Directory of the repo-local Node toolchain, if one is present."""
+
+    from agentic_company.integrations.codex.runner import _repo_local_node_bin_dir
+
+    return _repo_local_node_bin_dir(REPO_ROOT)
+
+
+def _base_env() -> dict[str, str]:
+    """Process env with the repo-local Node toolchain prepended to PATH."""
+
+    env = dict(os.environ)
+    bin_dir = _repo_node_bin_dir()
+    if bin_dir:
+        path_key = "Path" if os.name == "nt" else "PATH"
+        existing = env.get(path_key) or env.get("PATH") or ""
+        parts = [str(bin_dir), *([existing] if existing else [])]
+        env[path_key] = os.pathsep.join(parts)
+    return env
+
+
 def _find(executable: str) -> str:
     found = shutil.which(executable)
     if found:
         return found
+    # Fall back to the repo-local Node toolchain so no global install is required.
+    bin_dir = _repo_node_bin_dir()
+    if bin_dir:
+        for name in (f"{executable}.cmd", f"{executable}.exe", executable):
+            candidate = bin_dir / name
+            if candidate.exists():
+                return str(candidate)
     raise SystemExit(
-        f"[qa-setup] '{executable}' was not found on PATH. Install Node.js (which ships npm) "
-        "on this machine, then re-run: uv run --extra app agentic-qa-setup"
+        f"[qa-setup] '{executable}' was not found on PATH or in the repo-local Node toolchain. "
+        "Install Node.js (which ships npm), then re-run: uv run --extra app agentic-qa-setup"
     )
 
 
 def _run(args: list[str], *, env: dict[str, str] | None = None) -> None:
     _log("$ " + " ".join(args))
-    result = subprocess.run(args, cwd=str(QA_RUNTIME), env=env)
+    result = subprocess.run(args, cwd=str(QA_RUNTIME), env=env or _base_env())
     if result.returncode != 0:
         raise SystemExit(f"[qa-setup] command failed ({result.returncode}): {' '.join(args)}")
 
 
 def _browser_env() -> dict[str, str]:
-    env = dict(os.environ)
+    env = _base_env()
     env["PLAYWRIGHT_BROWSERS_PATH"] = str(BROWSERS_DIR)
     env["NODE_PATH"] = str(NODE_MODULES)
     return env
