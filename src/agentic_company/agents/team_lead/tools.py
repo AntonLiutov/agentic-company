@@ -46,6 +46,7 @@ from agentic_company.platform.runtime_db import (
     next_work_item,
     record_artifact_link,
     record_work_item_transition,
+    run_stop_requested,
     sprint_completion_state,
     sprint_is_final,
 )
@@ -698,6 +699,10 @@ class TeamLeadToolbox:
         external_reference: str = "",
     ) -> str:
         item_id = _clean_work_item_id(work_item_id)
+        if run_stop_requested(str(self.delivery_state["run_id"]), self.delivery_state["run_dir"]):
+            return self._contract_error_response(
+                tool, item_id, "Stopped by user.", message or reason, status="stopped"
+            )
         if error := self._contract_error(tool, item_id, reason, message):
             return error
         try:

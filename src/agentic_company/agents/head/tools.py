@@ -34,6 +34,7 @@ from agentic_company.platform.runtime_db import (
     next_sprint_to_run,
     record_artifact_link,
     record_work_item_transition,
+    run_stop_requested,
     sprint_completion_state,
     sprint_ids,
 )
@@ -649,6 +650,17 @@ class HeadToolbox:
         external_reference: str = "",
     ) -> str:
         started = time.perf_counter()
+        if run_stop_requested(str(self.delivery_state["run_id"]), self.delivery_state["run_dir"]):
+            self.current_tool_name = tool
+            self.delivery_state["status"] = "stopped"
+            return self._tool_response(
+                f"{tool} stopped: a user stop was requested.",
+                input_summary={
+                    "tool": tool,
+                    "node_name": node_name,
+                    "correlation_id": correlation_id,
+                },
+            )
         try:
             external_ref = normalize_external_reference(external_reference)
         except ValueError as exc:

@@ -758,6 +758,27 @@ def stop_requested(run_id: str) -> bool:
     return bool(state and state.stop_requested_at)
 
 
+def run_stop_requested(run_id: str, run_dir: Path | str) -> bool:
+    """Whether a user stop has been requested for a run.
+
+    Checks the run-local stop file, the runtime cache, and the durable DB flag so
+    coordinators can halt between tool calls, not only between graph nodes. Fails
+    open (returns False) on cache/DB errors so a transient fault never crashes a
+    tool mid-run.
+    """
+
+    if (Path(run_dir) / ".stop-requested").exists():
+        return True
+    try:
+        from agentic_company.platform.runtime_cache import runtime_cache_from_env
+
+        if runtime_cache_from_env().stop_requested(str(run_id)):
+            return True
+        return stop_requested(str(run_id))
+    except Exception:
+        return False
+
+
 def _repo_and_run(run_id: str):
     from agentic_company.console.web.db import ConsoleRepository
 
