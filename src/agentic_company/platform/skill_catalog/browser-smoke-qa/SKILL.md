@@ -89,7 +89,12 @@ Stability rules:
 - `passed_with_limited_visual_evidence` — functional behavior verified but the
   browser runtime was unavailable, so screenshots could not be captured. Use this
   instead of a plain `passed` so reviewers know visual proof is missing.
-- `failed` / repair request — a real defect was found.
+- `blocked` (environment) — verification could not run because of an environment
+  limitation — outbound network or sandbox denied (e.g. ERR_NETWORK_ACCESS_DENIED,
+  socket access denied), missing credentials — and NOT an app or deployment defect.
+  Report it as a blocker for environment/human attention. Do NOT raise a repair
+  request: rebuilding or redeploying cannot fix an environment restriction.
+- `failed` / repair request — a real defect was found in the app or deployment.
 
 ## Quality Rules
 
@@ -97,6 +102,9 @@ Stability rules:
 - For web UI, always attempt Playwright screenshots first; only downgrade to
   `passed_with_limited_visual_evidence` if the pre-installed browser truly cannot run.
 - Do not ignore broken buttons, placeholder flows, invisible text, or unusable layout.
+- A failure caused only by an outbound-network/sandbox block when reaching a
+  deployed public URL is an environment blocker, not an app/deploy defect: classify
+  it `blocked`, not `failed`, so it does not trigger a needless redeploy.
 
 ## Failure And Repair
 
