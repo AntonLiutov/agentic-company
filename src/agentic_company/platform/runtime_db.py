@@ -1062,6 +1062,22 @@ def _lane_for_status(status: str) -> str:
     return "qa" if normalized == "review" else normalized
 
 
+# The per-sprint handoff only produces a report, so the coordination card stays
+# in review until the head completes delivery rather than going terminal on
+# every sprint.
+_HANDOFF_TOOLS = {"run_handoff"}
+
+
+def _transition_allowed(current: str, target: str) -> bool:
+    """A done card is terminal: reject any move back out of done.
+
+    Forward moves (including QA's in_progress -> done) are allowed; only the
+    terminal regression that reopened coordination cards mid-run is blocked.
+    """
+
+    return not (current == "done" and target != "done")
+
+
 def _effective_transition_status(
     *,
     current_status: str,
@@ -1084,6 +1100,10 @@ def _effective_transition_status(
         and tool_name in {"codex_exec", "run_deployment"}
     ):
         return "review"
+    if requested == "done" and tool_name in _HANDOFF_TOOLS:
+        requested = "review"
+    if not _transition_allowed(current, requested):
+        return current
     return requested
 
 
