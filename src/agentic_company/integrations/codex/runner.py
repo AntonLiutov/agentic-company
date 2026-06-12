@@ -27,6 +27,7 @@ CODEX_REASONING_EFFORT_ENV = "AGENTIC_CODEX_REASONING_EFFORT"
 CODEX_SERVICE_TIER_ENV = "AGENTIC_CODEX_SERVICE_TIER"
 CODEX_API_KEY_ENV = "CODEX_API_KEY"
 CODEX_ENV_PASSTHROUGH_ENV = "AGENTIC_CODEX_ENV_PASSTHROUGH"
+CODEX_WORKSPACE_NETWORK_ENV = "AGENTIC_CODEX_WORKSPACE_NETWORK"
 
 # Host environment variables inherited by Codex specialist subprocesses. Anything
 # outside this allowlist is dropped so unrelated host secrets never reach the
@@ -138,10 +139,15 @@ def build_codex_exec_command(
         if force_sandbox
         else codex_sandbox_from_env(sandbox or DEFAULT_CODEX_SANDBOX)
     )
+    config_args = list(codex_exec_config_args_from_env())
+    # workspace-write blocks outbound network by default; re-enable it so QA can
+    # verify deployed public URLs and agents can fetch network resources.
+    if effective_sandbox == "workspace-write" and _workspace_network_enabled():
+        config_args.extend(["--config", "sandbox_workspace_write.network_access=true"])
     command = [
         binary,
         "exec",
-        *codex_exec_config_args_from_env(),
+        *config_args,
         "--model",
         model,
         "--sandbox",
@@ -440,6 +446,21 @@ def codex_sandbox_from_env(default: str) -> str:
         allowed = ", ".join(sorted(VALID_CODEX_SANDBOXES))
         raise ValueError(f"{CODEX_SANDBOX_ENV} must be one of: {allowed}")
     return configured
+
+
+def _workspace_network_enabled() -> bool:
+    """Whether workspace-write agents may reach the network (on by default).
+
+    Codex disables outbound network in workspace-write mode; delivery agents (QA,
+    handoff, planning) need it to fetch resources and verify deployed public URLs.
+    """
+
+    return os.getenv(CODEX_WORKSPACE_NETWORK_ENV, "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
 
 
 def codex_exec_config_args_from_env() -> list[str]:

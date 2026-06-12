@@ -100,6 +100,52 @@ def test_codex_exec_command_omits_host_cli_dirs_by_default(monkeypatch, tmp_path
     assert str(azure_config_dir) not in add_dirs
 
 
+def test_workspace_write_command_enables_network(monkeypatch, tmp_path: Path):
+    monkeypatch.delenv("AGENTIC_CODEX_WORKSPACE_NETWORK", raising=False)
+    command = build_codex_exec_command(
+        codex_binary="codex-test",
+        model="gpt-5.5",
+        sandbox="workspace-write",
+        target_project_dir=str(tmp_path),
+        run_dir=tmp_path,
+        summary_path=tmp_path / "summary.md",
+        force_sandbox=True,
+    )
+
+    # QA/handoff/planning run workspace-write and need outbound network.
+    assert "sandbox_workspace_write.network_access=true" in " ".join(command)
+
+
+def test_workspace_network_can_be_disabled(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("AGENTIC_CODEX_WORKSPACE_NETWORK", "false")
+    command = build_codex_exec_command(
+        codex_binary="codex-test",
+        model="gpt-5.5",
+        sandbox="workspace-write",
+        target_project_dir=str(tmp_path),
+        run_dir=tmp_path,
+        summary_path=tmp_path / "summary.md",
+        force_sandbox=True,
+    )
+
+    assert "network_access" not in " ".join(command)
+
+
+def test_danger_full_access_command_omits_workspace_network(monkeypatch, tmp_path: Path):
+    command = build_codex_exec_command(
+        codex_binary="codex-test",
+        model="gpt-5.5",
+        sandbox="danger-full-access",
+        target_project_dir=str(tmp_path),
+        run_dir=tmp_path,
+        summary_path=tmp_path / "summary.md",
+        force_sandbox=True,
+    )
+
+    # danger-full-access already has network; the workspace-write knob is irrelevant.
+    assert "network_access" not in " ".join(command)
+
+
 def test_codex_exec_environment_requires_codex_api_key(monkeypatch, tmp_path: Path):
     monkeypatch.delenv("CODEX_API_KEY", raising=False)
     monkeypatch.delenv("AGENTIC_CODEX_BINARY_MODE", raising=False)
