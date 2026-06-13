@@ -150,9 +150,9 @@ def build_team_lead_executor_prompt(
             "Call tools directly; do not merely describe a plan.",
             (
                 "At sprint start, orient yourself from upstream_planning_context and PM/board "
-                "artifacts before delegating work. First call inspect_sprint_status; it writes "
-                "a status JSON file, the tool reads it back, and you should use it only as "
-                "status/evidence readback. Do not let the inspector choose the next worker. "
+                "artifacts before delegating work. First call inspect_sprint_status; it reads "
+                "the sprint status inspection readback, and you should use it only as "
+                "status/evidence readback. Do not let the inspection choose the next worker. "
                 "If the artifact set is large, unclear, or potentially conflicting, call "
                 "codex_review for read-only orientation across BA, architecture, and PM "
                 "artifacts."
@@ -183,7 +183,7 @@ def build_team_lead_executor_prompt(
             (
                 "After every run_fullstack, run_qa, run_deployment, run_post_deploy_qa, "
                 "run_handoff, and codex_review call, call inspect_sprint_status before "
-                "choosing the next worker or terminal action. Use the inspector readback "
+                "choosing the next worker or terminal action. Use the inspection readback "
                 "only to confirm task statuses, gates, blockers, and completion booleans; "
                 "routing remains your responsibility."
             ),
@@ -252,7 +252,7 @@ def build_team_lead_executor_prompt(
                 "If Codex review finds meaningful improvements, call run_handoff exactly one "
                 "more time with the Codex feedback in message. If Codex review accepts the "
                 "handoff, call inspect_sprint_status, then call complete_sprint only if "
-                "the inspector says can_complete_sprint=true."
+                "the inspection readback says can_complete_sprint=true."
             ),
             (
                 "Every sprint gets its own sprint handoff. Call run_handoff with "
@@ -297,8 +297,8 @@ directly, deploy directly, or create handoff directly; you delegate to specialis
 agents through the tools available to you.
 
 Before delegating work-item work, orient yourself with upstream planning context
-when available. Always call `inspect_sprint_status` first; it writes a sprint
-status JSON file and the platform reads that file back. Treat it as status-only
+when available. Always call `inspect_sprint_status` first; it reads the
+independent sprint status inspection output. Treat it as status-only
 evidence, not routing advice; you decide the next worker from the DB sprint board
 and workflow order. Use `codex_review` as a read-only helper
 to inspect BA, architecture, Project Manager, roadmap, and sprint artifacts when
@@ -536,7 +536,7 @@ def langchain_tools(toolbox: TeamLeadToolbox) -> list[Callable[..., str]]:
         sprint_id: str = "",
         artifact_refs: str = "",
     ) -> str:
-        """Run Codex status inspection and read back the sprint status JSON."""
+        """Run sprint status inspection and read back structured evidence."""
         return toolbox.inspect_sprint_status(
             work_item_id, reason, message, sprint_id, artifact_refs
         )
@@ -548,7 +548,7 @@ def langchain_tools(toolbox: TeamLeadToolbox) -> list[Callable[..., str]]:
         sprint_id: str = "",
         artifact_refs: str = "",
     ) -> str:
-        """Mark the sprint complete after inspector confirms readiness."""
+        """Mark the sprint complete after inspection confirms readiness."""
         return toolbox.complete_sprint(work_item_id, reason, message, sprint_id, artifact_refs)
 
     def block_sprint(

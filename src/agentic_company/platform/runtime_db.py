@@ -15,7 +15,13 @@ from agentic_company.platform.artifact_registry import (
     register_artifact,
     resolve_run_artifact_path,
 )
-from agentic_company.platform.status import classify_work_item_status
+from agentic_company.platform.run_finalizer import TERMINAL_RUN_STATUSES, RunStatus
+from agentic_company.platform.status import (
+    InvalidStatusTransition,
+    WorkItemStatus,
+    classify_work_item_status,
+    transition,
+)
 from agentic_company.platform.tool_contracts import (
     ActivityEventRecord,
     ArtifactRegistrationRequest,
@@ -89,6 +95,35 @@ class WorkItemClaimResult:
     work_item_id: str
     blocking_work_item_id: str = ""
     reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class RunReconcileSnapshot:
+    """Frozen DB world snapshot for one run reconciliation pass."""
+
+    run_id: str
+    db_run_id: int
+    status: str
+    updated_at: str
+    control_intent: str
+    control_intent_reason: str
+    sprint_count: int
+    empty_sprints: int
+    incomplete_sprints: int
+    blocked_sprints: int
+    open_delivery_items: int
+    active_items: int
+    blocked_items: int
+
+
+@dataclass(frozen=True, slots=True)
+class RunReconcileResult:
+    """Outcome of applying one reconciliation decision."""
+
+    action: str
+    applied: bool
+    reason: str
+    status: str
 
 
 def materialize_planning_items(run_id: str) -> None:
@@ -502,6 +537,107 @@ def record_run_lifecycle(
         repo.update_run_target_project_dir(db_run_id, target_project_dir)
 
 
+def request_run_control_intent(run_id: str, intent: str, reason: str = "") -> None:
+    """Persist an operator control intent on the canonical run row."""
+
+    normalized = intent.strip().lower()
+    if normalized not in {"cancel", "pause", "resume", "retry", "restart"}:
+        raise ValueError(f"Unsupported run control intent: {intent}")
+    repo, db_run_id = _repo_and_run(run_id)
+    repo.set_run_control_intent(db_run_id, intent=normalized, reason=reason)
+
+
+def run_control_intent(run_id: str) -> str:
+    """Return the current DB-backed control intent for a run."""
+
+    try:
+        repo, _ = _repo_and_run(run_id)
+    except ValueError:
+        return ""
+    row = _run_row(repo, run_id)
+    return str(row["control_intent"] if "control_intent" in row.keys() else "")
+
+
+def build_run_reconcile_snapshot(run_id: str) -> RunReconcileSnapshot:
+    """Build the frozen DB world snapshot used by the Phase 1 reconciler."""
+
+    repo, db_run_id = _repo_and_run(run_id)
+    row = _run_row(repo, run_id)
+    sprints = sprint_ids(run_id)
+    states = [sprint_completion_state(run_id, sprint_id) for sprint_id in sprints]
+    with repo.connect() as conn:
+        active_row = conn.execute(
+            """
+            SELECT
+                SUM(CASE WHEN active = 1 THEN 1 ELSE 0 END) AS active_count,
+                SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS blocked_count,
+                SUM(
+                    CASE
+                        WHEN sprint_id != 'planning' AND status != 'done'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS open_delivery_count
+            FROM work_items
+            WHERE run_id = ?
+            """,
+            (db_run_id,),
+        ).fetchone()
+    return RunReconcileSnapshot(
+        run_id=run_id,
+        db_run_id=db_run_id,
+        status=str(row["status"]),
+        updated_at=str(row["updated_at"]),
+        control_intent=str(row["control_intent"] if "control_intent" in row.keys() else ""),
+        control_intent_reason=str(
+            row["control_intent_reason"] if "control_intent_reason" in row.keys() else ""
+        ),
+        sprint_count=len(states),
+        empty_sprints=sum(1 for state in states if not state.has_items),
+        incomplete_sprints=sum(1 for state in states if state.has_items and not state.is_complete),
+        blocked_sprints=sum(1 for state in states if state.is_blocked),
+        open_delivery_items=int(active_row["open_delivery_count"] or 0) if active_row else 0,
+        active_items=int(active_row["active_count"] or 0) if active_row else 0,
+        blocked_items=int(active_row["blocked_count"] or 0) if active_row else 0,
+    )
+
+
+def reconcile_run(run_id: str) -> RunReconcileResult:
+    """Run one deterministic DB reconciliation pass for a delivery run."""
+
+    snapshot = build_run_reconcile_snapshot(run_id)
+    if snapshot.control_intent == "cancel":
+        return _apply_cancel_reconciliation(snapshot)
+    if (
+        snapshot.status == RunStatus.RUNNING
+        and snapshot.sprint_count > 0
+        and snapshot.empty_sprints == 0
+        and snapshot.incomplete_sprints == 0
+        and snapshot.blocked_sprints == 0
+        and snapshot.open_delivery_items == 0
+    ):
+        return _apply_run_status_reconciliation(
+            snapshot,
+            status=RunStatus.COMPLETED,
+            action="finalize_completed",
+            reason="All DB sprints are complete.",
+            clear_intent=False,
+        )
+    repo, _ = _repo_and_run(run_id)
+    applied = repo.cas_update_run_reconcile_state(
+        snapshot.db_run_id,
+        expected_updated_at=snapshot.updated_at,
+        reconcile_status="noop",
+        reconcile_reason="No reconciliation action required.",
+    )
+    return RunReconcileResult(
+        action="noop",
+        applied=applied,
+        reason="No reconciliation action required.",
+        status=snapshot.status,
+    )
+
+
 def record_generated_app_url(run_id: str, generated_app_url: str) -> None:
     """Persist a run's generated app URL independent of its lifecycle status."""
 
@@ -687,24 +823,34 @@ def record_artifact_link(
 
 
 def artifact_links_for_paths(run_id: str, paths: list[str]) -> tuple[Any, ...]:
-    """Return DB-backed artifact links for explicit run-local paths."""
+    """Return DB-backed artifact links for explicit artifact IDs or run-local paths."""
 
     repo, db_run_id = _repo_and_run(run_id)
     run_row = _run_row(repo, run_id)
     run_dir = Path(str(run_row["run_dir"]))
-    normalized = [
-        _registered_artifact_lookup_path(run_dir, path) for path in paths if str(path or "").strip()
-    ]
-    if not normalized:
+    raw_refs = [str(path or "").strip() for path in paths if str(path or "").strip()]
+    if not raw_refs:
         return ()
-    # Build through the public repository method to keep row conversion centralized.
-    by_path = {record.relative_path: record for record in repo.list_artifact_records(db_run_id)}
-    missing = [path for path in normalized if path not in by_path]
+    records = repo.list_artifact_records(db_run_id)
+    by_path = {record.relative_path: record for record in records}
+    by_id = {record.artifact_id: record for record in records}
+    resolved = []
+    missing = []
+    for ref in raw_refs:
+        if ref in by_id:
+            resolved.append(by_id[ref])
+            continue
+        path = _registered_artifact_lookup_path(run_dir, ref)
+        record = by_path.get(path)
+        if record is None:
+            missing.append(path)
+        else:
+            resolved.append(record)
     if missing:
         raise ValueError(
             "Artifact refs must be registered in DB before use: " + ", ".join(sorted(missing))
         )
-    return tuple(by_path[path].to_tool_ref() for path in normalized)
+    return tuple(record.to_tool_ref() for record in resolved)
 
 
 def _registered_artifact_lookup_path(run_dir: Path, path: str) -> str:
@@ -754,6 +900,9 @@ def stop_requested(run_id: str) -> bool:
         repo, db_run_id = _repo_and_run(run_id)
     except ValueError:
         return False
+    row = _run_row(repo, run_id)
+    if "control_intent" in row.keys() and str(row["control_intent"] or "") == "cancel":
+        return True
     state = repo.get_console_process_state(db_run_id, "codex_execution")
     return bool(state and state.stop_requested_at)
 
@@ -1123,9 +1272,197 @@ def _effective_transition_status(
         return "review"
     if requested == "done" and tool_name in _HANDOFF_TOOLS:
         requested = "review"
+    if (
+        current == "in_progress"
+        and requested == "done"
+        and owner_agent == "qa-agent"
+        and tool_name in {"run_qa", "run_post_deploy_qa"}
+    ):
+        return requested
     if not _transition_allowed(current, requested):
         return current
+    try:
+        transition(WorkItemStatus(current), WorkItemStatus(requested))
+    except (InvalidStatusTransition, ValueError):
+        return current
     return requested
+
+
+def _apply_cancel_reconciliation(snapshot: RunReconcileSnapshot) -> RunReconcileResult:
+    repo, _ = _repo_and_run(snapshot.run_id)
+    now = _now()
+    reason = snapshot.control_intent_reason or "Stopped by user."
+    with repo.connect() as conn:
+        current = conn.execute(
+            "SELECT status, updated_at FROM runs WHERE id = ? FOR UPDATE",
+            (snapshot.db_run_id,),
+        ).fetchone()
+        if current is None or str(current["updated_at"]) != snapshot.updated_at:
+            return RunReconcileResult(
+                action="cancel",
+                applied=False,
+                reason="stale_snapshot",
+                status=snapshot.status,
+            )
+        current_status = str(current["status"] or "")
+        if current_status in TERMINAL_RUN_STATUSES:
+            cursor = conn.execute(
+                """
+                UPDATE runs
+                SET control_intent = '',
+                    control_intent_reason = '',
+                    control_intent_requested_at = '',
+                    reconcile_status = 'ignored_terminal',
+                    reconcile_reason = ?,
+                    reconciled_at = ?,
+                    updated_at = ?
+                WHERE id = ? AND updated_at = ? AND status = ?
+                """,
+                (
+                    f"Cancel ignored because run is already terminal: {current_status}.",
+                    now,
+                    now,
+                    snapshot.db_run_id,
+                    snapshot.updated_at,
+                    current_status,
+                ),
+            )
+            return RunReconcileResult(
+                action="cancel_ignored_terminal",
+                applied=cursor.rowcount > 0,
+                reason=(
+                    f"Cancel ignored because run is already terminal: {current_status}."
+                    if cursor.rowcount > 0
+                    else "stale_snapshot"
+                ),
+                status=current_status,
+            )
+        rows = conn.execute(
+            """
+            SELECT work_item_id, status, owner_agent
+            FROM work_items
+            WHERE run_id = ?
+              AND status IN ('in_progress', 'review')
+            ORDER BY sprint_id, delivery_order, work_item_id
+            """,
+            (snapshot.db_run_id,),
+        ).fetchall()
+        for row in rows:
+            work_item_id = str(row["work_item_id"])
+            from_status = str(row["status"])
+            owner = str(row["owner_agent"] or "delivery-graph")
+            event_id = f"reconcile:{snapshot.run_id}:cancel:{work_item_id}:{uuid4().hex}"
+            conn.execute(
+                """
+                UPDATE work_items
+                SET status = 'blocked',
+                    lane = 'blocked',
+                    active = 0,
+                    blocker = ?,
+                    updated_at = ?
+                WHERE run_id = ? AND work_item_id = ?
+                """,
+                (reason, now, snapshot.db_run_id, work_item_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO work_item_events (
+                    run_id, event_id, work_item_id, event_type, from_status,
+                    to_status, from_owner, to_owner, agent_id, tool_name,
+                    tool_call_id, message, visibility, created_at
+                )
+                VALUES (?, ?, ?, 'reconcile_cancel', ?, 'blocked', ?, ?, ?, ?,
+                        ?, ?, 'user', ?)
+                """,
+                (
+                    snapshot.db_run_id,
+                    event_id,
+                    work_item_id,
+                    from_status,
+                    owner,
+                    owner,
+                    "runtime-reconciler",
+                    "reconcile_run",
+                    event_id,
+                    reason,
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO activity_events (
+                    run_id, event_id, work_item_id, owner_agent, agent_id,
+                    tool_name, message, status, artifact_ids, visibility,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, 'runtime-reconciler', 'reconcile_run',
+                        ?, 'blocked', '[]', 'user', ?)
+                """,
+                (snapshot.db_run_id, event_id, work_item_id, owner, reason, now),
+            )
+        conn.execute(
+            """
+            UPDATE work_items
+            SET active = 0, updated_at = ?
+            WHERE run_id = ? AND active = 1
+            """,
+            (now, snapshot.db_run_id),
+        )
+        conn.execute(
+            """
+            UPDATE sprints
+            SET status = 'blocked', updated_at = ?
+            WHERE run_id = ? AND status NOT IN ('done', 'blocked')
+            """,
+            (now, snapshot.db_run_id),
+        )
+        cursor = conn.execute(
+            """
+            UPDATE runs
+            SET status = ?,
+                control_intent = '',
+                control_intent_reason = '',
+                control_intent_requested_at = '',
+                reconcile_status = 'applied',
+                reconcile_reason = ?,
+                reconciled_at = ?,
+                updated_at = ?
+            WHERE id = ? AND updated_at = ?
+              AND status NOT IN ('completed', 'blocked', 'failed', 'failed_to_start', 'stopped')
+            """,
+            (RunStatus.STOPPED.value, reason, now, now, snapshot.db_run_id, snapshot.updated_at),
+        )
+    return RunReconcileResult(
+        action="cancel",
+        applied=cursor.rowcount > 0,
+        reason=reason if cursor.rowcount > 0 else "stale_snapshot",
+        status=RunStatus.STOPPED.value if cursor.rowcount > 0 else snapshot.status,
+    )
+
+
+def _apply_run_status_reconciliation(
+    snapshot: RunReconcileSnapshot,
+    *,
+    status: RunStatus,
+    action: str,
+    reason: str,
+    clear_intent: bool,
+) -> RunReconcileResult:
+    repo, _ = _repo_and_run(snapshot.run_id)
+    applied = repo.cas_update_run_reconcile_state(
+        snapshot.db_run_id,
+        expected_updated_at=snapshot.updated_at,
+        status=status.value,
+        control_intent="" if clear_intent else None,
+        reconcile_status="applied",
+        reconcile_reason=reason,
+    )
+    return RunReconcileResult(
+        action=action,
+        applied=applied,
+        reason=reason if applied else "stale_snapshot",
+        status=status.value if applied else snapshot.status,
+    )
 
 
 def _now() -> str:

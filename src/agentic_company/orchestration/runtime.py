@@ -19,6 +19,7 @@ from agentic_company.platform.events import write_event
 from agentic_company.platform.run_finalizer import RunStatus, resolve_run_status
 from agentic_company.platform.runtime_db import (
     latest_delivery_state_snapshot,
+    reconcile_run,
     record_run_lifecycle,
     run_stop_requested,
     run_target_project_dir,
@@ -141,6 +142,7 @@ class DeliveryGraphRuntime:
             generated_app_url=str(final_state.get("public_url") or ""),
             target_project_dir=str(final_state.get("target_project_dir") or ""),
         )
+        reconcile_run(str(final_state["run_id"]))
         LOGGER.info(
             "Delivery graph completed run_id=%s stage=%s status=%s",
             final_state["run_id"],

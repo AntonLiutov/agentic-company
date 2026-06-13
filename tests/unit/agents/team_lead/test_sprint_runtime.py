@@ -97,9 +97,22 @@ def test_deployment_success_moves_work_item_to_review_until_qa_passes(tmp_path, 
             work_item_id="US-1",
             sprint_id="sprint-01",
             owner_agent="deployment-agent",
+            tool_name="run_deployment",
+            tool_call_id="run:deployment:US-1",
+            attempt_id="start",
+            status="in_progress",
+            activity_message="Deployment started US-1.",
+        )
+    )
+    record_work_item_transition(
+        ToolExecutionRecord(
+            run_id="run",
+            work_item_id="US-1",
+            sprint_id="sprint-01",
+            owner_agent="deployment-agent",
             tool_name="codex_exec",
             tool_call_id="run:deployment:US-1",
-            attempt_id="1",
+            attempt_id="finish",
             status="deployment_deployed",
             activity_message="Deployment published US-1.",
         )
@@ -702,19 +715,24 @@ def _write_agent_runtime_env(state, values):
 
 
 def _mark_work_item_done(work_item_id):
-    record_work_item_transition(
-        ToolExecutionRecord(
-            run_id="run",
-            work_item_id=work_item_id,
-            sprint_id="sprint-01",
-            owner_agent="qa-agent",
-            tool_name="run_qa",
-            tool_call_id=f"run:qa:{work_item_id}",
-            attempt_id="1",
-            status="done",
-            activity_message=f"QA passed {work_item_id}.",
+    for attempt_id, status, owner, message in (
+        ("start", "in_progress", "fullstack-agent", f"Started {work_item_id}."),
+        ("review", "review", "fullstack-agent", f"Moved {work_item_id} to review."),
+        ("done", "done", "qa-agent", f"QA passed {work_item_id}."),
+    ):
+        record_work_item_transition(
+            ToolExecutionRecord(
+                run_id="run",
+                work_item_id=work_item_id,
+                sprint_id="sprint-01",
+                owner_agent=owner,
+                tool_name="run_qa",
+                tool_call_id=f"run:qa:{work_item_id}",
+                attempt_id=attempt_id,
+                status=status,
+                activity_message=message,
+            )
         )
-    )
 
 
 def _add_work_item(repo, work_item_id, *, sprint_id, delivery_order):
