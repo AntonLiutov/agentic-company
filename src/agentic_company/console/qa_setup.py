@@ -23,9 +23,12 @@ NODE_MODULES = QA_RUNTIME / "node_modules"
 PLAYWRIGHT_CLI = NODE_MODULES / "playwright" / "cli.js"
 ENV_FILE = REPO_ROOT / ".env"
 
+# Absolute paths on purpose: the QA worker runs with its cwd set to the generated
+# project, so a relative PLAYWRIGHT_BROWSERS_PATH would resolve *inside the
+# deliverable* and make Playwright re-install a ~700 MB browser there.
 ENV_LINES = (
-    "PLAYWRIGHT_BROWSERS_PATH=ops/qa-runtime/browsers",
-    "NODE_PATH=ops/qa-runtime/node_modules",
+    f"PLAYWRIGHT_BROWSERS_PATH={BROWSERS_DIR}",
+    f"NODE_PATH={NODE_MODULES}",
 )
 
 

@@ -188,6 +188,40 @@ def test_codex_exec_environment_sets_tool_caches_when_api_key_exists(monkeypatch
     assert env["npm_config_cache"] == str(cache_root / "npm")
 
 
+def test_codex_exec_environment_anchors_relative_browser_paths_to_repo_root(
+    monkeypatch, tmp_path: Path
+):
+    # A relative PLAYWRIGHT_BROWSERS_PATH must not resolve against the worker cwd
+    # (the generated project) or Playwright re-installs a ~700 MB browser inside the
+    # deliverable. It must anchor to the repo root so the pre-installed runtime is reused.
+    from agentic_company.integrations.codex import runner as runner_module
+
+    target_dir = tmp_path / "generated-project"
+    monkeypatch.setenv("CODEX_API_KEY", "sk-test")
+    monkeypatch.delenv("AGENTIC_CODEX_BINARY_MODE", raising=False)
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "ops/qa-runtime/browsers")
+    monkeypatch.setenv("NODE_PATH", "ops/qa-runtime/node_modules")
+
+    env = build_codex_exec_environment(target_dir)
+    repo_root = Path(runner_module.__file__).resolve().parents[4]
+
+    assert env["PLAYWRIGHT_BROWSERS_PATH"] == str((repo_root / "ops/qa-runtime/browsers").resolve())
+    assert env["NODE_PATH"] == str((repo_root / "ops/qa-runtime/node_modules").resolve())
+    assert str(target_dir) not in env["PLAYWRIGHT_BROWSERS_PATH"]
+
+
+def test_codex_exec_environment_leaves_absolute_browser_path_untouched(monkeypatch, tmp_path: Path):
+    target_dir = tmp_path / "generated-project"
+    absolute = tmp_path / "ops" / "qa-runtime" / "browsers"
+    monkeypatch.setenv("CODEX_API_KEY", "sk-test")
+    monkeypatch.delenv("AGENTIC_CODEX_BINARY_MODE", raising=False)
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(absolute))
+
+    env = build_codex_exec_environment(target_dir)
+
+    assert env["PLAYWRIGHT_BROWSERS_PATH"] == str(absolute)
+
+
 def test_codex_exec_environment_strips_api_key_for_extension_mode(monkeypatch, tmp_path: Path):
     target_dir = tmp_path / "generated-project"
     monkeypatch.setenv("CODEX_API_KEY", "sk-test")

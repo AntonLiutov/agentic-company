@@ -542,7 +542,26 @@ def build_codex_exec_environment(target_project_dir: Path) -> dict[str, str]:
         "npm_config_cache",
         env.get(CODEX_NPM_CACHE_ENV, str(cache_root / "npm")),
     )
+    _anchor_qa_browser_paths(env)
     return env
+
+
+def _anchor_qa_browser_paths(env: dict[str, str]) -> None:
+    """Make the QA browser-runtime paths absolute so a worker cwd change is safe.
+
+    The QA worker runs with its cwd set to the generated project. A relative
+    ``PLAYWRIGHT_BROWSERS_PATH`` (e.g. ``ops/qa-runtime/browsers`` as written by
+    older agentic-qa-setup runs) would otherwise resolve against that cwd and make
+    Playwright re-install a ~700 MB browser *inside the deliverable* — bloating the
+    artifact and polluting deployment. Anchor any relative value to the repo root so
+    the pre-installed runtime is reused instead.
+    """
+
+    repo_root = Path(__file__).resolve().parents[4]
+    for var in ("PLAYWRIGHT_BROWSERS_PATH", "NODE_PATH"):
+        value = env.get(var, "").strip()
+        if value and not os.path.isabs(value):
+            env[var] = str((repo_root / value).resolve())
 
 
 def _merge_run_local_env(env: dict[str, str], target_project_dir: Path) -> None:
