@@ -3,6 +3,7 @@
 from agentic_company.integrations.codex.cli import resolve_codex_binary
 from agentic_company.integrations.codex.events import (
     append_raw_codex_event,
+    extract_codex_usage,
     parse_codex_event_sections,
     render_raw_codex_events,
     summarize_codex_event,
@@ -26,6 +27,7 @@ __all__ = [
     "DEFAULT_CODEX_SANDBOX",
     "DEFAULT_CODEX_SERVICE_TIER",
     "codex_service_tier_from_env",
+    "extract_codex_usage",
     "parse_codex_event_sections",
     "render_raw_codex_events",
     "resolve_codex_binary",

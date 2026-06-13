@@ -26,8 +26,87 @@ CODEX_NPM_CACHE_ENV = "AGENTIC_CODEX_NPM_CACHE"
 CODEX_REASONING_EFFORT_ENV = "AGENTIC_CODEX_REASONING_EFFORT"
 CODEX_SERVICE_TIER_ENV = "AGENTIC_CODEX_SERVICE_TIER"
 CODEX_API_KEY_ENV = "CODEX_API_KEY"
+CODEX_ENV_PASSTHROUGH_ENV = "AGENTIC_CODEX_ENV_PASSTHROUGH"
+CODEX_WORKSPACE_NETWORK_ENV = "AGENTIC_CODEX_WORKSPACE_NETWORK"
+
+# Host environment variables inherited by Codex specialist subprocesses. Anything
+# outside this allowlist is dropped so unrelated host secrets never reach the
+# Codex worker. Names are matched case-insensitively; the prefixes cover the
+# platform's own CODEX_*/AGENTIC_* configuration plus the cloud/runtime tooling
+# the workers shell out to. Additional names can be allowed at runtime via
+# AGENTIC_CODEX_ENV_PASSTHROUGH (comma-separated) without a code change.
+_CODEX_ENV_ALLOWED_NAMES = frozenset(
+    name.upper()
+    for name in (
+        # POSIX essentials.
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "LANG",
+        "TERM",
+        "TMPDIR",
+        "TZ",
+        # Windows essentials.
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "TEMP",
+        "TMP",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "PROGRAMW6432",
+        "USERPROFILE",
+        "USERNAME",
+        "USERDOMAIN",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+        "OS",
+        # Cloud / container tooling the workers invoke.
+        "AZURE_CONFIG_DIR",
+        "DOCKER_HOST",
+        "DOCKER_CONFIG",
+        "DOCKER_CLI_PLUGIN_EXTRA_DIRS",
+        "KUBECONFIG",
+        # Network proxy configuration (infrastructure settings, not secrets).
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "ALL_PROXY",
+        "FTP_PROXY",
+        # Platform runtime cache root the worker writes its caches under.
+        "AGENTIC_RUNTIME_CACHE_DIR",
+    )
+)
+_CODEX_ENV_ALLOWED_PREFIXES = (
+    "CODEX_",
+    # Only the worker-facing AGENTIC_CODEX_* config, not platform internals such
+    # as AGENTIC_DATABASE_URL, which the Codex worker has no business reading.
+    "AGENTIC_CODEX_",
+    "OPENAI_",
+    "AZURE_",
+    "DOCKER_",
+    "UV_",
+    "NODE_",
+    "NPM_",
+    "DENO_",
+    # QA browser runtime (Playwright pre-installed Chromium location/config).
+    "PLAYWRIGHT_",
+    "LC_",
+)
 DEFAULT_CODEX_MODEL = "gpt-5.5"
-DEFAULT_CODEX_SANDBOX = "danger-full-access"
+# Least-privilege default: workers write only inside the workspace. Agents that
+# genuinely need host/network access (deployment, fullstack) opt into a broader
+# sandbox explicitly.
+DEFAULT_CODEX_SANDBOX = "workspace-write"
 DEFAULT_CODEX_REASONING_EFFORT = "medium"
 DEFAULT_CODEX_SERVICE_TIER = "standard"
 VALID_CODEX_SANDBOXES = {"read-only", "workspace-write", "danger-full-access"}
@@ -45,8 +124,14 @@ def build_codex_exec_command(
     summary_path: Path,
     force_sandbox: bool = False,
     resume_session_id: str = "",
+    include_host_tool_dirs: bool = False,
 ) -> list[str]:
-    """Build the low-level `codex exec` command."""
+    """Build the low-level `codex exec` command.
+
+    Host cloud-auth directories (``~/.azure``, ``~/.docker``) are mounted only
+    when ``include_host_tool_dirs`` is set, so a worker that does not deploy never
+    gains read access to host cloud credentials.
+    """
 
     binary = codex_binary or resolve_codex_binary()
     effective_sandbox = (
@@ -54,10 +139,15 @@ def build_codex_exec_command(
         if force_sandbox
         else codex_sandbox_from_env(sandbox or DEFAULT_CODEX_SANDBOX)
     )
+    config_args = list(codex_exec_config_args_from_env())
+    # workspace-write blocks outbound network by default; re-enable it so QA can
+    # verify deployed public URLs and agents can fetch network resources.
+    if effective_sandbox == "workspace-write" and _workspace_network_enabled():
+        config_args.extend(["--config", "sandbox_workspace_write.network_access=true"])
     command = [
         binary,
         "exec",
-        *codex_exec_config_args_from_env(),
+        *config_args,
         "--model",
         model,
         "--sandbox",
@@ -67,8 +157,9 @@ def build_codex_exec_command(
         "--add-dir",
         str(run_dir),
     ]
-    for extra_dir in _codex_host_tool_dirs():
-        command.extend(["--add-dir", extra_dir])
+    if include_host_tool_dirs:
+        for extra_dir in _codex_host_tool_dirs():
+            command.extend(["--add-dir", extra_dir])
     command.extend(
         [
             "--skip-git-repo-check",
@@ -357,6 +448,32 @@ def codex_sandbox_from_env(default: str) -> str:
     return configured
 
 
+def _workspace_network_enabled() -> bool:
+    """Whether workspace-write agents may reach the network (on by default).
+
+    Codex disables outbound network in workspace-write mode; delivery agents (QA,
+    handoff, planning) need it to fetch resources and verify deployed public URLs.
+    """
+
+    return os.getenv(CODEX_WORKSPACE_NETWORK_ENV, "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def codex_runtime_config_summary() -> str:
+    """One-line Codex worker sandbox/network summary for console startup logs."""
+
+    network = "enabled" if _workspace_network_enabled() else "disabled"
+    browsers = _anchor_repo_relative(os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")) or "unset"
+    return (
+        f"sandbox-default={DEFAULT_CODEX_SANDBOX} "
+        f"workspace-write-network={network} qa-browsers={browsers}"
+    )
+
+
 def codex_exec_config_args_from_env() -> list[str]:
     config_args = [
         "--config",
@@ -429,7 +546,34 @@ def build_codex_exec_environment(target_project_dir: Path) -> dict[str, str]:
         "npm_config_cache",
         env.get(CODEX_NPM_CACHE_ENV, str(cache_root / "npm")),
     )
+    _anchor_qa_browser_paths(env)
     return env
+
+
+def _anchor_repo_relative(value: str) -> str:
+    """Resolve a repo-relative path to an absolute path under the repo root."""
+
+    value = value.strip()
+    if not value or os.path.isabs(value):
+        return value
+    repo_root = Path(__file__).resolve().parents[4]
+    return str((repo_root / value).resolve())
+
+
+def _anchor_qa_browser_paths(env: dict[str, str]) -> None:
+    """Make the QA browser-runtime paths absolute so a worker cwd change is safe.
+
+    The QA worker runs with its cwd set to the generated project. A relative
+    ``PLAYWRIGHT_BROWSERS_PATH`` (e.g. ``ops/qa-runtime/browsers`` as written by
+    older agentic-qa-setup runs) would otherwise resolve against that cwd and make
+    Playwright re-install a ~700 MB browser *inside the deliverable* — bloating the
+    artifact and polluting deployment. Anchor any relative value to the repo root so
+    the pre-installed runtime is reused instead.
+    """
+
+    for var in ("PLAYWRIGHT_BROWSERS_PATH", "NODE_PATH"):
+        if env.get(var, "").strip():
+            env[var] = _anchor_repo_relative(env[var])
 
 
 def _merge_run_local_env(env: dict[str, str], target_project_dir: Path) -> None:
@@ -464,10 +608,27 @@ def _uses_extension_binary_mode(env: dict[str, str]) -> bool:
     )
 
 
-def _codex_subprocess_env() -> dict[str, str]:
-    """Build host-tool environment inherited by Codex specialist subprocesses."""
+def _codex_env_passthrough_extra() -> frozenset[str]:
+    raw = os.getenv(CODEX_ENV_PASSTHROUGH_ENV, "")
+    return frozenset(part.strip().upper() for part in raw.split(",") if part.strip())
 
-    env = dict(os.environ)
+
+def _is_allowed_codex_env(name: str, extra: frozenset[str]) -> bool:
+    upper = name.upper()
+    if upper in _CODEX_ENV_ALLOWED_NAMES or upper in extra:
+        return True
+    return any(upper.startswith(prefix) for prefix in _CODEX_ENV_ALLOWED_PREFIXES)
+
+
+def _codex_subprocess_env() -> dict[str, str]:
+    """Build host-tool environment inherited by Codex specialist subprocesses.
+
+    Only allowlisted host variables are inherited; the rest of the host
+    environment (and any secrets it carries) is dropped before the worker starts.
+    """
+
+    extra = _codex_env_passthrough_extra()
+    env = {name: value for name, value in os.environ.items() if _is_allowed_codex_env(name, extra)}
     _prepend_repo_local_node_to_path(env)
     if "AZURE_CONFIG_DIR" not in env:
         azure_config = Path.home() / ".azure"

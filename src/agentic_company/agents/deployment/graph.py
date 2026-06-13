@@ -17,6 +17,8 @@ from agentic_company.platform.agent_contracts import (
     append_downstream_response,
     artifact_refs,
     extend_artifacts,
+    record_specialist_completion,
+    record_specialist_start,
 )
 from agentic_company.platform.agent_runtime import (
     AGENT_EXECUTOR_GRAPH_NODE_ORDER,
@@ -36,12 +38,11 @@ from agentic_company.platform.runtime_db import (
     completed_work_item_ids,
     get_work_item,
     packet_for_work_item,
-    record_run_lifecycle,
+    record_generated_app_url,
 )
 from agentic_company.platform.state import (
     DeliveryState,
     codex_resume_thread_id,
-    mark_node_completed,
 )
 
 DEPLOYMENT_AGENT_ID = "deployment-agent"
@@ -147,14 +148,7 @@ def _prepare_context(state: DeploymentAgentGraphState) -> DeploymentAgentGraphSt
         parent_message_id=str(delivery_state.get("agent_call_message_id") or ""),
         codex_resume_thread_id=codex_resume_thread_id(delivery_state, DEPLOYMENT_CODEX_AGENT_ID),
     )
-    event_log = run_dir
-    write_event(
-        event_log,
-        delivery_state["run_id"],
-        DEPLOYMENT_AGENT_ID,
-        "deployment_started",
-        {"release_strategy": "release_batch"},
-    )
+    record_specialist_start(delivery_state, agent_id=DEPLOYMENT_AGENT_ID, stage="deployment")
     return state
 
 
@@ -265,29 +259,21 @@ def _apply_deployment_result(state: DeploymentAgentGraphState) -> DeploymentAgen
         "artifact_written",
         {"artifact": "13-deployment-summary.md", "status": deployment_status},
     )
-    write_event(
-        event_log,
-        delivery_state["run_id"],
-        DEPLOYMENT_AGENT_ID,
-        "deployment_completed",
-        {"artifact": "13-deployment-summary.md", "status": deployment_status},
-    )
 
-    updated = mark_node_completed(
+    updated = record_specialist_completion(
         delivery_state,
-        node_name="deployment",
+        agent_id=DEPLOYMENT_AGENT_ID,
         stage="deployment",
-        status=f"deployment_{deployment_status}",
+        node_name="deployment",
+        outcome=deployment_status,
     )
     updated["deployment_status"] = deployment_status
     updated["public_url"] = public_urls[0] if public_urls else None
     if public_urls:
         updated["public_urls"] = public_urls
-        record_run_lifecycle(
-            str(updated["run_id"]),
-            str(updated["status"]),
-            generated_app_url=str(public_urls[0]),
-        )
+        # Persist the URL durably at the deployment point so a later node failure
+        # cannot lose it before the run finalizer writes the terminal status.
+        record_generated_app_url(str(updated["run_id"]), str(public_urls[0]))
     extend_artifacts(
         updated,
         artifact_refs(result.output_artifacts, kind="deployment", owner_agent=result.agent_id),

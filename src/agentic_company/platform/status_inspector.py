@@ -14,6 +14,7 @@ from agentic_company.integrations.codex import (
     DEFAULT_CODEX_MODEL,
     build_codex_exec_command,
     build_codex_exec_environment,
+    extract_codex_usage,
     stream_codex_exec_to_log,
 )
 from agentic_company.platform.artifact_registry import artifact_id_for
@@ -176,6 +177,7 @@ class StatusInspectorRunner:
                 (raw_events_artifact, "debug_trace"),
             ],
         )
+        input_tokens, output_tokens = extract_codex_usage(raw_events_path)
         record_model_call_event(
             request.run_dir,
             run_id=request.run_id,
@@ -185,6 +187,8 @@ class StatusInspectorRunner:
             purpose="status_inspection",
             prompt_ref=prompt_artifact,
             status=status,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             duration_ms=duration_ms,
         )
         return StatusInspectionResult(

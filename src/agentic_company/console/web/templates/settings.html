@@ -2,6 +2,9 @@
 {% block title %}Settings &middot; Agentic Delivery Lab{% endblock %}
 {% block page_title %}Settings{% endblock %}
 {% block content %}
+  {% if key_error %}
+  <p class="error">Could not save the key: set a strong <code>APP_SECRET_KEY</code> (16+ characters) on the server, then try again. Keys are never stored in plaintext.</p>
+  {% endif %}
   <section class="grid two">
     <section class="panel">
       <h2>OpenAI</h2>

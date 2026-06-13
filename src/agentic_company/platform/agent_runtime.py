@@ -12,7 +12,7 @@ from typing import Any, Protocol
 
 from langgraph.graph import END, START, StateGraph
 
-from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
+from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL, extract_codex_usage
 from agentic_company.platform.artifact_registry import (
     artifact_id_for,
     tool_artifact_refs_from_records,
@@ -33,6 +33,11 @@ from agentic_company.platform.skills import (
     selected_skill_trace_data,
 )
 from agentic_company.platform.state import DeliveryState, record_codex_thread
+from agentic_company.platform.status import (
+    WorkItemStatus,
+    classify_failure_mode,
+    classify_work_item_status,
+)
 from agentic_company.platform.tool_contracts import (
     CODEX_EXEC_TOOL_CONTRACT,
     ArtifactRegistrationRequest,
@@ -562,12 +567,12 @@ def _agent_run_result_successful(result: AgentRunResult) -> bool:
     status = result.status.strip().lower()
     if not status:
         return False
-    if any(value in status for value in ("failed", "blocked", "precondition", "limit")):
+    if classify_failure_mode(status) is not None:
         return False
     return (
         status.endswith("_completed")
-        or any(value in status for value in ("passed", "ready", "implemented", "deployed"))
-        or status in {"completed", "done", "success", "succeeded"}
+        or classify_work_item_status(status) is WorkItemStatus.DONE
+        or status in {"completed", "done", "success", "succeeded", "implemented"}
     )
 
 
@@ -669,6 +674,12 @@ def _codex_exec_tool_response(
         failure_mode=failure_mode,
         duration_ms=duration_ms,
     )
+    raw_events_link = _raw_events_artifact_link(result.output_artifacts)
+    input_tokens, output_tokens = (
+        extract_codex_usage(Path(request.run_dir) / raw_events_link)
+        if raw_events_link
+        else (None, None)
+    )
     record_model_call_event(
         request.run_dir,
         run_id=str(request.delivery_state.get("run_id") or request.run_dir.name),
@@ -683,6 +694,8 @@ def _codex_exec_tool_response(
         purpose="codex_exec",
         prompt_ref=_prompt_artifact_link(result.output_artifacts),
         status=result.status,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
         duration_ms=duration_ms,
     )
     return json.dumps(payload, sort_keys=True)
@@ -692,6 +705,13 @@ def _prompt_artifact_link(output_artifacts: list[str]) -> str:
     for artifact in output_artifacts:
         normalized = artifact.lower()
         if "prompt" in normalized and normalized.endswith((".md", ".txt", ".json")):
+            return artifact
+    return ""
+
+
+def _raw_events_artifact_link(output_artifacts: list[str]) -> str:
+    for artifact in output_artifacts:
+        if artifact.replace("\\", "/").endswith("events.jsonl"):
             return artifact
     return ""
 
@@ -1018,6 +1038,13 @@ def _agent_provider_api_key(provider: str, delivery_state: DeliveryState) -> str
 
 
 def _set_provider_process_env(provider: str, api_key: str) -> None:
+    """Expose the active provider key to the model client via process env.
+
+    This mutates the shared process environment and is not safe for concurrent
+    runs from different users; a multi-tenant runtime must thread the key through
+    the client config instead of os.environ.
+    """
+
     os.environ[AGENT_LLM_PROVIDER_ENV] = provider
     if provider == "google_gemini":
         os.environ.setdefault("GOOGLE_API_KEY", api_key)

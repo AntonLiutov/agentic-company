@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 from agentic_company.integrations.codex import (
-    DEFAULT_CODEX_SANDBOX,
     build_codex_exec_command,
     stream_codex_exec_to_log,
     write_structured_codex_artifacts,
@@ -60,7 +59,8 @@ class DeploymentCodexRunner:
     """
 
     codex_binary: str | None = None
-    sandbox: str = DEFAULT_CODEX_SANDBOX
+    # Cloud deployment shells out to Azure/Docker and needs host + network access.
+    sandbox: str = "danger-full-access"
     timeout_seconds: int = 3600
     contract_attempts: int = 2
     command_executor: CommandExecutor | None = None
@@ -200,6 +200,8 @@ class DeploymentCodexRunner:
             run_dir=run_dir,
             summary_path=summary_path,
             resume_session_id=request.codex_resume_thread_id,
+            force_sandbox=True,
+            include_host_tool_dirs=True,
         )
         prompt_path.write_text(prompt, encoding="utf-8")
         log_path.write_text(

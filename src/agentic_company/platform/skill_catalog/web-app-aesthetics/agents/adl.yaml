@@ -1,0 +1,48 @@
+schema_version: 1
+skill_id: web-app-aesthetics
+version: "1.0"
+status: active
+trust_level: system
+selection:
+  applies_to_agents: [fullstack-agent]
+  default_for_agents: [fullstack-agent]
+  stages: [fullstack, build, repair]
+  trigger_keywords: [UI, design, style, styling, theme, layout, polish, premium, frontend]
+  negative_triggers: [QA-only validation, deployment-only work, release report]
+contracts:
+  required_tools: [codex_exec]
+  allowed_tools: [codex_exec]
+  consumes_artifacts: [requirements_brief, architecture_report, delivery_plan]
+  produces_artifacts:
+    - artifact_type: execution_summary
+      visibility: developer
+      required: true
+      dashboard_label: Build summary
+      external_reference_type: work_item
+    - artifact_type: screenshot_evidence
+      visibility: qa_evidence
+      required: false
+      dashboard_label: Screenshot evidence
+      external_reference_type: work_item
+dashboard:
+  status: in_progress
+  work_item_stage: build
+  external_systems_supported: [internal, github, jira, azure_devops, linear]
+  comment_template: build-update
+  labels: [agentic-delivery, build, design]
+governance:
+  risk_level: low
+  requires_human_approval: false
+  max_repair_attempts: 2
+  checkpoint_before: false
+  checkpoint_after: false
+validation:
+  eval_prompts:
+    - Check whether a generated UI follows the Quiet Console signature and avoids AI-slop tells.
+  success_signals:
+    - tokens used for all color/space/radius
+    - single rationed accent, no purple gradient
+    - real hover/focus/empty/loading states present
+examples:
+  - input: Build the task board UI for this work item
+    output: Tokenized dark-first UI with one accent, hairline cards, eyebrow labels, tabular numbers

@@ -15,6 +15,7 @@ from agentic_company.platform.artifact_registry import (
     register_artifact,
     resolve_run_artifact_path,
 )
+from agentic_company.platform.status import classify_work_item_status
 from agentic_company.platform.tool_contracts import (
     ActivityEventRecord,
     ArtifactRegistrationRequest,
@@ -480,12 +481,34 @@ def record_run_lifecycle(
     generated_app_url: str = "",
     target_project_dir: str = "",
 ) -> None:
-    """Persist run-level lifecycle fields in the canonical console DB row."""
+    """Persist run-level lifecycle fields in the canonical console DB row.
+
+    A run's outcome is settled by the first terminal status written: once the row
+    is terminal, a later differing status is ignored so a late finalizer cannot
+    overwrite a user stop or a recorded failure. The status check and write happen
+    in one atomic statement so concurrent finalizers cannot race.
+    """
+
+    from agentic_company.platform.run_finalizer import TERMINAL_RUN_STATUSES
 
     repo, db_run_id = _repo_and_run(run_id)
-    repo.update_run_status(db_run_id, status, generated_app_url=generated_app_url)
+    repo.update_run_status(
+        db_run_id,
+        status,
+        generated_app_url=generated_app_url,
+        keep_status_when_in=tuple(TERMINAL_RUN_STATUSES),
+    )
     if target_project_dir:
         repo.update_run_target_project_dir(db_run_id, target_project_dir)
+
+
+def record_generated_app_url(run_id: str, generated_app_url: str) -> None:
+    """Persist a run's generated app URL independent of its lifecycle status."""
+
+    if not generated_app_url:
+        return
+    repo, db_run_id = _repo_and_run(run_id)
+    repo.update_run_generated_app_url(db_run_id, generated_app_url)
 
 
 def run_target_project_dir(run_id: str) -> str:
@@ -733,6 +756,27 @@ def stop_requested(run_id: str) -> bool:
         return False
     state = repo.get_console_process_state(db_run_id, "codex_execution")
     return bool(state and state.stop_requested_at)
+
+
+def run_stop_requested(run_id: str, run_dir: Path | str) -> bool:
+    """Whether a user stop has been requested for a run.
+
+    Checks the run-local stop file, the runtime cache, and the durable DB flag so
+    coordinators can halt between tool calls, not only between graph nodes. Fails
+    open (returns False) on cache/DB errors so a transient fault never crashes a
+    tool mid-run.
+    """
+
+    if (Path(run_dir) / ".stop-requested").exists():
+        return True
+    try:
+        from agentic_company.platform.runtime_cache import runtime_cache_from_env
+
+        if runtime_cache_from_env().stop_requested(str(run_id)):
+            return True
+        return stop_requested(str(run_id))
+    except Exception:
+        return False
 
 
 def _repo_and_run(run_id: str):
@@ -1031,34 +1075,28 @@ def _json_list(value: Any) -> list[str]:
 
 
 def _normalize_status(status: str) -> str:
-    token = status.strip().lower()
-    if token in {"", "pending", "planned", "backlog"}:
-        return "todo"
-    if any(
-        value in token
-        for value in (
-            "failed",
-            "blocked",
-            "needs_repair",
-            "provider_limit",
-            "usage_limit",
-            "quota",
-            "rate_limit",
-        )
-    ):
-        return "blocked"
-    if any(value in token for value in ("completed", "passed", "ready", "done", "deployed")):
-        return "done"
-    if any(value in token for value in ("qa", "review", "inspect", "implemented")):
-        return "review"
-    if any(value in token for value in ("started", "running", "progress")):
-        return "in_progress"
-    return token if token in {"todo", "in_progress", "review", "done", "blocked"} else "in_progress"
+    return classify_work_item_status(status).value
 
 
 def _lane_for_status(status: str) -> str:
     normalized = _normalize_status(status)
     return "qa" if normalized == "review" else normalized
+
+
+# The per-sprint handoff only produces a report, so the coordination card stays
+# in review until the head completes delivery rather than going terminal on
+# every sprint.
+_HANDOFF_TOOLS = {"run_handoff"}
+
+
+def _transition_allowed(current: str, target: str) -> bool:
+    """A done card is terminal: reject any move back out of done.
+
+    Forward moves (including QA's in_progress -> done) are allowed; only the
+    terminal regression that reopened coordination cards mid-run is blocked.
+    """
+
+    return not (current == "done" and target != "done")
 
 
 def _effective_transition_status(
@@ -1083,6 +1121,10 @@ def _effective_transition_status(
         and tool_name in {"codex_exec", "run_deployment"}
     ):
         return "review"
+    if requested == "done" and tool_name in _HANDOFF_TOOLS:
+        requested = "review"
+    if not _transition_allowed(current, requested):
+        return current
     return requested
 
 

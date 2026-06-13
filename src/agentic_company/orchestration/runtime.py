@@ -16,13 +16,13 @@ from agentic_company.orchestration.graphs import (
     run_delivery_graph,
 )
 from agentic_company.platform.events import write_event
-from agentic_company.platform.runtime_cache import runtime_cache_from_env
+from agentic_company.platform.run_finalizer import RunStatus, resolve_run_status
 from agentic_company.platform.runtime_db import (
     latest_delivery_state_snapshot,
     record_run_lifecycle,
+    run_stop_requested,
     run_target_project_dir,
 )
-from agentic_company.platform.runtime_db import stop_requested as db_stop_requested
 from agentic_company.platform.state import (
     DELIVERY_STATE_SNAPSHOT,
     DeliveryState,
@@ -72,7 +72,7 @@ class DeliveryGraphRuntime:
             )
             record_run_lifecycle(
                 str(state["run_id"]),
-                "running",
+                RunStatus.RUNNING,
                 target_project_dir=str(resolved_target_project_dir),
             )
             self.save_state(run_dir, state)
@@ -105,7 +105,7 @@ class DeliveryGraphRuntime:
             )
         except Exception as exc:
             duration_ms = int((time.perf_counter() - graph_started) * 1000)
-            record_run_lifecycle(state["run_id"], "failed")
+            record_run_lifecycle(state["run_id"], RunStatus.FAILED)
             write_event(
                 event_log,
                 state["run_id"],
@@ -114,7 +114,7 @@ class DeliveryGraphRuntime:
                 {
                     "node_order": node_order,
                     "stage": state["stage"],
-                    "status": "failed",
+                    "status": RunStatus.FAILED,
                     "error": str(exc),
                     "duration_ms": duration_ms,
                 },
@@ -137,7 +137,7 @@ class DeliveryGraphRuntime:
         )
         record_run_lifecycle(
             final_state["run_id"],
-            str(final_state["status"]),
+            resolve_run_status(final_state),
             generated_app_url=str(final_state.get("public_url") or ""),
             target_project_dir=str(final_state.get("target_project_dir") or ""),
         )
@@ -218,12 +218,7 @@ class DeliveryGraphRuntime:
             raise ValueError(f"Delivery graph node is not configured: {node_name}")
 
         def run(state: DeliveryState) -> DeliveryState:
-            stop_path = Path(state["run_dir"]) / ".stop-requested"
-            should_stop = (
-                stop_path.exists()
-                or runtime_cache_from_env().stop_requested(run_id)
-                or db_stop_requested(run_id)
-            )
+            should_stop = run_stop_requested(run_id, state["run_dir"])
             if should_stop:
                 stopped: DeliveryState = {**state}
                 stopped["status"] = "stopped"

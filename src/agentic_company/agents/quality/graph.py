@@ -16,6 +16,8 @@ from agentic_company.platform.agent_contracts import (
     append_downstream_response,
     artifact_refs,
     extend_artifacts,
+    record_specialist_completion,
+    record_specialist_start,
 )
 from agentic_company.platform.agent_runtime import (
     AGENT_EXECUTOR_GRAPH_NODE_ORDER,
@@ -39,7 +41,6 @@ from agentic_company.platform.runtime_db import (
 from agentic_company.platform.state import (
     DeliveryState,
     codex_resume_thread_id,
-    mark_node_completed,
 )
 
 QUALITY_AGENT_ID = "qa-agent"
@@ -227,9 +228,12 @@ def _run_agent_executor(runner: FeatureQaRunner | None, agent_executor: Speciali
 
         delivery_state = state["delivery_state"]
         run_dir = Path(state["run_dir"])
-        event_log = run_dir
-        event_data = {"work_item_id": work_item_id} if work_item_id else {}
-        write_event(event_log, delivery_state["run_id"], QUALITY_AGENT_ID, "qa_started", event_data)
+        record_specialist_start(
+            delivery_state,
+            agent_id=QUALITY_AGENT_ID,
+            stage="qa",
+            work_item_id=str(work_item_id) if work_item_id else None,
+        )
         result = agent_executor.run(
             SpecialistAgentRequest(
                 agent_id=QUALITY_AGENT_ID,
@@ -280,22 +284,13 @@ def _apply_quality_result(state: QualityAgentGraphState) -> QualityAgentGraphSta
             "artifact_written",
             event_data,
         )
-    completion_data: dict[str, object] = {"status": status}
-    if work_item_id:
-        completion_data["work_item_id"] = work_item_id
-    write_event(
-        event_log,
-        delivery_state["run_id"],
-        QUALITY_AGENT_ID,
-        "qa_completed",
-        completion_data,
-    )
-
-    updated = mark_node_completed(
+    updated = record_specialist_completion(
         delivery_state,
-        node_name=f"qa:{work_item_id}" if work_item_id else "qa",
+        agent_id=QUALITY_AGENT_ID,
         stage="qa",
-        status=f"qa_{status}" if work_item_id else result.status,
+        node_name=f"qa:{work_item_id}" if work_item_id else "qa",
+        outcome=status if work_item_id else result.status,
+        work_item_id=str(work_item_id) if work_item_id else None,
     )
     updated["qa_status"] = status
     extend_artifacts(

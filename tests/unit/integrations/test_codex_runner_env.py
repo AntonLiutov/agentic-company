@@ -67,6 +67,7 @@ def test_codex_exec_command_allows_host_cli_config_dirs(monkeypatch, tmp_path: P
         target_project_dir=str(target_dir),
         run_dir=run_dir,
         summary_path=run_dir / "summary.md",
+        include_host_tool_dirs=True,
     )
 
     add_dirs = [command[index + 1] for index, value in enumerate(command) if value == "--add-dir"]
@@ -74,6 +75,75 @@ def test_codex_exec_command_allows_host_cli_config_dirs(monkeypatch, tmp_path: P
     assert str(azure_config_dir) in add_dirs
     assert str(docker_config_dir) in add_dirs
     assert str(plugin_dir) in add_dirs
+
+
+def test_codex_exec_command_omits_host_cli_dirs_by_default(monkeypatch, tmp_path: Path):
+    home = tmp_path / "home"
+    run_dir = tmp_path / "run"
+    azure_config_dir = home / ".azure"
+    for path in (run_dir, azure_config_dir):
+        path.mkdir(parents=True)
+
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    command = build_codex_exec_command(
+        codex_binary="codex-test",
+        model="gpt-5.5",
+        sandbox="workspace-write",
+        target_project_dir=str(run_dir / "generated-project"),
+        run_dir=run_dir,
+        summary_path=run_dir / "summary.md",
+    )
+
+    add_dirs = [command[index + 1] for index, value in enumerate(command) if value == "--add-dir"]
+    assert str(run_dir) in add_dirs
+    assert str(azure_config_dir) not in add_dirs
+
+
+def test_workspace_write_command_enables_network(monkeypatch, tmp_path: Path):
+    monkeypatch.delenv("AGENTIC_CODEX_WORKSPACE_NETWORK", raising=False)
+    command = build_codex_exec_command(
+        codex_binary="codex-test",
+        model="gpt-5.5",
+        sandbox="workspace-write",
+        target_project_dir=str(tmp_path),
+        run_dir=tmp_path,
+        summary_path=tmp_path / "summary.md",
+        force_sandbox=True,
+    )
+
+    # QA/handoff/planning run workspace-write and need outbound network.
+    assert "sandbox_workspace_write.network_access=true" in " ".join(command)
+
+
+def test_workspace_network_can_be_disabled(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("AGENTIC_CODEX_WORKSPACE_NETWORK", "false")
+    command = build_codex_exec_command(
+        codex_binary="codex-test",
+        model="gpt-5.5",
+        sandbox="workspace-write",
+        target_project_dir=str(tmp_path),
+        run_dir=tmp_path,
+        summary_path=tmp_path / "summary.md",
+        force_sandbox=True,
+    )
+
+    assert "network_access" not in " ".join(command)
+
+
+def test_danger_full_access_command_omits_workspace_network(monkeypatch, tmp_path: Path):
+    command = build_codex_exec_command(
+        codex_binary="codex-test",
+        model="gpt-5.5",
+        sandbox="danger-full-access",
+        target_project_dir=str(tmp_path),
+        run_dir=tmp_path,
+        summary_path=tmp_path / "summary.md",
+        force_sandbox=True,
+    )
+
+    # danger-full-access already has network; the workspace-write knob is irrelevant.
+    assert "network_access" not in " ".join(command)
 
 
 def test_codex_exec_environment_requires_codex_api_key(monkeypatch, tmp_path: Path):
@@ -116,6 +186,40 @@ def test_codex_exec_environment_sets_tool_caches_when_api_key_exists(monkeypatch
     assert env["UV_PROJECT_ENVIRONMENT"] == str(cache_root / "venv")
     assert env["DENO_DIR"] == str(cache_root / "deno")
     assert env["npm_config_cache"] == str(cache_root / "npm")
+
+
+def test_codex_exec_environment_anchors_relative_browser_paths_to_repo_root(
+    monkeypatch, tmp_path: Path
+):
+    # A relative PLAYWRIGHT_BROWSERS_PATH must not resolve against the worker cwd
+    # (the generated project) or Playwright re-installs a ~700 MB browser inside the
+    # deliverable. It must anchor to the repo root so the pre-installed runtime is reused.
+    from agentic_company.integrations.codex import runner as runner_module
+
+    target_dir = tmp_path / "generated-project"
+    monkeypatch.setenv("CODEX_API_KEY", "sk-test")
+    monkeypatch.delenv("AGENTIC_CODEX_BINARY_MODE", raising=False)
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "ops/qa-runtime/browsers")
+    monkeypatch.setenv("NODE_PATH", "ops/qa-runtime/node_modules")
+
+    env = build_codex_exec_environment(target_dir)
+    repo_root = Path(runner_module.__file__).resolve().parents[4]
+
+    assert env["PLAYWRIGHT_BROWSERS_PATH"] == str((repo_root / "ops/qa-runtime/browsers").resolve())
+    assert env["NODE_PATH"] == str((repo_root / "ops/qa-runtime/node_modules").resolve())
+    assert str(target_dir) not in env["PLAYWRIGHT_BROWSERS_PATH"]
+
+
+def test_codex_exec_environment_leaves_absolute_browser_path_untouched(monkeypatch, tmp_path: Path):
+    target_dir = tmp_path / "generated-project"
+    absolute = tmp_path / "ops" / "qa-runtime" / "browsers"
+    monkeypatch.setenv("CODEX_API_KEY", "sk-test")
+    monkeypatch.delenv("AGENTIC_CODEX_BINARY_MODE", raising=False)
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(absolute))
+
+    env = build_codex_exec_environment(target_dir)
+
+    assert env["PLAYWRIGHT_BROWSERS_PATH"] == str(absolute)
 
 
 def test_codex_exec_environment_strips_api_key_for_extension_mode(monkeypatch, tmp_path: Path):
@@ -405,6 +509,48 @@ def test_codex_exec_command_can_resume_existing_session(tmp_path: Path):
     assert command[resume_index : resume_index + 3] == ["resume", "thread-existing", "-"]
     assert command.index("--output-last-message") < resume_index
     assert command[-3:] == ["resume", "thread-existing", "-"]
+
+
+def test_codex_subprocess_env_drops_unrelated_host_secrets(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "leak-me")
+    monkeypatch.setenv("RANDOM_COMPANY_TOKEN", "leak-me-too")
+    # Platform internals carry the AGENTIC_ prefix but are not worker-facing.
+    monkeypatch.setenv("AGENTIC_DATABASE_URL", "postgres://secret")
+    monkeypatch.setenv("CODEX_API_KEY", "keep")
+    monkeypatch.setenv("AGENTIC_CODEX_SERVICE_TIER", "standard")
+    monkeypatch.delenv("AGENTIC_CODEX_ENV_PASSTHROUGH", raising=False)
+
+    env = _codex_subprocess_env()
+
+    assert "AWS_SECRET_ACCESS_KEY" not in env
+    assert "RANDOM_COMPANY_TOKEN" not in env
+    assert "AGENTIC_DATABASE_URL" not in env
+    # Allowlisted platform + essential variables survive.
+    assert env["CODEX_API_KEY"] == "keep"
+    assert env["AGENTIC_CODEX_SERVICE_TIER"] == "standard"
+    assert "PATH" in env or "Path" in env
+
+
+def test_codex_subprocess_env_allows_playwright_browser_path(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "ops/qa-runtime/browsers")
+    monkeypatch.delenv("AGENTIC_CODEX_ENV_PASSTHROUGH", raising=False)
+
+    env = _codex_subprocess_env()
+
+    # QA needs the pre-installed Playwright Chromium location to capture screenshots.
+    assert env["PLAYWRIGHT_BROWSERS_PATH"] == "ops/qa-runtime/browsers"
+
+
+def test_codex_subprocess_env_passthrough_escape_hatch(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setenv("CUSTOM_DEPLOY_TOKEN", "needed-by-worker")
+    monkeypatch.setenv("AGENTIC_CODEX_ENV_PASSTHROUGH", "custom_deploy_token, OTHER_VAR")
+
+    env = _codex_subprocess_env()
+
+    assert env["CUSTOM_DEPLOY_TOKEN"] == "needed-by-worker"
 
 
 def _db_repo(tmp_path: Path, monkeypatch) -> ConsoleRepository:

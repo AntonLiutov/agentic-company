@@ -34,6 +34,7 @@ from agentic_company.platform.runtime_db import (
     next_sprint_to_run,
     record_artifact_link,
     record_work_item_transition,
+    run_stop_requested,
     sprint_completion_state,
     sprint_ids,
 )
@@ -43,6 +44,10 @@ from agentic_company.platform.state import (
     mark_node_completed,
     record_codex_thread,
     write_delivery_state,
+)
+from agentic_company.platform.status import (
+    HEAD_TERMINAL_OUTCOMES,
+    CoordinatorOutcome,
 )
 from agentic_company.platform.status_inspector import (
     StatusInspectionRequest,
@@ -269,11 +274,11 @@ class HeadToolbox:
             self.delivery_state,
             node_name="head",
             stage="head",
-            status="head_delivery_completed",
+            status=CoordinatorOutcome.DELIVERY_COMPLETED.value,
         )
         write_head_event(
             self.delivery_state,
-            "head_delivery_completed",
+            CoordinatorOutcome.DELIVERY_COMPLETED.value,
             {"reason": reason, "message": message},
         )
         self._record("complete_delivery", "PLAN-04", reason, message)
@@ -561,12 +566,12 @@ class HeadToolbox:
             self.delivery_state,
             node_name="head",
             stage="head",
-            status="head_planning_blocked",
+            status=CoordinatorOutcome.PLANNING_BLOCKED.value,
         )
         self.delivery_state["blockers"] = [*self.delivery_state.get("blockers", []), reason]
         write_head_event(
             self.delivery_state,
-            "head_planning_blocked",
+            CoordinatorOutcome.PLANNING_BLOCKED.value,
             HeadDecision("block_planning", reason, correlation_id, message).to_dict(),
         )
         self._record("block_planning", correlation_id, reason, message)
@@ -598,10 +603,7 @@ class HeadToolbox:
         if self.delivery_state.get("blockers"):
             return True
         status = str(self.delivery_state.get("status") or "")
-        return status in {
-            "head_delivery_completed",
-            "head_planning_blocked",
-        }
+        return status in HEAD_TERMINAL_OUTCOMES
 
     def block_incomplete_execution(self) -> None:
         run_id = str(self.delivery_state["run_id"])
@@ -648,6 +650,17 @@ class HeadToolbox:
         external_reference: str = "",
     ) -> str:
         started = time.perf_counter()
+        if run_stop_requested(str(self.delivery_state["run_id"]), self.delivery_state["run_dir"]):
+            self.current_tool_name = tool
+            self.delivery_state["status"] = "stopped"
+            return self._tool_response(
+                f"{tool} stopped: a user stop was requested.",
+                input_summary={
+                    "tool": tool,
+                    "node_name": node_name,
+                    "correlation_id": correlation_id,
+                },
+            )
         try:
             external_ref = normalize_external_reference(external_reference)
         except ValueError as exc:

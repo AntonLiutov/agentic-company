@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from agentic_company.platform.security import redact_sensitive_output
+from agentic_company.platform.status import WorkItemStatus, classify_work_item_status
 
 RUN_TRACE_DIR = "delivery"
 RUN_EVENTS_FILE = "run-events.jsonl"
@@ -775,13 +776,16 @@ def _log_run_event(event: RunEvent) -> None:
     if not _is_operator_run_event(event):
         return
     message = _truncate_operator_text(event.message or event.event_type)
+    # Prefer the granular workflow signal for the human label; the event.status
+    # itself is the canonical board status.
+    status_label = event.data.get("workflow_status") if isinstance(event.data, dict) else None
     RUNTIME_LOGGER.info(
         "RUN %s [%s] %s: %s -> %s - %s",
         event.run_id,
         event.work_item_id or "-",
         _operator_agent_label(event.agent_id),
         _operator_event_label(event.event_type),
-        _operator_status_label(event.status),
+        _operator_status_label(str(status_label) if status_label else event.status),
         message,
     )
 
@@ -1007,18 +1011,11 @@ def _count_by(values: list[str]) -> dict[str, int]:
 
 
 def _looks_failed(value: str) -> bool:
-    normalized = value.strip().lower()
-    return any(marker in normalized for marker in ("failed", "blocked", "error"))
+    return classify_work_item_status(value) is WorkItemStatus.BLOCKED
 
 
 def _looks_successful(value: str) -> bool:
-    normalized = value.strip().lower()
-    if _looks_failed(normalized):
-        return False
-    return any(
-        marker in normalized
-        for marker in ("ready", "done", "completed", "deployed", "passed", "implemented")
-    )
+    return classify_work_item_status(value) is WorkItemStatus.DONE
 
 
 def _dict(value: Any) -> dict[str, Any]:

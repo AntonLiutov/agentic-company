@@ -239,7 +239,7 @@ def test_project_manager_codex_runner_maps_valid_contract_to_completed_result(
                     "release_goal": "Ship a small task tracker.",
                     "planning_policy": {},
                     "sprint_count": 1,
-                    "sprints": [{"sprint_id": "sprint-01"}],
+                    "sprints": [{"sprint_id": "sprint-01", "title": "MVP", "delivery_order": 1}],
                     "planned_work_items": [feature],
                     "release_gates": [],
                     "dependencies": [],
@@ -302,7 +302,7 @@ def test_project_manager_success_clears_transient_contract_blocker(tmp_path, mon
         }
     )["delivery_state"]
 
-    assert updated["status"] == "project_management_completed"
+    assert updated["status"] == "done"
     assert updated["blockers"] == []
     assert updated["completed_nodes"] == ["project_management"]
 

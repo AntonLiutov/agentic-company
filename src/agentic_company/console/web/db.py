@@ -18,7 +18,7 @@ from agentic_company.console.web.auth import (
     hash_token,
     mask_secret,
     new_session_token,
-    verify_password,
+    verify_password_or_dummy,
 )
 from agentic_company.console.web.migrations import upgrade_database
 from agentic_company.console.web.sql_backend import DatabaseSettings, connect_database
@@ -37,6 +37,7 @@ from agentic_company.platform.run_trace import (
     sanitize_trace_data,
     tool_call_event_from_mapping,
 )
+from agentic_company.platform.status import classify_work_item_status
 from agentic_company.platform.work_item_contracts import HEAD_PLANNING_ITEMS
 
 SESSION_DAYS = 14
@@ -241,7 +242,8 @@ class ConsoleRepository:
                 """,
                 (lookup, lookup),
             ).fetchone()
-        if row is None or not verify_password(password, str(row["password_hash"])):
+        encoded = str(row["password_hash"]) if row is not None else None
+        if not verify_password_or_dummy(password, encoded):
             return None
         return _user(row)
 
@@ -596,17 +598,56 @@ class ConsoleRepository:
         status: str,
         *,
         generated_app_url: str = "",
+        keep_status_when_in: tuple[str, ...] = (),
     ) -> None:
+        """Update a run's status and app URL.
+
+        When ``keep_status_when_in`` is given, the status is changed atomically
+        only if the row's current status is not already one of those values, so a
+        settled terminal outcome is never overwritten even under concurrent
+        writers. The app URL is always coalesced regardless.
+        """
+
+        with self.connect() as conn:
+            if keep_status_when_in:
+                placeholders = ", ".join("?" for _ in keep_status_when_in)
+                conn.execute(
+                    f"""
+                    UPDATE runs
+                    SET status = CASE
+                            WHEN status IN ({placeholders}) THEN status
+                            ELSE ?
+                        END,
+                        generated_app_url = COALESCE(NULLIF(?, ''), generated_app_url),
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (*keep_status_when_in, str(status), generated_app_url, utc_now(), run_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE runs
+                    SET status = ?,
+                        generated_app_url = COALESCE(NULLIF(?, ''), generated_app_url),
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (str(status), generated_app_url, utc_now(), run_id),
+                )
+
+    def update_run_generated_app_url(self, run_id: int, generated_app_url: str) -> None:
+        """Persist a run's generated app URL without touching its status."""
+
         with self.connect() as conn:
             conn.execute(
                 """
                 UPDATE runs
-                SET status = ?,
-                    generated_app_url = COALESCE(NULLIF(?, ''), generated_app_url),
+                SET generated_app_url = COALESCE(NULLIF(?, ''), generated_app_url),
                     updated_at = ?
                 WHERE id = ?
                 """,
-                (status, generated_app_url, utc_now(), run_id),
+                (generated_app_url, utc_now(), run_id),
             )
 
     def update_run_target_project_dir(self, run_id: int, target_project_dir: Path | str) -> None:
@@ -1581,9 +1622,8 @@ class ConsoleRepository:
         return [_model_call_event(row) for row in rows]
 
     def save_provider_secret(self, user_id: int, provider: str, secret: str) -> ProviderCredential:
-        encrypted = encrypt_secret(secret)
-        storage_mode = "encrypted" if encrypted else "local_demo"
-        stored_value = encrypted or secret
+        stored_value = encrypt_secret(secret)
+        storage_mode = "encrypted"
         masked = mask_secret(secret)
         now = utc_now()
         with self.connect() as conn:
@@ -1896,33 +1936,7 @@ def _canonical_work_item_id(value: str) -> str:
 
 
 def _normalize_work_item_status(status: str) -> str:
-    token = str(status or "").strip().lower()
-    if token in {"", "pending", "planned", "backlog"}:
-        return "todo"
-    if any(
-        value in token
-        for value in (
-            "needs_repair",
-            "failed",
-            "blocked",
-            "provider_limit",
-            "usage_limit",
-            "quota",
-            "rate_limit",
-        )
-    ):
-        return "blocked"
-    if "deployment_deployed" in token:
-        return "review"
-    if any(value in token for value in ("completed", "passed", "ready", "done", "deployed")):
-        return "done"
-    if "qa" in token or "review" in token or "implemented" in token or "inspect" in token:
-        if "passed" in token or "completed" in token or "ready" in token:
-            return "done"
-        return "review"
-    if any(value in token for value in ("started", "running", "active", "progress")):
-        return "in_progress"
-    return token if token in {"todo", "in_progress", "review", "done", "blocked"} else "in_progress"
+    return classify_work_item_status(status).value
 
 
 def _lane_for_work_item_status(status: str) -> str:

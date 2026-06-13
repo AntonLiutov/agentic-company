@@ -46,3 +46,9 @@ runs/
 data/
 mlruns/
 memory/
+
+# QA browser runtime (installed by agentic-qa-setup)
+ops/qa-runtime/node_modules/
+ops/qa-runtime/browsers/
+ops/qa-runtime/package*.json
+ops/qa-runtime/setup-proof.png

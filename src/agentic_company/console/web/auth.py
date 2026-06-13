@@ -62,6 +62,20 @@ def verify_password(password: str, encoded: str) -> bool:
     return hmac.compare_digest(actual, expected)
 
 
+# A throwaway hash so authentication spends equivalent work whether or not the
+# account exists, denying username enumeration via response timing.
+DUMMY_PASSWORD_HASH = hash_password("agentic-console-absent-account")
+
+
+def verify_password_or_dummy(password: str, encoded: str | None) -> bool:
+    """Verify a password, always hashing even when the account is unknown."""
+
+    if encoded is None:
+        verify_password(password, DUMMY_PASSWORD_HASH)
+        return False
+    return verify_password(password, encoded)
+
+
 def new_session_token() -> str:
     return secrets.token_urlsafe(48)
 
@@ -79,16 +93,38 @@ def mask_secret(secret: str) -> str:
     return clean[:7] + "..." + clean[-4:]
 
 
+MIN_APP_SECRET_KEY_LENGTH = 16
+
+
+class SecretEncryptionUnavailable(RuntimeError):
+    """Raised when a provider secret cannot be encrypted.
+
+    Either ``APP_SECRET_KEY`` is missing or too weak, or the ``cryptography``
+    package is not installed.
+    """
+
+
 def encrypt_secret(secret: str, app_secret: str | None = None) -> str:
-    """Encrypt a provider secret with APP_SECRET_KEY when cryptography is installed."""
+    """Encrypt a provider secret with APP_SECRET_KEY.
+
+    Raises :class:`SecretEncryptionUnavailable` when no usable key is available.
+    """
 
     key = (app_secret or os.getenv("APP_SECRET_KEY", "")).strip()
     if not key:
-        return ""
+        raise SecretEncryptionUnavailable(
+            "APP_SECRET_KEY is not set. Set a strong APP_SECRET_KEY before storing provider keys."
+        )
+    if len(key) < MIN_APP_SECRET_KEY_LENGTH:
+        raise SecretEncryptionUnavailable(
+            f"APP_SECRET_KEY must be at least {MIN_APP_SECRET_KEY_LENGTH} characters."
+        )
     try:
         from cryptography.fernet import Fernet  # type: ignore[import-not-found]
-    except ImportError:
-        return ""
+    except ImportError as exc:
+        raise SecretEncryptionUnavailable(
+            "The 'cryptography' package is required to store provider keys."
+        ) from exc
     return Fernet(_fernet_key(key)).encrypt(secret.encode("utf-8")).decode("ascii")
 
 

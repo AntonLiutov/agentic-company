@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Annotated, Any
+from urllib.parse import urlparse
 
 import uvicorn
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response, status
@@ -23,7 +25,7 @@ from agentic_company.console.support import (
     start_codex_execution,
     write_target_env,
 )
-from agentic_company.console.web.auth import decrypt_secret
+from agentic_company.console.web.auth import SecretEncryptionUnavailable, decrypt_secret
 from agentic_company.console.web.db import ConsoleRepository, Project, Run, User
 from agentic_company.console.web.product import (
     AGENT_MODEL_OPTIONS,
@@ -59,10 +61,13 @@ from agentic_company.console.web.product import (
     user_facing_blockers,
     work_plan_groups_from_work_items,
 )
+from agentic_company.console.web.rate_limit import RateLimiter
 from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.platform.logging import configure_logging
+from agentic_company.platform.run_finalizer import RunStatus
 from agentic_company.platform.run_trace import trace_summary
 from agentic_company.platform.runtime_cache import runtime_cache_from_env
+from agentic_company.platform.runtime_db import record_run_lifecycle
 
 COOKIE_NAME = "agentic_console_session"
 
@@ -83,7 +88,26 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
 
     app = FastAPI(title="Agentic Company")
     app.state.repo = repo
+    app.state.login_rate_limiter = RateLimiter(max_attempts=10, window_seconds=300)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    @app.middleware("http")
+    async def reject_cross_origin_writes(request: Request, call_next: Any) -> Response:
+        """Block state-changing requests whose Origin is a different site.
+
+        A present-but-mismatched Origin is a cross-site browser request; a missing
+        Origin (API clients, same-origin GETs) is allowed. Defense-in-depth atop
+        the SameSite=lax session cookie.
+        """
+
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            origin = request.headers.get("origin")
+            if origin and urlparse(origin).netloc != request.url.netloc:
+                return JSONResponse(
+                    {"detail": "Cross-origin request rejected."},
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
+        return await call_next(request)
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request) -> Response:
@@ -106,6 +130,19 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         identifier: Annotated[str, Form()],
         password: Annotated[str, Form()],
     ) -> Response:
+        limiter: RateLimiter = request.app.state.login_rate_limiter
+        # Throttle per source address, not per (source, username): keying on the
+        # identifier would let an attacker reset the budget by cycling usernames.
+        attempt_key = _client_ip(request)
+        if not limiter.allow(attempt_key):
+            return render(
+                request,
+                "login.html",
+                user=None,
+                error="Too many sign-in attempts. Wait a few minutes and try again.",
+                mode="login",
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
         user = get_repo(request).authenticate_user(identifier, password)
         if not user:
             return render(
@@ -116,8 +153,11 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
                 mode="login",
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
+        limiter.reset(attempt_key)
         response = redirect("/dashboard")
-        set_session_cookie(response, get_repo(request).create_session(user.id))
+        set_session_cookie(
+            response, get_repo(request).create_session(user.id), secure=_cookie_secure(request)
+        )
         return response
 
     @app.get("/register", response_class=HTMLResponse)
@@ -152,7 +192,9 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         response = redirect("/dashboard")
-        set_session_cookie(response, get_repo(request).create_session(user.id))
+        set_session_cookie(
+            response, get_repo(request).create_session(user.id), secure=_cookie_secure(request)
+        )
         return response
 
     @app.get("/forgot-password", response_class=HTMLResponse)
@@ -400,7 +442,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             runtime_cache_from_env().set_stop_requested(run.run_uid)
             repo.request_console_process_stop(run.id, process_name="codex_execution")
             request_codex_execution_stop(Path(run.run_dir))
-            repo.update_run_status(run.id, "stopped")
+            record_run_lifecycle(run.run_uid, RunStatus.STOPPED)
         repo.update_project_status(project.id, "stopped")
         return redirect(f"/projects/{project.id}")
 
@@ -456,7 +498,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         )
 
     @app.get("/settings", response_class=HTMLResponse)
-    def settings_page(request: Request, user: CurrentUser) -> HTMLResponse:
+    def settings_page(request: Request, user: CurrentUser, key_error: str = "") -> HTMLResponse:
         repo = get_repo(request)
         credential = repo.get_provider_secret(user.id, "openai")
         gemini_credential = repo.get_provider_secret(user.id, "google_gemini")
@@ -464,6 +506,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             request,
             "settings.html",
             user=user,
+            key_error=bool(key_error),
             credential=credential,
             gemini_credential=gemini_credential,
             checks=system_checks(
@@ -486,7 +529,10 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         api_key: Annotated[str, Form()] = "",
     ) -> Response:
         if api_key.strip():
-            get_repo(request).save_provider_secret(user.id, "openai", api_key.strip())
+            try:
+                get_repo(request).save_provider_secret(user.id, "openai", api_key.strip())
+            except SecretEncryptionUnavailable:
+                return redirect("/settings?key_error=1")
         return redirect("/settings")
 
     @app.post("/settings/openai/delete")
@@ -501,7 +547,10 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         api_key: Annotated[str, Form()] = "",
     ) -> Response:
         if api_key.strip():
-            get_repo(request).save_provider_secret(user.id, "google_gemini", api_key.strip())
+            try:
+                get_repo(request).save_provider_secret(user.id, "google_gemini", api_key.strip())
+            except SecretEncryptionUnavailable:
+                return redirect("/settings?key_error=1")
         return redirect("/settings")
 
     @app.post("/settings/gemini/delete")
@@ -769,15 +818,49 @@ def require_user(request: Request) -> User:
 CurrentUser = Annotated[User, Depends(require_user)]
 
 
-def set_session_cookie(response: Response, token: str) -> None:
+def set_session_cookie(response: Response, token: str, *, secure: bool = False) -> None:
     response.set_cookie(
         COOKIE_NAME,
         token,
         httponly=True,
-        secure=os.getenv("AGENTIC_COOKIE_SECURE", "").lower() == "true",
+        secure=secure,
         samesite="lax",
         max_age=14 * 24 * 60 * 60,
     )
+
+
+def _trust_proxy_headers() -> bool:
+    return os.getenv("AGENTIC_TRUST_PROXY_HEADERS", "").lower() == "true"
+
+
+def _cookie_secure(request: Request) -> bool:
+    """Mark the session cookie Secure over HTTPS, or when explicitly forced.
+
+    Behind a TLS-terminating proxy the direct scheme is http, so X-Forwarded-Proto
+    is honored only when AGENTIC_TRUST_PROXY_HEADERS is set for a trusted proxy.
+    """
+
+    if os.getenv("AGENTIC_COOKIE_SECURE", "").lower() == "true":
+        return True
+    if request.url.scheme == "https":
+        return True
+    if _trust_proxy_headers():
+        return request.headers.get("x-forwarded-proto", "").lower() == "https"
+    return False
+
+
+def _client_ip(request: Request) -> str:
+    """Resolve the client IP, honoring X-Forwarded-For only behind a trusted proxy.
+
+    Trusting the header unconditionally would let a client spoof its source and
+    evade the login rate limit, so it is gated on AGENTIC_TRUST_PROXY_HEADERS.
+    """
+
+    if _trust_proxy_headers():
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 
 def get_visible_project_or_404(request: Request, project_id: int, user: User) -> Project:
@@ -1260,6 +1343,11 @@ def _run_requirements(name: str, request_text: str, mode: str, complexity: str) 
 
 def main() -> None:
     configure_logging()
+    from agentic_company.integrations.codex.runner import codex_runtime_config_summary
+
+    logging.getLogger("agentic_company.console").info(
+        "Codex worker defaults: %s", codex_runtime_config_summary()
+    )
     host = os.getenv("AGENTIC_WEB_HOST", "127.0.0.1")
     port = int(os.getenv("AGENTIC_WEB_PORT", "8503"))
     uvicorn.run(

@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agentic_company.integrations.codex import (
-    DEFAULT_CODEX_SANDBOX,
     build_codex_exec_command,
     stream_codex_exec_to_log,
     write_structured_codex_artifacts,
@@ -48,7 +47,8 @@ class CodexCliRunner:
     """
 
     codex_binary: str | None = None
-    sandbox: str = DEFAULT_CODEX_SANDBOX
+    # Implementation installs dependencies and runs builds/tests that need network.
+    sandbox: str = "danger-full-access"
     timeout_seconds: int = 1800
     summary_filename: str = "07-execution-summary.md"
     prompt_filename: str = "codex/prompt.md"
@@ -252,6 +252,7 @@ class CodexCliRunner:
             run_dir=run_dir,
             summary_path=summary_path,
             resume_session_id=request.codex_resume_thread_id,
+            force_sandbox=True,
         )
 
     def _execute(
