@@ -79,11 +79,11 @@ CreateAgentFactory = Callable[[Any, Sequence[Callable[..., str]], str], Invokabl
 GraphNode = Callable[[Any], Any]
 
 
-class CodexRunner(Protocol):
-    """Runner contract exposed behind the standard `codex_exec` tool."""
+class SpecialistRunner(Protocol):
+    """Runner contract exposed behind the standard specialist execution tool."""
 
     def run(self, run_dir: Path) -> AgentRunResult:
-        """Run the Codex-backed specialist implementation."""
+        """Run the specialist implementation backend."""
 
 
 class SpecialistAgentExecutor(Protocol):
@@ -128,7 +128,7 @@ class SpecialistAgentRequest:
     stage: str
     system_prompt: str
     user_prompt: str
-    runner: CodexRunner
+    runner: SpecialistRunner
     run_dir: Path
     delivery_state: DeliveryState
     packet: WorkItemExecutionPacket

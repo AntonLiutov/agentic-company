@@ -7,10 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, NotRequired, Protocol, TypedDict, cast
 
-from agentic_company.agents.quality.codex_cli import (
-    QUALITY_CODEX_AGENT_ID,
-    QualityCodexRunner,
-)
+from agentic_company.agents.quality.codex_cli import QUALITY_CODEX_AGENT_ID
 from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.platform.agent_contracts import (
     append_downstream_response,
@@ -222,6 +219,8 @@ def _quality_input_artifacts(delivery_state: DeliveryState) -> list[str]:
 
 def _run_agent_executor(runner: FeatureQaRunner | None, agent_executor: SpecialistAgentExecutor):
     def run(state: QualityAgentGraphState) -> QualityAgentGraphState:
+        if runner is None:
+            raise ValueError("Quality Agent requires an explicit worker runner.")
         work_item_id = state.get("work_item_id")
         if "work_item_id" not in state:
             return state
@@ -241,7 +240,7 @@ def _run_agent_executor(runner: FeatureQaRunner | None, agent_executor: Speciali
                 stage="qa",
                 system_prompt=QUALITY_AGENT_SYSTEM_PROMPT,
                 user_prompt=_quality_user_prompt(delivery_state, work_item_id),
-                runner=runner or QualityCodexRunner(),
+                runner=runner,
                 run_dir=run_dir,
                 delivery_state=delivery_state,
                 packet=packet_for_work_item(

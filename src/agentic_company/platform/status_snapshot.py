@@ -1,9 +1,8 @@
 """Deterministic DB-backed delivery status snapshots.
 
-Status inspection used to be delegated to a Codex worker that summarized the
-same DB state the platform already owns. Phase 1 keeps the inspector contract
-shape but makes the default path a pure read model over canonical runtime DB
-tables.
+These snapshots are a fast read-model utility over canonical runtime DB tables.
+Head and Team Lead still use the independent status inspector as the production
+default; this module is not a silent replacement for that inspection contract.
 """
 
 from __future__ import annotations
