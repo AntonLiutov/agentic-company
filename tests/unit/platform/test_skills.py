@@ -19,6 +19,7 @@ def test_skill_catalog_loads_initial_skills_with_unique_ids():
         "architecture-design",
         "sprint-planning",
         "frontend-build",
+        "web-app-aesthetics",
         "browser-smoke-qa",
         "no-placeholder-check",
         "deployment-check",
@@ -84,7 +85,7 @@ def test_default_skill_selection_by_agent():
     assert _ids("business-analyst-agent", "business_analysis") == ["requirements-analysis"]
     assert _ids("architect-agent", "architecture") == ["architecture-design"]
     assert _ids("project-manager-agent", "project_management") == ["sprint-planning"]
-    assert _ids("fullstack-agent", "fullstack") == ["frontend-build"]
+    assert _ids("fullstack-agent", "fullstack") == ["frontend-build", "web-app-aesthetics"]
     assert _ids("deployment-agent", "deployment") == ["deployment-check"]
     assert _ids("documentation-handoff-agent", "handoff") == ["release-reporting"]
     assert _ids("team-lead-agent", "team_lead") == ["repair-loop"]
@@ -107,6 +108,7 @@ def test_repair_context_adds_repair_loop_for_specialist():
 
     assert [item.skill_id for item in selection.selections] == [
         "frontend-build",
+        "web-app-aesthetics",
         "repair-loop",
     ]
 
