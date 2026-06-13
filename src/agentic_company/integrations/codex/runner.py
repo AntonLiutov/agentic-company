@@ -467,7 +467,11 @@ def codex_runtime_config_summary() -> str:
     """One-line Codex worker sandbox/network summary for console startup logs."""
 
     network = "enabled" if _workspace_network_enabled() else "disabled"
-    return f"sandbox-default={DEFAULT_CODEX_SANDBOX} workspace-write-network={network}"
+    browsers = _anchor_repo_relative(os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")) or "unset"
+    return (
+        f"sandbox-default={DEFAULT_CODEX_SANDBOX} "
+        f"workspace-write-network={network} qa-browsers={browsers}"
+    )
 
 
 def codex_exec_config_args_from_env() -> list[str]:
@@ -546,6 +550,16 @@ def build_codex_exec_environment(target_project_dir: Path) -> dict[str, str]:
     return env
 
 
+def _anchor_repo_relative(value: str) -> str:
+    """Resolve a repo-relative path to an absolute path under the repo root."""
+
+    value = value.strip()
+    if not value or os.path.isabs(value):
+        return value
+    repo_root = Path(__file__).resolve().parents[4]
+    return str((repo_root / value).resolve())
+
+
 def _anchor_qa_browser_paths(env: dict[str, str]) -> None:
     """Make the QA browser-runtime paths absolute so a worker cwd change is safe.
 
@@ -557,11 +571,9 @@ def _anchor_qa_browser_paths(env: dict[str, str]) -> None:
     the pre-installed runtime is reused instead.
     """
 
-    repo_root = Path(__file__).resolve().parents[4]
     for var in ("PLAYWRIGHT_BROWSERS_PATH", "NODE_PATH"):
-        value = env.get(var, "").strip()
-        if value and not os.path.isabs(value):
-            env[var] = str((repo_root / value).resolve())
+        if env.get(var, "").strip():
+            env[var] = _anchor_repo_relative(env[var])
 
 
 def _merge_run_local_env(env: dict[str, str], target_project_dir: Path) -> None:
