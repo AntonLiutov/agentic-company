@@ -856,6 +856,7 @@ class ConsoleRepository:
         process_name: str,
         process_statuses: tuple[str, ...],
         exclude_run_statuses: tuple[str, ...] = (),
+        updated_before: str = "",
     ) -> list[str]:
         if not process_statuses:
             return []
@@ -866,6 +867,10 @@ class ConsoleRepository:
             run_placeholders = ", ".join("?" for _ in exclude_run_statuses)
             status_clause = f"AND r.status NOT IN ({run_placeholders})"
             params.extend(exclude_run_statuses)
+        updated_clause = ""
+        if updated_before:
+            updated_clause = "AND cp.updated_at < ?"
+            params.append(updated_before)
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -875,6 +880,7 @@ class ConsoleRepository:
                 WHERE cp.process_name = ?
                   AND cp.status IN ({process_placeholders})
                   {status_clause}
+                  {updated_clause}
                 ORDER BY r.created_at, r.id
                 """,
                 tuple(params),

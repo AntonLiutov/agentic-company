@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -638,13 +638,17 @@ def reconcile_run(run_id: str) -> RunReconcileResult:
     )
 
 
-def reconcile_stale_console_runs(repository: Any | None = None) -> list[RunReconcileResult]:
+def reconcile_stale_console_runs(
+    repository: Any | None = None,
+    *,
+    stale_after_seconds: int = 300,
+) -> list[RunReconcileResult]:
     """Stop and reconcile runs orphaned by a previous console process.
 
-    On a fresh web-console startup there are no live in-process execution
-    threads from the previous Python process. Runs whose process row still says
-    ``starting``/``running``/``stop_requested`` are therefore stale and must be
-    settled through the same durable cancel path as an operator Stop.
+    A live console process refreshes its process row while it is executing. On a
+    fresh web-console startup, only process rows older than the heartbeat window
+    are treated as orphaned. Explicit ``stop_requested`` rows are reconciled
+    immediately because they already represent an operator cancel intent.
     """
 
     from agentic_company.console.web.db import ConsoleRepository
@@ -652,13 +656,22 @@ def reconcile_stale_console_runs(repository: Any | None = None) -> list[RunRecon
     repo = repository or ConsoleRepository()
     if repository is None:
         repo.init_schema()
+    cutoff = (datetime.now(UTC) - timedelta(seconds=stale_after_seconds)).isoformat(
+        timespec="seconds"
+    )
     stale_run_ids = repo.list_run_uids_with_console_process_status(
         process_name="codex_execution",
-        process_statuses=("starting", "running", "stop_requested"),
+        process_statuses=("starting", "running"),
+        exclude_run_statuses=tuple(str(status) for status in TERMINAL_RUN_STATUSES),
+        updated_before=cutoff,
+    )
+    stopped_run_ids = repo.list_run_uids_with_console_process_status(
+        process_name="codex_execution",
+        process_statuses=("stop_requested",),
         exclude_run_statuses=tuple(str(status) for status in TERMINAL_RUN_STATUSES),
     )
     results: list[RunReconcileResult] = []
-    for stale_run_id in stale_run_ids:
+    for stale_run_id in [*stale_run_ids, *stopped_run_ids]:
         stale_run = repo.get_run_by_uid(stale_run_id)
         if stale_run is None:
             continue
