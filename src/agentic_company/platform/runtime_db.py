@@ -638,6 +638,45 @@ def reconcile_run(run_id: str) -> RunReconcileResult:
     )
 
 
+def reconcile_stale_console_runs(repository: Any | None = None) -> list[RunReconcileResult]:
+    """Stop and reconcile runs orphaned by a previous console process.
+
+    On a fresh web-console startup there are no live in-process execution
+    threads from the previous Python process. Runs whose process row still says
+    ``starting``/``running``/``stop_requested`` are therefore stale and must be
+    settled through the same durable cancel path as an operator Stop.
+    """
+
+    from agentic_company.console.web.db import ConsoleRepository
+
+    repo = repository or ConsoleRepository()
+    if repository is None:
+        repo.init_schema()
+    stale_run_ids = repo.list_run_uids_with_console_process_status(
+        process_name="codex_execution",
+        process_statuses=("starting", "running", "stop_requested"),
+        exclude_run_statuses=tuple(str(status) for status in TERMINAL_RUN_STATUSES),
+    )
+    results: list[RunReconcileResult] = []
+    for stale_run_id in stale_run_ids:
+        stale_run = repo.get_run_by_uid(stale_run_id)
+        if stale_run is None:
+            continue
+        with repo.connect() as conn:
+            row = conn.execute(
+                "SELECT control_intent FROM runs WHERE id = ?",
+                (stale_run.id,),
+            ).fetchone()
+        if str(row["control_intent"] if row else "") != "cancel":
+            repo.set_run_control_intent(
+                stale_run.id,
+                intent="cancel",
+                reason="Console restarted before the run completed.",
+            )
+        results.append(reconcile_run(stale_run_id))
+    return results
+
+
 def record_generated_app_url(run_id: str, generated_app_url: str) -> None:
     """Persist a run's generated app URL independent of its lifecycle status."""
 

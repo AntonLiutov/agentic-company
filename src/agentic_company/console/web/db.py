@@ -850,6 +850,37 @@ class ConsoleRepository:
             ).fetchone()
         return _console_process_state(row) if row else None
 
+    def list_run_uids_with_console_process_status(
+        self,
+        *,
+        process_name: str,
+        process_statuses: tuple[str, ...],
+        exclude_run_statuses: tuple[str, ...] = (),
+    ) -> list[str]:
+        if not process_statuses:
+            return []
+        process_placeholders = ", ".join("?" for _ in process_statuses)
+        params: list[Any] = [process_name, *process_statuses]
+        status_clause = ""
+        if exclude_run_statuses:
+            run_placeholders = ", ".join("?" for _ in exclude_run_statuses)
+            status_clause = f"AND r.status NOT IN ({run_placeholders})"
+            params.extend(exclude_run_statuses)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT r.run_uid
+                FROM runs r
+                JOIN console_processes cp ON cp.run_id = r.id
+                WHERE cp.process_name = ?
+                  AND cp.status IN ({process_placeholders})
+                  {status_clause}
+                ORDER BY r.created_at, r.id
+                """,
+                tuple(params),
+            ).fetchall()
+        return [str(row["run_uid"]) for row in rows]
+
     def create_work_system_connection(
         self,
         *,

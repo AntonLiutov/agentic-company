@@ -29,7 +29,6 @@ def test_worker_dtos_are_provider_neutral():
 
     assert request.run_dir == Path("run-1")
     assert result.worker_session_id == "session-1"
-    assert result.codex_thread_id == "session-1"
     assert result.usage == usage
     assert "codex_thread_id" not in {field.name for field in fields(WorkResult)}
 

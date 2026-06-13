@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
@@ -69,11 +70,13 @@ from agentic_company.platform.run_trace import trace_summary
 from agentic_company.platform.runtime_cache import runtime_cache_from_env
 from agentic_company.platform.runtime_db import (
     reconcile_run,
+    reconcile_stale_console_runs,
     record_run_lifecycle,
     request_run_control_intent,
 )
 
 COOKIE_NAME = "agentic_console_session"
+LOGGER = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -90,7 +93,17 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
     repo.init_schema()
     repo.seed_public_demo_from_env()
 
-    app = FastAPI(title="Agentic Company")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        try:
+            results = reconcile_stale_console_runs(repo)
+            if results:
+                LOGGER.info("Startup reconciled stale console runs count=%s", len(results))
+        except Exception:
+            LOGGER.exception("Startup stale-run reconciliation failed")
+        yield
+
+    app = FastAPI(title="Agentic Company", lifespan=lifespan)
     app.state.repo = repo
     app.state.login_rate_limiter = RateLimiter(max_attempts=10, window_seconds=300)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

@@ -42,12 +42,6 @@ class WorkResult:
     status: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    @property
-    def codex_thread_id(self) -> str:
-        """Back-compat alias for old Codex-shaped callers."""
-
-        return self.worker_session_id
-
 
 class WorkerPort(Protocol):
     """Swappable worker backend boundary."""

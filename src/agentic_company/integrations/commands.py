@@ -15,6 +15,7 @@ from pathlib import Path
 Redactor = Callable[[str], str]
 LineCallback = Callable[[str], None]
 LinePredicate = Callable[[str], bool]
+StopPredicate = Callable[[], bool]
 
 
 @dataclass(slots=True)
@@ -33,6 +34,7 @@ class StreamedCommand:
     on_stdout_line: LineCallback | None = None
     terminal_output_predicate: LinePredicate | None = None
     terminal_grace_seconds: float = 5.0
+    stop_requested: StopPredicate | None = None
     env: Mapping[str, str | PathLike[str]] | None = None
 
 
@@ -121,6 +123,19 @@ def stream_command(spec: StreamedCommand) -> subprocess.CompletedProcess[str]:
             _terminate_process(process)
             log.write_exit(0)
             return subprocess.CompletedProcess(command, 0, stdout="".join(output_parts), stderr="")
+
+        if spec.stop_requested and process.poll() is None and spec.stop_requested():
+            reason = "Stop requested; terminating command."
+            output_parts.append(reason + "\n")
+            log.write_output(reason)
+            _terminate_process(process)
+            log.write_exit(130)
+            return subprocess.CompletedProcess(
+                command,
+                130,
+                stdout="".join(output_parts),
+                stderr="stop_requested",
+            )
 
         if time.monotonic() - started_at > spec.timeout_seconds:
             process.kill()

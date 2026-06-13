@@ -7,6 +7,7 @@ from agentic_company.platform.runtime_db import (
     artifact_links_for_paths,
     build_run_reconcile_snapshot,
     reconcile_run,
+    reconcile_stale_console_runs,
     record_artifact_link,
     request_run_control_intent,
     run_stop_requested,
@@ -55,6 +56,25 @@ def test_cancel_reconciler_does_not_demote_completed_run(tmp_path):
     assert work_items["F1"].status == "in_progress"
     assert work_items["F1"].active is True
     assert build_run_reconcile_snapshot("phase1-run").control_intent == ""
+
+
+def test_stale_console_reconciler_stops_orphaned_running_process(tmp_path):
+    repo, run, _run_dir = _setup_run(tmp_path)
+    _insert_work_item(repo, run.id, "F1", status="in_progress", lane="in_progress", active=1)
+    repo.upsert_console_process_state(
+        run.id,
+        process_name="codex_execution",
+        status="running",
+        thread_name="old-thread",
+    )
+
+    results = reconcile_stale_console_runs(repo)
+
+    assert [result.action for result in results] == ["cancel"]
+    assert repo.get_run(run.id).status == "stopped"
+    work_items = {item.work_item_id: item for item in repo.list_work_items(run.id)}
+    assert work_items["F1"].status == "blocked"
+    assert "Console restarted" in work_items["F1"].blocker
 
 
 def test_reconciler_finalizes_completed_db_world_without_llm_status(tmp_path):

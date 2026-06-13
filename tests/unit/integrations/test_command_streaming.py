@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 
+import agentic_company.integrations.commands as commands
 from agentic_company.integrations.commands import (
     StreamedCommand,
     append_completed_command_log,
@@ -123,6 +124,40 @@ def test_stream_command_returns_after_terminal_output_when_process_hangs(tmp_pat
     assert "turn.completed" in result.stdout
     assert "Terminal output was observed" in log_text
     assert "exit_code=0" in log_text
+
+
+def test_stream_command_terminates_when_stop_requested(tmp_path: Path, monkeypatch):
+    log_path = tmp_path / "commands.log"
+    terminated = {"called": False}
+    original_terminate = commands._terminate_process
+
+    def terminate(process):
+        terminated["called"] = True
+        original_terminate(process)
+
+    monkeypatch.setattr(commands, "_terminate_process", terminate)
+
+    result = stream_command(
+        StreamedCommand(
+            command=[
+                sys.executable,
+                "-c",
+                "import time; time.sleep(30)",
+            ],
+            cwd=tmp_path,
+            timeout_seconds=10,
+            log_path=log_path,
+            stop_requested=lambda: True,
+        )
+    )
+
+    log_text = log_path.read_text(encoding="utf-8")
+
+    assert terminated["called"] is True
+    assert result.returncode == 130
+    assert result.stderr == "stop_requested"
+    assert "Stop requested; terminating command." in log_text
+    assert "exit_code=130" in log_text
 
 
 def test_append_completed_command_log_supports_injected_executors(tmp_path: Path):

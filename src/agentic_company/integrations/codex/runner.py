@@ -7,7 +7,7 @@ import os
 import re
 import subprocess
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from agentic_company.integrations.codex.cli import (
@@ -187,6 +187,7 @@ def stream_codex_exec_to_log(
     trace_run_id: int | str = "",
     trace_agent_id: str = "",
     trace_work_item_id: str | None = None,
+    stop_requested: Callable[[], bool] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run Codex while streaming command output and raw JSON events to artifacts."""
 
@@ -256,6 +257,18 @@ def stream_codex_exec_to_log(
                 trace_work_item_id=trace_work_item_id,
             )
 
+    effective_stop_requested = stop_requested
+    if effective_stop_requested is None and trace_run_id:
+        stop_run_dir = trace_run_dir or raw_events_path.parent
+
+        def effective_stop_requested() -> bool:
+            try:
+                from agentic_company.platform.runtime_db import run_stop_requested
+
+                return run_stop_requested(str(trace_run_id), stop_run_dir)
+            except Exception:
+                return False
+
     try:
         return stream_command(
             StreamedCommand(
@@ -267,6 +280,7 @@ def stream_codex_exec_to_log(
                 env=command_env,
                 on_stdout_line=on_stdout_line,
                 terminal_output_predicate=_is_codex_terminal_event,
+                stop_requested=effective_stop_requested,
             )
         )
     finally:

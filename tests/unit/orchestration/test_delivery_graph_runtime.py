@@ -9,8 +9,11 @@ from agentic_company.orchestration.graphs import (
 from agentic_company.orchestration.runtime import (
     DEFAULT_STATE_FILENAME,
     DeliveryGraphRuntime,
+    _resolve_final_run_status,
 )
+from agentic_company.platform.run_finalizer import RunStatus
 from agentic_company.platform.run_trace import load_run_events
+from agentic_company.platform.runtime_db import request_run_control_intent
 from agentic_company.platform.state import DeliveryState, initial_delivery_state
 
 
@@ -213,6 +216,17 @@ def test_delivery_graph_runtime_checkpoints_state_between_nodes(tmp_path, monkey
     result = runtime.start(run_dir)
 
     assert result["status"] == "team_lead_sprint_handoff_ready"
+
+
+def test_final_run_status_prefers_durable_stop_intent(tmp_path, monkeypatch):
+    run_dir = tmp_path / "runs" / "stopped-finalizer"
+    _create_run(tmp_path, monkeypatch, run_dir)
+    request_run_control_intent("stopped-finalizer", "cancel", "User stopped the run.")
+    state = initial_delivery_state(run_id="stopped-finalizer", run_dir=run_dir)
+    state["status"] = "blocked"
+    state["blockers"] = ["Stopped by user"]
+
+    assert _resolve_final_run_status(state) is RunStatus.STOPPED
 
 
 def test_delivery_graph_runtime_skips_downstream_nodes_when_state_has_blockers(

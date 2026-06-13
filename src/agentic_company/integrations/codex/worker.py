@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
 
-from agentic_company.integrations.codex import extract_codex_usage
+from agentic_company.integrations.codex import codex_usage_from_artifacts
 from agentic_company.platform.models import AgentRunResult
 from agentic_company.platform.status import WorkItemStatus, classify_work_item_status
 from agentic_company.ports.worker import UsageTotals, WorkerPort, WorkRequest, WorkResult
@@ -85,17 +85,7 @@ def agent_run_result_from_work_result(
 
 
 def _usage_from_result(run_dir: Path, result: AgentRunResult) -> UsageTotals | None:
-    raw_events = _raw_events_artifact_link(result.output_artifacts)
-    if not raw_events:
-        return None
-    input_tokens, output_tokens = extract_codex_usage(run_dir / raw_events)
+    input_tokens, output_tokens = codex_usage_from_artifacts(run_dir, result.output_artifacts)
     if input_tokens is None and output_tokens is None:
         return None
     return UsageTotals(input_tokens=input_tokens, output_tokens=output_tokens)
-
-
-def _raw_events_artifact_link(output_artifacts: list[str]) -> str:
-    for artifact in output_artifacts:
-        if artifact.replace("\\", "/").endswith("events.jsonl"):
-            return artifact
-    return ""

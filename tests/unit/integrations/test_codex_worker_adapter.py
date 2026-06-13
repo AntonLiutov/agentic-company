@@ -42,7 +42,6 @@ def test_codex_worker_adapter_maps_legacy_result_to_worker_result(tmp_path):
     assert result.success is True
     assert result.provider == "codex"
     assert result.worker_session_id == "thread-1"
-    assert result.codex_thread_id == "thread-1"
     assert result.usage is not None
     assert result.usage.input_tokens == 123
     assert result.usage.output_tokens == 45

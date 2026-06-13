@@ -106,7 +106,12 @@ class DeliveryGraphRuntime:
             )
         except Exception as exc:
             duration_ms = int((time.perf_counter() - graph_started) * 1000)
-            record_run_lifecycle(state["run_id"], RunStatus.FAILED)
+            failure_status = (
+                RunStatus.STOPPED
+                if run_stop_requested(str(state["run_id"]), state["run_dir"])
+                else RunStatus.FAILED
+            )
+            record_run_lifecycle(state["run_id"], failure_status)
             write_event(
                 event_log,
                 state["run_id"],
@@ -115,7 +120,7 @@ class DeliveryGraphRuntime:
                 {
                     "node_order": node_order,
                     "stage": state["stage"],
-                    "status": RunStatus.FAILED,
+                    "status": failure_status,
                     "error": str(exc),
                     "duration_ms": duration_ms,
                 },
@@ -138,7 +143,7 @@ class DeliveryGraphRuntime:
         )
         record_run_lifecycle(
             final_state["run_id"],
-            resolve_run_status(final_state),
+            _resolve_final_run_status(final_state),
             generated_app_url=str(final_state.get("public_url") or ""),
             target_project_dir=str(final_state.get("target_project_dir") or ""),
         )
@@ -319,3 +324,9 @@ class DeliveryGraphRuntime:
                 "state_artifact": self.state_filename,
             },
         )
+
+
+def _resolve_final_run_status(state: DeliveryState) -> RunStatus:
+    if run_stop_requested(str(state["run_id"]), state["run_dir"]):
+        return RunStatus.STOPPED
+    return resolve_run_status(state)

@@ -98,6 +98,27 @@ def extract_codex_usage(raw_events_path: Path) -> tuple[int | None, int | None]:
     return input_tokens, output_tokens
 
 
+def raw_events_artifact_link(output_artifacts: list[str]) -> str:
+    """Return the run-relative Codex raw-events artifact link, if present."""
+
+    for artifact in output_artifacts:
+        if artifact.replace("\\", "/").endswith("events.jsonl"):
+            return artifact
+    return ""
+
+
+def codex_usage_from_artifacts(
+    run_dir: Path,
+    output_artifacts: list[str],
+) -> tuple[int | None, int | None]:
+    """Return Codex token usage from the raw-events artifact in a result."""
+
+    raw_events = raw_events_artifact_link(output_artifacts)
+    if not raw_events:
+        return None, None
+    return extract_codex_usage(run_dir / raw_events)
+
+
 def _find_token_usage(value: object) -> dict[str, object] | None:
     """Find a dict carrying input_tokens/output_tokens anywhere in the event."""
 
