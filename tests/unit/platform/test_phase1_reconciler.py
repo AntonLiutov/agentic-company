@@ -9,6 +9,7 @@ from agentic_company.platform.runtime_db import (
     reconcile_run,
     reconcile_stale_console_runs,
     record_artifact_link,
+    record_work_item_transition,
     request_run_control_intent,
     run_stop_requested,
 )
@@ -16,7 +17,10 @@ from agentic_company.platform.status_snapshot import (
     build_delivery_status_snapshot,
     build_sprint_status_snapshot,
 )
-from agentic_company.platform.tool_contracts import ArtifactRegistrationRequest
+from agentic_company.platform.tool_contracts import (
+    ArtifactRegistrationRequest,
+    ToolExecutionRecord,
+)
 
 
 def test_control_intent_cancel_is_durable_stop_and_reconciles_active_items(tmp_path):
@@ -126,6 +130,39 @@ def test_reconciler_finalizes_completed_db_world_without_llm_status(tmp_path):
     assert result.applied is True
     assert result.action == "finalize_completed"
     assert repo.get_run(run.id).status == "completed"
+
+
+def test_planning_tool_completion_closes_active_card_without_review(tmp_path):
+    repo, run, _run_dir = _setup_run(tmp_path)
+    _insert_work_item(
+        repo,
+        run.id,
+        "PLAN-01",
+        status="in_progress",
+        lane="in_progress",
+        active=1,
+        sprint_id="planning",
+        owner_agent="business-analyst-agent",
+    )
+
+    record_work_item_transition(
+        ToolExecutionRecord(
+            run_id="phase1-run",
+            work_item_id="PLAN-01",
+            sprint_id="planning",
+            owner_agent="business-analyst-agent",
+            tool_name="run_business_analyst",
+            tool_call_id="phase1-run:head-agent:run_business_analyst:1",
+            attempt_id="finish",
+            status="done",
+            activity_message="business-analyst-agent completed PLAN-01.",
+        )
+    )
+
+    work_items = {item.work_item_id: item for item in repo.list_work_items(run.id)}
+    assert work_items["PLAN-01"].status == "done"
+    assert work_items["PLAN-01"].lane == "done"
+    assert work_items["PLAN-01"].active is False
 
 
 def test_reconciler_does_not_finalize_empty_sprint(tmp_path):
@@ -319,6 +356,8 @@ def _insert_work_item(
     status: str,
     lane: str,
     active: int,
+    sprint_id: str = "sprint-01",
+    owner_agent: str = "fullstack-agent",
 ) -> None:
     with repo.connect() as conn:
         conn.execute(
@@ -328,8 +367,8 @@ def _insert_work_item(
                 lane, owner_agent, assigned_agent, active, source_refs,
                 artifact_ids, blocker, created_at, updated_at
             )
-            VALUES (?, ?, ?, 'sprint-01', 1, ?, ?, 'fullstack-agent',
-                    'fullstack-agent', ?, '[]', '[]', '', '2026-01-01T00:00:00Z',
+            VALUES (?, ?, ?, ?, 1, ?, ?, ?,
+                    ?, ?, '[]', '[]', '', '2026-01-01T00:00:00Z',
                     '2026-01-01T00:00:00Z')
             ON CONFLICT(run_id, work_item_id) DO UPDATE SET
                 status = excluded.status,
@@ -337,7 +376,17 @@ def _insert_work_item(
                 active = excluded.active,
                 updated_at = excluded.updated_at
             """,
-            (run_id, work_item_id, work_item_id, status, lane, active),
+            (
+                run_id,
+                work_item_id,
+                work_item_id,
+                sprint_id,
+                status,
+                lane,
+                owner_agent,
+                owner_agent,
+                active,
+            ),
         )
 
 

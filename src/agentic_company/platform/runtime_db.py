@@ -1288,6 +1288,7 @@ def _lane_for_status(status: str) -> str:
 # in review until the head completes delivery rather than going terminal on
 # every sprint.
 _HANDOFF_TOOLS = {"run_handoff"}
+_PLANNING_TOOLS = {"run_business_analyst", "run_architect", "run_project_manager"}
 
 
 def _transition_allowed(current: str, target: str) -> bool:
@@ -1324,6 +1325,8 @@ def _effective_transition_status(
         return "review"
     if requested == "done" and tool_name in _HANDOFF_TOOLS:
         requested = "review"
+    if current == "in_progress" and requested == "done" and tool_name in _PLANNING_TOOLS:
+        return requested
     if (
         current == "in_progress"
         and requested == "done"
