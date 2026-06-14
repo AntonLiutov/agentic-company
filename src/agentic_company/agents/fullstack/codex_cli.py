@@ -287,6 +287,22 @@ class CodexCliRunner:
         )
 
 
+def _render_skill_guidance(agent_id: str) -> str:
+    """The agent's selected skill playbooks, threaded into the CODE WRITER's
+    prompt — previously skills reached only the orchestration LLM, so design
+    guidance (e.g. the Quiet Console palette) never got to the Codex worker."""
+    try:
+        from agentic_company.platform.skills import (
+            render_skill_instructions,
+            select_skills_for_agent,
+        )
+
+        text = render_skill_instructions(select_skills_for_agent(agent_id=agent_id)).strip()
+        return text or "(no skills selected for this agent)"
+    except Exception:  # never let skill rendering break the prompt build
+        return "(skill guidance unavailable)"
+
+
 def build_codex_prompt(request: ExecutionRequest, run_dir: Path) -> str:
     request_context = _render_request_context(request, run_dir)
     inputs = "\n".join(f"- {artifact}" for artifact in request.input_artifacts)
@@ -295,6 +311,7 @@ def build_codex_prompt(request: ExecutionRequest, run_dir: Path) -> str:
     constraints = "\n".join(f"- {constraint}" for constraint in request.constraints)
     feature_context = _render_feature_context(request)
     upstream_messages = render_incoming_messages_for_prompt(run_dir, to_agent=request.agent_id)
+    skill_guidance = _render_skill_guidance(request.agent_id)
 
     return f"""You are the Fullstack Agent for agentic-company.
 
@@ -321,6 +338,9 @@ Instructions:
 
 Constraints:
 {constraints}
+
+Skill guidance (AUTHORITATIVE — follow these playbooks; they override generic defaults):
+{skill_guidance}
 
 Feature delivery context:
 {feature_context}
