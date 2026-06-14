@@ -6,12 +6,49 @@ git runs in the run's ``target_dir``; gh (clone/create/pr) is addressed by
 
 from __future__ import annotations
 
+import logging
+import re
 import subprocess
 from pathlib import Path
 from typing import Protocol
 
 from agentic_company.integrations.github.cli import GhLike
 from agentic_company.ports.repo import PullRequest, RepoSpec
+
+LOGGER = logging.getLogger("agentic_company.github.repo")
+
+# Secrets safety: ADL must never commit credentials to a delivery repo/PR. We
+# write this .gitignore before anything is staged AND unstage any secret-looking
+# file as a fail-safe, so a stray .env/key the worker created can't leak.
+_SECRETS_MARKER = "# ADL secrets safety — never commit credentials"
+_SECRETS_GITIGNORE = f"""{_SECRETS_MARKER}
+.env
+.env.*
+*.env
+agent-runtime.env
+*.key
+*.pem
+*.pfx
+*.p12
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+*.secret
+.secrets/
+secrets/
+credentials.json
+.npmrc
+.pypirc
+"""
+_SECRET_PATH_RE = re.compile(
+    r"(^|/)("
+    r"\.env(\..+)?|.*\.env|agent-runtime\.env|"
+    r".*\.(key|pem|pfx|p12|secret)|id_rsa.*|id_ed25519.*|"
+    r"secrets/.*|credentials\.json|\.npmrc|\.pypirc"
+    r")$",
+    re.IGNORECASE,
+)
 
 
 class GitError(RuntimeError):
@@ -66,7 +103,9 @@ class GitHubRepoAdapter:
             return
         # new: commit the generated project, create the remote, push.
         self._git.run(["init", "-b", spec.base_branch or "main"], cwd=target)
+        self._write_secrets_gitignore(target)
         self._git.run(["add", "-A"], cwd=target)
+        self._unstage_secrets(target)
         self._git.run(["commit", "-m", "Initial commit by Agentic Delivery Lab"], cwd=target)
         self._gh.run(
             [
@@ -89,9 +128,31 @@ class GitHubRepoAdapter:
         self._git.run(args, cwd=target_dir)
 
     def commit_push(self, target_dir: Path, message: str, *, branch: str = "") -> None:
+        self._write_secrets_gitignore(target_dir)
         self._git.run(["add", "-A"], cwd=target_dir)
+        self._unstage_secrets(target_dir)
         self._git.run(["commit", "-m", message], cwd=target_dir)
         self._git.run(["push", "-u", "origin", branch or "HEAD"], cwd=target_dir)
+
+    def _write_secrets_gitignore(self, target_dir: Path) -> None:
+        """Ensure a credentials-excluding .gitignore exists before staging."""
+        path = target_dir / ".gitignore"
+        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+        if _SECRETS_MARKER in existing:
+            return
+        prefix = "\n" if existing and not existing.endswith("\n") else ""
+        path.write_text(existing + prefix + _SECRETS_GITIGNORE, encoding="utf-8")
+
+    def _unstage_secrets(self, target_dir: Path) -> None:
+        """Fail-safe: drop any secret-looking file from the index before commit."""
+        staged = self._git.run(["diff", "--cached", "--name-only"], cwd=target_dir)
+        for rel in staged.splitlines():
+            rel = rel.strip()
+            if rel and _SECRET_PATH_RE.search(rel):
+                LOGGER.warning("Refusing to commit secret-looking file: %s", rel)
+                self._git.run(
+                    ["rm", "--cached", "-r", "--ignore-unmatch", rel], cwd=target_dir
+                )
 
     def open_pr(
         self,

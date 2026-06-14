@@ -69,6 +69,39 @@ def test_open_pr_parses_number_and_url(tmp_path: Path):
     assert pr.branch == "adl/F1"
 
 
+class _DiffGit:
+    def __init__(self, staged):
+        self.calls = []
+        self._staged = staged
+
+    def run(self, args, *, cwd):
+        self.calls.append(args)
+        if args[:3] == ["diff", "--cached", "--name-only"]:
+            return self._staged
+        return ""
+
+
+def test_commit_push_writes_gitignore_and_unstages_secrets(tmp_path: Path):
+    git = _DiffGit(
+        ".env\nsrc/app.py\nconfig.key\nagent-runtime.env\nREADME.md\nsecrets/token.txt"
+    )
+    adapter = GitHubRepoAdapter(gh=_FakeGh(), git=git)
+    adapter.commit_push(tmp_path, "feat: F1", branch="adl/F1")
+
+    gitignore = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    assert gitignore.count("ADL secrets safety") == 1  # secrets block written once
+    removed = {c[-1] for c in git.calls if c[:2] == ["rm", "--cached"]}
+    assert {".env", "config.key", "agent-runtime.env", "secrets/token.txt"} <= removed
+    assert "src/app.py" not in removed and "README.md" not in removed  # product files kept
+
+
+def test_secrets_gitignore_is_idempotent(tmp_path: Path):
+    adapter = GitHubRepoAdapter(gh=_FakeGh(), git=_DiffGit(""))
+    adapter._write_secrets_gitignore(tmp_path)
+    adapter._write_secrets_gitignore(tmp_path)
+    assert (tmp_path / ".gitignore").read_text(encoding="utf-8").count("ADL secrets safety") == 1
+
+
 def test_git_runner_raises_when_git_missing(tmp_path: Path):
     runner = GitRunner(git_binary="definitely-not-a-real-git-xyz")
     with pytest.raises(GitError):
