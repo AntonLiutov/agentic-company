@@ -1397,8 +1397,8 @@ def _lane_for_status(status: str) -> str:
 
 
 # The per-sprint handoff only produces a report, so the coordination card stays
-# in review until the head completes delivery rather than going terminal on
-# every sprint.
+# IN PROGRESS until the head completes delivery rather than going terminal on
+# every sprint (it never sits in review — review is for feature/QA/deploy items).
 _HANDOFF_TOOLS = {"run_handoff"}
 _PLANNING_TOOLS = {"run_business_analyst", "run_architect", "run_project_manager"}
 
@@ -1436,7 +1436,7 @@ def _effective_transition_status(
     ):
         return "review"
     if requested == "done" and tool_name in _HANDOFF_TOOLS:
-        requested = "review"
+        requested = "in_progress"  # coordination card stays in_progress, never review
     if current == "in_progress" and requested == "done" and tool_name in _PLANNING_TOOLS:
         return requested
     if (

@@ -33,9 +33,10 @@ def _effective(current, requested, *, tool_name, owner_agent, raw=None):
         ("in_progress", "done", "run_project_manager", "project-manager-agent", "done"),
         # Deployment finishes into review (awaiting post-deploy QA).
         ("in_progress", "deployment_deployed", "codex_exec", "deployment-agent", "review"),
-        # A per-sprint handoff is not terminal: the coordination card stays in review.
-        ("in_progress", "done", "run_handoff", "documentation-handoff-agent", "review"),
-        ("review", "done", "run_handoff", "documentation-handoff-agent", "review"),
+        # A per-sprint handoff is not terminal: the coordination card stays in_progress
+        # (never review — review is for feature/QA/deploy items).
+        ("in_progress", "done", "run_handoff", "documentation-handoff-agent", "in_progress"),
+        ("review", "done", "run_handoff", "documentation-handoff-agent", "in_progress"),
         # complete_sprint reopens for the next sprint (review -> in_progress is legal).
         ("review", "in_progress", "complete_sprint", "team-lead-agent", "in_progress"),
         # The final sprint closes the coordination card legally (review -> done).
@@ -52,7 +53,9 @@ def test_effective_transition_status(current, requested, tool, owner, expected):
 
 def test_handoff_never_marks_coordination_card_done():
     # The exact bug from run project-20260612-202807: run_handoff moved PLAN-04
-    # in_progress -> done at sprint end, then complete_sprint reopened it.
+    # in_progress -> done at sprint end, then complete_sprint reopened it. The
+    # coordination card must stay in_progress (not done, and not review) until
+    # complete_sprint closes it.
     assert (
         _effective(
             "in_progress",
@@ -60,5 +63,5 @@ def test_handoff_never_marks_coordination_card_done():
             tool_name="run_handoff",
             owner_agent="documentation-handoff-agent",
         )
-        == "review"
+        == "in_progress"
     )

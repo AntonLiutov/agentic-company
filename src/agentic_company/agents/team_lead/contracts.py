@@ -233,7 +233,7 @@ TEAM_LEAD_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         failure_modes=("review_failed", "artifact_unavailable", "tool_limit_reached"),
         retry_policy="Retry only when artifact refs or question were incomplete.",
         idempotency="Read-only with new review artifacts written per execution.",
-        dashboard_status="review",
+        dashboard_status="in_progress",
         examples=(
             {
                 "work_item_id": "PLAN-04",
@@ -258,7 +258,7 @@ TEAM_LEAD_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         failure_modes=("inspection_failed", "artifact_unavailable", "tool_limit_reached"),
         retry_policy="Safe to retry after new worker, QA, deployment, or handoff evidence appears.",
         idempotency="Read-only except for status inspection artifacts.",
-        dashboard_status="review",
+        dashboard_status="in_progress",
         examples=(
             {
                 "work_item_id": "PLAN-04",

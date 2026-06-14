@@ -345,7 +345,7 @@ class TeamLeadToolbox:
             item.work_item_id,
             "codex_review",
             TEAM_LEAD_AGENT_ID,
-            "review",
+            "in_progress",
             f"Review {result.status}.",
         )
         return self._tool_response(
@@ -474,7 +474,7 @@ class TeamLeadToolbox:
             item.work_item_id,
             "inspect_sprint_status",
             TEAM_LEAD_AGENT_ID,
-            "review",
+            "in_progress",
             f"Sprint status inspection {result.status}.",
         )
         return self._tool_response(
