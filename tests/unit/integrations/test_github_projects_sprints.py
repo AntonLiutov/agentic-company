@@ -32,6 +32,32 @@ def test_ensure_sprints_creates_missing_and_reuses_existing():
     assert not any("title=Planning" in c for c in gh.calls)
 
 
+class _RaceGh:
+    """Create 422s (another writer won the race); the milestone shows on re-list."""
+
+    def __init__(self):
+        self.calls = []
+        self._listed = 0
+
+    def run(self, args, *, cwd=None):
+        self.calls.append(args)
+        path = next((a for a in args if a.startswith("repos/")), "")
+        if "milestones?state=all" in path:
+            self._listed += 1
+            if self._listed == 1:
+                return "[]"  # not there yet
+            return json.dumps([{"title": "Sprint 1", "number": 7}])  # the racer's milestone
+        if path.endswith("/milestones"):
+            raise RuntimeError("gh: Validation Failed (HTTP 422)")
+        return ""
+
+
+def test_ensure_sprints_tolerates_a_concurrent_create_race():
+    gh = _RaceGh()
+    result = ensure_sprints(gh, repository="o/r", sprints=("Sprint 1",))
+    assert result == {"Sprint 1": 7}  # adopted the milestone the racer created
+
+
 def test_ensure_sprints_is_idempotent_when_all_present():
     gh = _FakeGh(
         existing=[

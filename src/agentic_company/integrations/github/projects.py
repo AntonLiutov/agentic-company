@@ -76,6 +76,7 @@ def resolve_project_board(gh: GhLike, *, owner: str, project_number: int | str) 
         status_options=options,
     )
 
+
 # ADL status -> board column NAME. Every ADL status gets its own explicit column
 # and is always set, so GitHub's "No Status" bucket stays empty (it only appears
 # when a status is missing — which, for us, would be a bug).
@@ -126,15 +127,7 @@ def ensure_sprints(
     """
 
     descriptions = descriptions or {}
-    out = gh.run(
-        [
-            "api",
-            f"repos/{repository}/milestones?state=all&per_page=100",
-            "--jq",
-            "[.[]|{title,number}]",
-        ]
-    )
-    existing = {m["title"]: int(m["number"]) for m in json.loads(out or "[]")}
+    existing = _list_milestones(gh, repository)
     result: dict[str, int] = {}
     for title in sprints:
         if title in existing:
@@ -143,9 +136,28 @@ def ensure_sprints(
         args = ["api", f"repos/{repository}/milestones", "-f", f"title={title}", "-f", "state=open"]
         if descriptions.get(title):
             args += ["-f", f"description={descriptions[title]}"]
-        created = gh.run(args + ["--jq", ".number"])
-        result[title] = int(json.loads(created))
+        try:
+            result[title] = int(json.loads(gh.run(args + ["--jq", ".number"])))
+            existing[title] = result[title]
+        except Exception:
+            # Lost a create race (GitHub 422 already_exists) -> re-list and adopt it.
+            existing = _list_milestones(gh, repository)
+            if title not in existing:
+                raise
+            result[title] = existing[title]
     return result
+
+
+def _list_milestones(gh: GhLike, repository: str) -> dict[str, int]:
+    out = gh.run(
+        [
+            "api",
+            f"repos/{repository}/milestones?state=all&per_page=100",
+            "--jq",
+            "[.[]|{title,number}]",
+        ]
+    )
+    return {m["title"]: int(m["number"]) for m in json.loads(out or "[]")}
 
 
 def ensure_status_columns(

@@ -478,7 +478,7 @@ def mirror_work_item_now(run_uid: str, work_item_id: str) -> None:
             with _MIRROR_STATE_LOCK:
                 _MIRROR_STATUS[key] = item.status
         if need_milestone:
-            sprint_title = _sprint_title(repo, db_run_id, item.sprint_id)
+            sprint_title = _sprint_title(item.sprint_id)
             if sprint_title:  # group the card under its sprint (board Milestone)
                 mirror.mirror_milestone(work_item_id, sprint_title)
                 with _MIRROR_STATE_LOCK:
@@ -487,18 +487,17 @@ def mirror_work_item_now(run_uid: str, work_item_id: str) -> None:
         LOGGER.warning("Work-item mirror failed (%s): %s", work_item_id, exc)
 
 
-def _sprint_title(repo: Any, db_run_id: int, sprint_id: str) -> str:
+def _sprint_title(sprint_id: str) -> str:
     """Board Milestone name for a work item's sprint.
 
-    Uses the sprint's stored title; falls back to a humanized sprint_id when no
-    sprint row exists (e.g. the 'planning' phase has work items but no sprint
-    row), so planning cards still land under a 'Planning' milestone.
+    The SAME label ADL shows on its own board: 'sprint-01' -> 'Sprint 1',
+    'planning' -> 'Planning'. We mirror the sprint_id label, NOT the PM's
+    descriptive sprint title, so the milestones read Sprint 1 / Sprint 2 / ...
     """
-    title = repo.get_sprint_title(db_run_id, sprint_id)
-    if title:
-        return title
+    from agentic_company.console.web.product import sprint_label
+
     sid = (sprint_id or "").strip()
-    return sid.replace("-", " ").replace("_", " ").title() if sid else ""
+    return sprint_label(sid) if sid else ""
 
 
 def _mirror_seed_work_items(repo: Any, db_run_id: int, run_uid: str) -> None:

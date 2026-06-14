@@ -1011,17 +1011,6 @@ class ConsoleRepository:
                 (json.dumps(metadata or {}, sort_keys=True), utc_now(), connection_id),
             )
 
-    def get_sprint_title(self, run_id: int, sprint_id: str) -> str:
-        """Human title for a run's sprint (used as the board Milestone name)."""
-        if not sprint_id:
-            return ""
-        with self.connect() as conn:
-            row = conn.execute(
-                "SELECT title FROM sprints WHERE run_id = ? AND sprint_id = ?",
-                (run_id, sprint_id),
-            ).fetchone()
-        return str(row["title"]) if row and row["title"] else ""
-
     def upsert_external_work_ref(
         self,
         run_id: int,

@@ -170,9 +170,6 @@ class _SeedRepo:
     def list_work_items(self, db_run_id):
         return [_SeedItem("F1", "s1"), _SeedItem("F2", "s1"), _SeedItem("F3", "s2")]
 
-    def get_sprint_title(self, db_run_id, sprint_id):
-        return {"s1": "Sprint 1", "s2": "Sprint 2"}[sprint_id]
-
 
 def test_seed_dispatches_every_item_at_once(monkeypatch):
     submitted = []
@@ -197,7 +194,7 @@ def test_mirror_work_item_now_only_emits_what_changed(monkeypatch):
     monkeypatch.setattr(rdb, "_repo_and_run", lambda uid: (object(), 1))
     monkeypatch.setattr(run_mirror_mod, "get_run_mirror", lambda repo, dbid, **k: WorkMirror(board))
     monkeypatch.setattr(rdb, "get_work_item", lambda uid, wid: item)
-    monkeypatch.setattr(rdb, "_sprint_title", lambda repo, dbid, sid: "Sprint 1")
+    monkeypatch.setattr(rdb, "_sprint_title", lambda sid: "Sprint 1")
 
     rdb.mirror_work_item_now("run", "Z1")
     rdb.mirror_work_item_now("run", "Z1")  # nothing changed -> no extra gh calls
@@ -213,17 +210,9 @@ def test_mirror_work_item_now_only_emits_what_changed(monkeypatch):
     ]
 
 
-class _TitleRepo:
-    def __init__(self, mapping):
-        self._m = mapping
-
-    def get_sprint_title(self, db_run_id, sprint_id):
-        return self._m.get(sprint_id, "")
-
-
-def test_sprint_title_uses_stored_title_then_humanized_fallback():
-    repo = _TitleRepo({"s1": "Sprint 1"})
-    assert _sprint_title(repo, 1, "s1") == "Sprint 1"  # stored title wins
-    assert _sprint_title(repo, 1, "planning") == "Planning"  # no row -> humanized
-    assert _sprint_title(repo, 1, "sprint-2") == "Sprint 2"
-    assert _sprint_title(repo, 1, "") == ""
+def test_sprint_title_matches_adl_board_labels():
+    # mirrors ADL's own board labels via sprint_label, NOT the descriptive title
+    assert _sprint_title("sprint-01") == "Sprint 1"
+    assert _sprint_title("sprint-2") == "Sprint 2"
+    assert _sprint_title("planning") == "Planning"
+    assert _sprint_title("") == ""
