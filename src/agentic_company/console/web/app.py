@@ -462,13 +462,22 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             reconcile_run(run.run_uid)
             record_run_lifecycle(run.run_uid, RunStatus.STOPPED)
             try:
-                runtime_cache_from_env().set_stop_requested(run.run_uid)
-            except redis_error_types() as exc:
+                cache = runtime_cache_from_env()
+            except ValueError as exc:
                 LOGGER.warning(
-                    "Redis stop flag write failed after durable stop run_uid=%s error=%s",
+                    "Redis runtime cache config invalid after durable stop run_uid=%s error=%s",
                     run.run_uid,
                     exc,
                 )
+            else:
+                try:
+                    cache.set_stop_requested(run.run_uid)
+                except redis_error_types() as exc:
+                    LOGGER.warning(
+                        "Redis stop flag write failed after durable stop run_uid=%s error=%s",
+                        run.run_uid,
+                        exc,
+                    )
         repo.update_project_status(project.id, "stopped")
         return redirect(f"/projects/{project.id}")
 

@@ -1100,6 +1100,56 @@ def test_stop_project_completes_when_runtime_cache_is_unavailable(tmp_path, monk
     assert "Stopped by user." in work_items["F1"].blocker
 
 
+def test_stop_project_completes_when_runtime_cache_config_is_invalid(
+    tmp_path,
+    monkeypatch,
+):
+    repo = ConsoleRepository()
+    repo.init_schema()
+    user = repo.create_user(
+        email="stop-bad-cache@example.test",
+        username="stopbadcache",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Stop Bad Cache",
+        request_text="private",
+        mode="simple_prototype",
+        complexity="simple",
+        status="running",
+    )
+    run_dir = tmp_path / "runs" / "stop-bad-cache"
+    run_dir.mkdir(parents=True)
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="stop-bad-cache",
+        run_dir=run_dir,
+        status="running",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+
+    def raise_invalid_cache_config():
+        raise ValueError("invalid redis url")
+
+    monkeypatch.setattr(
+        "agentic_company.console.web.app.runtime_cache_from_env",
+        raise_invalid_cache_config,
+    )
+    app = create_app(repo)
+    client = TestClient(app)
+    client.cookies.set("agentic_console_session", repo.create_session(user.id))
+
+    response = client.post(f"/projects/{project.id}/stop", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert repo.get_run(run.id).status == "stopped"
+    assert repo.get_project_for_user(project.id, user.id).status == "stopped"
+    assert (run_dir / ".stop-requested").exists()
+    assert (run_dir / ".codex-execution.stop").exists()
+
+
 def test_promote_and_demote_project_from_workspace(tmp_path):
     repo = ConsoleRepository()
     repo.init_schema()

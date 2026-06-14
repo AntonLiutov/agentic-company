@@ -978,6 +978,8 @@ def run_stop_requested(run_id: str, run_dir: Path | str) -> bool:
             return True
     except ValueError:
         return False
+    except Exception as exc:
+        LOGGER.warning("Durable stop flag read failed run_id=%s error=%s", run_id, exc)
 
     try:
         from agentic_company.platform.runtime_cache import redis_error_types, runtime_cache_from_env

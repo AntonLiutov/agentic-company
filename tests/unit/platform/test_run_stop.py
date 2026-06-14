@@ -30,3 +30,17 @@ def test_run_stop_requested_treats_runtime_cache_errors_as_no_signal(tmp_path: P
     )
 
     assert run_stop_requested("unknown-run-xyz", tmp_path) is False
+
+
+def test_run_stop_requested_treats_durable_db_errors_as_no_signal(
+    tmp_path: Path,
+    monkeypatch,
+):
+    def raise_db_error(_run_id: str) -> bool:
+        raise RuntimeError("postgres unavailable")
+
+    monkeypatch.setattr("agentic_company.platform.runtime_db.stop_requested", raise_db_error)
+    monkeypatch.delenv("AGENTIC_REDIS_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+
+    assert run_stop_requested("run-1", tmp_path) is False

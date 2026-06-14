@@ -44,7 +44,7 @@ def test_runtime_cache_uses_redis_client_when_url_is_configured(monkeypatch):
             socket_connect_timeout: int,
             socket_timeout: int,
         ) -> FakeRedisClient:
-            assert url == "redis://127.0.0.1:63799/0"
+            assert url == "redis://127.0.0.1:6380/0"
             assert decode_responses
             assert socket_connect_timeout == 2
             assert socket_timeout == 2
@@ -58,7 +58,7 @@ def test_runtime_cache_uses_redis_client_when_url_is_configured(monkeypatch):
             exceptions=SimpleNamespace(RedisError=RuntimeError),
         ),
     )
-    monkeypatch.setenv("AGENTIC_REDIS_URL", "redis://127.0.0.1:63799/0")
+    monkeypatch.setenv("AGENTIC_REDIS_URL", "redis://127.0.0.1:6380/0")
     monkeypatch.delenv("REDIS_URL", raising=False)
 
     cache = runtime_cache_from_env()
@@ -106,7 +106,7 @@ def test_runtime_cache_treats_redis_errors_as_best_effort(monkeypatch):
             exceptions=SimpleNamespace(RedisError=FakeRedisError),
         ),
     )
-    monkeypatch.setenv("AGENTIC_REDIS_URL", "redis://127.0.0.1:63799/0")
+    monkeypatch.setenv("AGENTIC_REDIS_URL", "redis://127.0.0.1:6380/0")
     monkeypatch.delenv("REDIS_URL", raising=False)
 
     cache = runtime_cache_from_env()

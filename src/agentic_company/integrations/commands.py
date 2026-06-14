@@ -171,7 +171,10 @@ def _kill_process(process: subprocess.Popen[str]) -> None:
     if process.poll() is not None:
         return
     _signal_process_tree(process, force=True)
-    process.wait(timeout=5)
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        return
 
 
 def _process_group_kwargs() -> dict[str, bool]:
