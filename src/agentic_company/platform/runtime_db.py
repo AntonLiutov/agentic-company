@@ -439,6 +439,7 @@ _MIRROR_STATE_LOCK = threading.Lock()
 _MIRROR_CARDED: set[tuple[str, str]] = set()
 _MIRROR_STATUS: dict[tuple[str, str], str] = {}
 _MIRROR_MILESTONED: set[tuple[str, str]] = set()
+_NO_MIRROR_RUNS: set[str] = set()  # runs with no external board -> skip all work fast
 
 
 def _submit_item_mirror(run_uid: str, work_item_id: str) -> None:
@@ -454,12 +455,15 @@ def mirror_work_item_now(run_uid: str, work_item_id: str) -> None:
     Reads the item's CURRENT status (so stacked events coalesce to the latest) and
     only issues the gh calls that changed since this process last mirrored it.
     """
+    if run_uid in _NO_MIRROR_RUNS:
+        return  # known internal-board run -> no external board, skip without a DB hit
     try:
         from agentic_company.platform.run_mirror import get_run_mirror
 
         repo, db_run_id = _repo_and_run(run_uid)
         mirror = get_run_mirror(repo, db_run_id)
         if mirror is None:
+            _NO_MIRROR_RUNS.add(run_uid)  # remember -> later items skip instantly
             return
         from agentic_company.ports.board import BoardItem
 
