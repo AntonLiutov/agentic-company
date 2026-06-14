@@ -184,6 +184,24 @@ class ExternalWorkRef:
     updated_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class WorkSystemConnection:
+    id: int
+    project_id: int | None
+    run_id: int | None
+    system: str
+    name: str
+    base_url: str
+    repository: str
+    default_branch: str
+    token_ref: str
+    risk_mode: str
+    status: str
+    metadata: dict[str, Any]
+    created_at: str
+    updated_at: str
+
+
 def default_database_url() -> str:
     return os.getenv("AGENTIC_DATABASE_URL", "").strip() or os.getenv("DATABASE_URL", "").strip()
 
@@ -930,6 +948,33 @@ class ConsoleRepository:
                 ),
             )
         return int(cursor.lastrowid)
+
+    def get_active_work_system_connection(
+        self,
+        *,
+        project_id: int | None = None,
+        run_id: int | None = None,
+        system: str = "github",
+    ) -> WorkSystemConnection | None:
+        """Return the most relevant active connection for a run/project.
+
+        A run-scoped connection wins over a project-scoped one (an explicit
+        per-run override); ties break on the most recent. Returns None when none
+        is active, so the caller falls back to the internal board.
+        """
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM work_system_connections
+                WHERE status = 'active' AND system = ?
+                  AND (run_id = ? OR (project_id = ? AND run_id IS NULL))
+                ORDER BY (run_id IS NOT NULL) DESC, updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (system, run_id, project_id),
+            ).fetchone()
+        return _work_system_connection(row) if row else None
 
     def upsert_external_work_ref(
         self,
@@ -2171,6 +2216,25 @@ def _external_work_ref(row: Any) -> ExternalWorkRef:
         sync_status=str(row["sync_status"] or ""),
         last_sync_error=str(row["last_sync_error"] or ""),
         last_synced_at=str(row["last_synced_at"] or ""),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def _work_system_connection(row: Any) -> WorkSystemConnection:
+    return WorkSystemConnection(
+        id=int(row["id"]),
+        project_id=int(row["project_id"]) if row["project_id"] is not None else None,
+        run_id=int(row["run_id"]) if row["run_id"] is not None else None,
+        system=str(row["system"]),
+        name=str(row["name"] or ""),
+        base_url=str(row["base_url"] or ""),
+        repository=str(row["repository"] or ""),
+        default_branch=str(row["default_branch"] or ""),
+        token_ref=str(row["token_ref"] or ""),
+        risk_mode=str(row["risk_mode"] or ""),
+        status=str(row["status"] or ""),
+        metadata=_json_column(row["metadata"], default={}),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )
