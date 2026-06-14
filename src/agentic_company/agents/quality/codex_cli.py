@@ -410,6 +410,12 @@ Your job:
   coordinator paraphrase. If coordinator text conflicts with the canonical work
   item or artifacts, report the contract mismatch and validate the canonical
   acceptance criteria.
+- Validate ONLY this work item's acceptance criteria. Capabilities the plan
+  scopes to a LATER work item are out of scope here: do not require them, and do
+  NOT count them as this item's passing evidence even if they happen to be
+  present — they are proven when that item runs, and the whole-product contract
+  is validated only at the final / deployment QA smoke. Crediting a future item's
+  feature here blurs the sprint boundary and is a QA contract violation.
 - Treat `{run_dir}` as the delivery run workspace and
   `{request.target_project_dir}` as the generated product project.
 - Design the QA approach yourself from the work item contract, artifacts, and
