@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import logging
 import threading
@@ -511,17 +513,44 @@ _AGENT_DISPLAY = {
 # show yet, and a comment can't host a binary anyway).
 _BOARD_ARTIFACT_SUFFIXES = (".md", ".csv", ".mmd")
 _ARTIFACT_EMBED_LIMIT = 8000  # cap per artifact so a comment stays under GitHub's limit
+# Internal Codex trace — NEVER on a public card. prompt.md = instructions leakage;
+# summary.md = the comment text itself; execution.log/events.jsonl = raw trace.
+_INTERNAL_ARTIFACT_NAMES = {
+    "prompt.md",
+    "summary.md",
+    "execution.log",
+    "events.jsonl",
+    "raw_events.jsonl",
+    "context.json",
+    "status.json",
+}
+
+
+def _is_internal_artifact(low_ref: str) -> bool:
+    name = low_ref.rsplit("/", 1)[-1]
+    return name in _INTERNAL_ARTIFACT_NAMES or "/codex/" in low_ref
+
+
+def _clean_comment_content(content: str) -> str:
+    """Strip the internal 'Agent response metadata' trailer (execution_id /
+    codex_thread_id / next-action) — noise/leakage on a public board card."""
+    text = content or ""
+    idx = text.find("\nAgent response metadata:")
+    if idx != -1:
+        text = text[:idx]
+    return text.strip()
 
 
 def _artifact_section(repo: Any, db_run_id: int, run_uid: str, refs: list[str]) -> str:
     """Markdown for a card comment that EMBEDS artifact content (no binary upload
-    needed): .mmd renders as a Mermaid diagram, .md/.csv collapse into <details>."""
+    needed): .mmd renders as a Mermaid diagram, .md/.csv collapse into <details>.
+    Internal Codex trace (prompt.md/summary.md/logs) is excluded — leakage."""
     from agentic_company.platform.artifact_registry import artifact_id_for
 
     blocks: list[str] = []
     for ref in refs:
         low = str(ref).lower()
-        if not low.endswith(_BOARD_ARTIFACT_SUFFIXES):
+        if _is_internal_artifact(low) or not low.endswith(_BOARD_ARTIFACT_SUFFIXES):
             continue
         name = str(ref).rsplit("/", 1)[-1]
         text = ""
@@ -537,13 +566,36 @@ def _artifact_section(repo: Any, db_run_id: int, run_uid: str, refs: list[str]) 
             text = text[:_ARTIFACT_EMBED_LIMIT] + "\n… (truncated)"
         if low.endswith(".mmd"):  # Mermaid renders natively in a comment
             blocks.append(f"**{name}**\n\n```mermaid\n{text}\n```")
-        elif low.endswith(".csv"):
-            blocks.append(
-                f"<details><summary>📄 {name}</summary>\n\n```csv\n{text}\n```\n\n</details>"
-            )
+        elif low.endswith(".csv"):  # render as a native GitHub table, not raw text
+            inner = _csv_to_markdown_table(text) or f"```\n{text}\n```"
+            blocks.append(f"<details><summary>📄 {name}</summary>\n\n{inner}\n\n</details>")
         else:  # .md
             blocks.append(f"<details><summary>📄 {name}</summary>\n\n{text}\n\n</details>")
     return "\n\n**Artifacts**\n\n" + "\n\n".join(blocks) if blocks else ""
+
+
+def _csv_to_markdown_table(text: str, *, max_rows: int = 60) -> str:
+    """Render CSV as a GitHub Markdown table (clean) instead of raw code text."""
+    try:
+        rows = [r for r in csv.reader(io.StringIO(text)) if any(c.strip() for c in r)]
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+    width = max(len(r) for r in rows)
+
+    def cell(value: str) -> str:
+        return str(value).replace("|", "\\|").replace("\n", " ").strip() or " "
+
+    def line(values: list[str]) -> str:
+        padded = (list(values) + [""] * width)[:width]
+        return "| " + " | ".join(cell(v) for v in padded) + " |"
+
+    out = [line(rows[0]), "| " + " | ".join("---" for _ in range(width)) + " |"]
+    out += [line(r) for r in rows[1 : max_rows + 1]]
+    if len(rows) - 1 > max_rows:
+        out.append(f"\n_…and {len(rows) - 1 - max_rows} more rows_")
+    return "\n".join(out)
 
 
 def _issue_body(item: RuntimeWorkItem) -> str:
@@ -612,7 +664,7 @@ def mirror_response_comment_now(
             BoardItem(work_item_id=work_item_id, title=item.title, body=_issue_body(item))
         )
         role = _AGENT_DISPLAY.get(from_agent, from_agent or "Agent")
-        body = f"**{role}**\n\n{content.strip()}"
+        body = f"**{role}**\n\n{_clean_comment_content(content)}"
         body += _artifact_section(repo, db_run_id, run_uid, artifact_refs)
         mirror.mirror_comment(
             BoardComment(

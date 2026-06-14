@@ -276,23 +276,51 @@ def test_response_comment_posts_role_message_and_filters_artifacts(monkeypatch):
     assert len(board.items) == 1  # the card is ensured before commenting
 
 
-def test_artifact_section_embeds_content_inline(monkeypatch):
+def test_artifact_section_embeds_content_and_excludes_trace(monkeypatch):
     class _Repo:
         def get_artifact_content(self, db_run_id, aid):
-            return {"content_text": "graph TD; A-->B" if aid.endswith(".mmd") else "# Notes\nbody"}
+            if aid.endswith(".mmd"):
+                return {"content_text": "graph TD; A-->B"}
+            if aid.endswith(".csv"):
+                return {"content_text": "name,age\nAnn,30\nBob,25"}
+            return {"content_text": "# Notes\nbody"}
 
     monkeypatch.setattr(
         "agentic_company.platform.artifact_registry.artifact_id_for",
         lambda run, path: path,
     )
     section = rdb._artifact_section(
-        _Repo(), 1, "run", ["diagram.mmd", "notes.md", "data.csv", "shot.png", "x.json"]
+        _Repo(),
+        1,
+        "run",
+        [
+            "upstream-planning/architecture.mmd",
+            "upstream-planning/architecture.md",
+            "upstream-planning/roadmap.csv",
+            "x.json",
+            "architect/codex/exec-1/prompt.md",  # instructions leakage
+            "architect/codex/exec-1/summary.md",  # redundant trace
+        ],
     )
     assert "```mermaid" in section and "graph TD" in section  # mermaid renders natively
-    assert "<details>" in section and "notes.md" in section  # md collapsed
-    assert "```csv" in section  # csv as a code block
-    assert "shot.png" not in section  # png deferred
+    assert "<details>" in section and "architecture.md" in section  # md collapsed
+    assert "| name | age |" in section  # csv rendered as a native table, not raw text
     assert "x.json" not in section  # json excluded
+    assert "prompt.md" not in section  # instructions leakage excluded
+    assert "summary.md" not in section  # codex trace excluded
+
+
+def test_csv_to_markdown_table_handles_quotes_and_pipes():
+    table = rdb._csv_to_markdown_table('a,b\n"x,y",p|q')
+    assert "| a | b |" in table
+    assert "| x,y | p\\|q |" in table  # comma kept inside quoted cell; pipe escaped
+
+
+def test_clean_comment_content_strips_internal_metadata():
+    raw = (
+        "Wrote the materials.\n\nAgent response metadata:\nexecution_id: exec-1\ncodex_thread_id: 9"
+    )
+    assert rdb._clean_comment_content(raw) == "Wrote the materials."
 
 
 def test_evict_run_mirror_caches_clears_only_that_run():
