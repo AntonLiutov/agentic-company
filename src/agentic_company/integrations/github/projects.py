@@ -140,24 +140,16 @@ class GitHubProjectsBoardAdapter:
     def link_pr(self, work_item_id: str, pr_url: str, pr_id: str = "") -> BoardRef:
         ref = self._issues.link_pr(work_item_id, pr_url, pr_id)
         if pr_url:
-            # Surface the PR on the issue (before it auto-closes) and on the board.
+            # Link the PR on the work item's issue only — NOT as a separate board
+            # card. GitHub's project automation drops every new card into the
+            # default Todo column, which would clutter the board with a duplicate
+            # for an already-Done item. One card per work item; PRs link to it.
             self._issues.post_comment(
                 BoardComment(
                     work_item_id,
                     f"Pull request: {pr_url}",
                     idempotency_key=f"{work_item_id}:prlink:{pr_url}",
                 )
-            )
-            self._gh.run(
-                [
-                    "project",
-                    "item-add",
-                    self._project_number,
-                    "--owner",
-                    self._owner,
-                    "--url",
-                    pr_url,
-                ]
             )
         return ref
 

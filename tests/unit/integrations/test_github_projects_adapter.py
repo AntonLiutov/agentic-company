@@ -116,7 +116,7 @@ def test_review_maps_to_in_progress_with_an_annotation_comment():
     assert len(comments) == 1  # the sub-status is annotated on the issue
 
 
-def test_link_pr_comments_and_adds_pr_to_board():
+def test_link_pr_comments_the_pr_on_the_issue_not_a_separate_card():
     gh, store = _FakeGh(), _FakeStore()
     board = _adapter(gh, store)
     board.ensure_item(BoardItem("F1", "Build F1"))
@@ -124,5 +124,6 @@ def test_link_pr_comments_and_adds_pr_to_board():
     board.link_pr("F1", "https://github.com/o/r/pull/9", pr_id="9")
     comments = [c for c in gh.calls if c[:2] == ["issue", "comment"]]
     assert any("Pull request:" in " ".join(c) for c in comments)
+    # The PR is linked on the issue, NOT added as a separate board card.
     pr_adds = [c for c in gh.calls if c[:2] == ["project", "item-add"] and "pull/9" in " ".join(c)]
-    assert len(pr_adds) == 1
+    assert len(pr_adds) == 0
