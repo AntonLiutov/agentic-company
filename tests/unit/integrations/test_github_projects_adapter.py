@@ -55,6 +55,8 @@ class _FakeGh:
             return "https://github.com/o/r/issues/5\n"
         if args[:2] == ["project", "item-add"] and "--format" in args:
             return '{"id":"PVTI_item5"}'
+        if args[:2] == ["pr", "view"]:
+            return "Opened by Agentic Delivery Lab."
         return ""
 
 
@@ -132,14 +134,17 @@ def test_todo_moves_to_its_own_todo_column():
     assert "o-todo" in edits[-1]  # todo has its own explicit column
 
 
-def test_link_pr_comments_the_pr_on_the_issue_not_a_separate_card():
+def test_link_pr_creates_native_link_not_a_card_or_comment():
     gh, store = _FakeGh(), _FakeStore()
     board = _adapter(gh, store)
     board.ensure_item(BoardItem("F1", "Build F1"))
 
     board.link_pr("F1", "https://github.com/o/r/pull/9", pr_id="9")
+    # Native "Linked pull requests": a Closes #<issue> reference on the PR body.
+    edits = [c for c in gh.calls if c[:2] == ["pr", "edit"]]
+    assert any("Closes #5" in " ".join(c) for c in edits)
+    # NOT a comment, and NOT a separate board card.
     comments = [c for c in gh.calls if c[:2] == ["issue", "comment"]]
-    assert any("Pull request:" in " ".join(c) for c in comments)
-    # The PR is linked on the issue, NOT added as a separate board card.
+    assert len(comments) == 0
     pr_adds = [c for c in gh.calls if c[:2] == ["project", "item-add"] and "pull/9" in " ".join(c)]
     assert len(pr_adds) == 0

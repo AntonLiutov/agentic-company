@@ -212,20 +212,11 @@ class GitHubProjectsBoardAdapter:
         return None
 
     def link_pr(self, work_item_id: str, pr_url: str, pr_id: str = "") -> BoardRef:
-        ref = self._issues.link_pr(work_item_id, pr_url, pr_id)
-        if pr_url:
-            # Link the PR on the work item's issue only — NOT as a separate board
-            # card. GitHub's project automation drops every new card into the
-            # default Todo column, which would clutter the board with a duplicate
-            # for an already-Done item. One card per work item; PRs link to it.
-            self._issues.post_comment(
-                BoardComment(
-                    work_item_id,
-                    f"Pull request: {pr_url}",
-                    idempotency_key=f"{work_item_id}:prlink:{pr_url}",
-                )
-            )
-        return ref
+        # Native "Linked pull requests": the issues adapter adds a Closes #N
+        # reference to the PR body — NOT a separate board card (GitHub automation
+        # would drop a duplicate into Todo) and NOT just a comment. The card's
+        # built-in field populates and merging the PR closes the issue -> Done.
+        return self._issues.link_pr(work_item_id, pr_url, pr_id)
 
     def _project_item_id(self, work_item_id: str) -> str | None:
         for ref in self._store.list_external_work_refs(

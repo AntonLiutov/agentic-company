@@ -9,6 +9,7 @@ best-effort boundary that swallows it so a GitHub outage never breaks a run.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Protocol
 
 from agentic_company.integrations.github.cli import GhLike
@@ -111,7 +112,24 @@ class GitHubBoardAdapter:
 
     def link_pr(self, work_item_id: str, pr_url: str, pr_id: str = "") -> BoardRef:
         self._persist(work_item_id, "pr", pr_url or f"{work_item_id}:pr", pr_id, pr_url)
+        issue = self._ref(work_item_id, "issue")
+        if pr_url and issue is not None and issue.external_id:
+            self._link_pr_closes_issue(pr_url, issue.external_id)
         return BoardRef(work_item_id, self.system, "pr", pr_id, pr_url)
+
+    def _link_pr_closes_issue(self, pr_url: str, issue_number: str) -> None:
+        """Connect the PR to the work item's issue natively.
+
+        GitHub's built-in *Linked pull requests* field is populated by a closing
+        reference in the PR body (``Closes #N``) or commits — never by a comment.
+        Adds the reference once (idempotent) so the card shows the PR and merging
+        it auto-closes the issue, landing the card in Done.
+        """
+        body = self._gh.run(["pr", "view", pr_url, "--json", "body", "--jq", ".body"]).strip()
+        if re.search(rf"#{re.escape(issue_number)}\b", body):
+            return  # already references the issue
+        new_body = f"{body}\n\nCloses #{issue_number}".strip()
+        self._gh.run(["pr", "edit", pr_url, "--body", new_body])
 
     # --- internals ---------------------------------------------------------
 

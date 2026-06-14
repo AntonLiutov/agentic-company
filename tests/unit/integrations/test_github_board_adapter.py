@@ -103,6 +103,48 @@ def test_set_status_done_closes_issue():
     assert ["issue", "close", "12", "--repo", "o/r"] in gh.calls
 
 
+def test_link_pr_adds_closes_reference_to_pr_body():
+    gh = _FakeGh(
+        {
+            "issue:create": "https://github.com/o/r/issues/12\n",
+            "pr:view": "Opened by Agentic Delivery Lab.",
+        }
+    )
+    store = _FakeStore()
+    board = _adapter(gh, store)
+    board.ensure_item(BoardItem("F1", "Build F1"))
+
+    board.link_pr("F1", "https://github.com/o/r/pull/20", pr_id="20")
+    edits = [c for c in gh.calls if c[:2] == ["pr", "edit"]]
+    assert len(edits) == 1
+    assert "Closes #12" in edits[0][-1]  # native "Linked pull requests"
+
+
+def test_link_pr_is_idempotent_when_issue_already_referenced():
+    gh = _FakeGh(
+        {
+            "issue:create": "https://github.com/o/r/issues/12\n",
+            "pr:view": "Work for the feature. Closes #12",
+        }
+    )
+    store = _FakeStore()
+    board = _adapter(gh, store)
+    board.ensure_item(BoardItem("F1", "Build F1"))
+
+    board.link_pr("F1", "https://github.com/o/r/pull/20", pr_id="20")
+    edits = [c for c in gh.calls if c[:2] == ["pr", "edit"]]
+    assert edits == []  # already linked -> no body rewrite
+
+    # #1 must not match the existing "#12" reference (word boundary).
+    gh2 = _FakeGh(
+        {"issue:create": "https://github.com/o/r/issues/1\n", "pr:view": "Closes #12"}
+    )
+    board2 = _adapter(gh2, _FakeStore())
+    board2.ensure_item(BoardItem("F2", "Build F2"))
+    board2.link_pr("F2", "https://github.com/o/r/pull/21", pr_id="21")
+    assert any(c[:2] == ["pr", "edit"] for c in gh2.calls)  # #1 != #12 -> still links
+
+
 def test_gh_runner_raises_when_gh_missing():
     runner = GhRunner(gh_binary="definitely-not-a-real-binary-xyz")
     with pytest.raises(GhError):
