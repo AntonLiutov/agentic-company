@@ -274,26 +274,36 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         codex_model: Annotated[str, Form()] = DEFAULT_CODEX_MODEL,
         codex_reasoning: Annotated[str, Form()] = "medium",
         service_tier: Annotated[str, Form()] = "standard",
+        board_adapter: Annotated[str, Form()] = "internal",
+        repository: Annotated[str, Form()] = "",
+        project_owner: Annotated[str, Form()] = "",
+        project_number: Annotated[str, Form()] = "",
     ) -> Response:
         agent_provider = normalize_agent_provider(agent_provider)
         agent_model = normalize_agent_model(agent_provider, agent_model)
         codex_model = normalize_codex_model(codex_model)
+        board_adapter = normalize_board_adapter(board_adapter)
+        form_values = new_project_form_values(
+            name=name,
+            request_text=request_text,
+            mode=mode,
+            complexity=complexity,
+            agent_provider=agent_provider,
+            agent_model=agent_model,
+            codex_model=codex_model,
+            codex_reasoning=codex_reasoning,
+            service_tier=service_tier,
+            board_adapter=board_adapter,
+            repository=repository,
+            project_owner=project_owner,
+            project_number=project_number,
+        )
         if not name.strip() or not request_text.strip():
             return render_new_project(
                 request,
                 user,
                 error="Project name and request are required.",
-                form_values=new_project_form_values(
-                    name=name,
-                    request_text=request_text,
-                    mode=mode,
-                    complexity=complexity,
-                    agent_provider=agent_provider,
-                    agent_model=agent_model,
-                    codex_model=codex_model,
-                    codex_reasoning=codex_reasoning,
-                    service_tier=service_tier,
-                ),
+                form_values=form_values,
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         repo = get_repo(request)
@@ -306,17 +316,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
                     "Add your OpenAI key in Settings before starting. "
                     "It powers your private projects."
                 ),
-                form_values=new_project_form_values(
-                    name=name,
-                    request_text=request_text,
-                    mode=mode,
-                    complexity=complexity,
-                    agent_provider=agent_provider,
-                    agent_model=agent_model,
-                    codex_model=codex_model,
-                    codex_reasoning=codex_reasoning,
-                    service_tier=service_tier,
-                ),
+                form_values=form_values,
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         gemini_api_key = user_or_platform_gemini_key(repo, user)
@@ -325,17 +325,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
                 request,
                 user,
                 error="Gemini is not configured yet. Add a Gemini key in Settings.",
-                form_values=new_project_form_values(
-                    name=name,
-                    request_text=request_text,
-                    mode=mode,
-                    complexity=complexity,
-                    agent_provider=agent_provider,
-                    agent_model=agent_model,
-                    codex_model=codex_model,
-                    codex_reasoning=codex_reasoning,
-                    service_tier=service_tier,
-                ),
+                form_values=form_values,
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         project = repo.create_project(
@@ -345,6 +335,14 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             mode=mode,
             complexity=complexity,
             status="starting",
+        )
+        _maybe_create_board_connection(
+            repo,
+            project_id=project.id,
+            board_adapter=board_adapter,
+            repository=repository,
+            project_owner=project_owner,
+            project_number=project_number,
         )
         run_dir = create_web_console_run(
             user.username,
@@ -1159,6 +1157,10 @@ def new_project_form_values(
     codex_model: str = DEFAULT_CODEX_MODEL,
     codex_reasoning: str = "medium",
     service_tier: str = "standard",
+    board_adapter: str = "internal",
+    repository: str = "",
+    project_owner: str = "",
+    project_number: str = "",
 ) -> dict[str, str]:
     agent_provider = normalize_agent_provider(agent_provider)
     return {
@@ -1171,7 +1173,49 @@ def new_project_form_values(
         "codex_model": normalize_codex_model(codex_model),
         "codex_reasoning": codex_reasoning,
         "service_tier": service_tier,
+        "board_adapter": normalize_board_adapter(board_adapter),
+        "repository": repository.strip(),
+        "project_owner": project_owner.strip(),
+        "project_number": str(project_number).strip(),
     }
+
+
+def normalize_board_adapter(value: str) -> str:
+    return value if value in {"internal", "github"} else "internal"
+
+
+def _maybe_create_board_connection(
+    repo: ConsoleRepository,
+    *,
+    project_id: int,
+    board_adapter: str,
+    repository: str,
+    project_owner: str,
+    project_number: str,
+) -> None:
+    """Record a project-scoped GitHub work-system connection (best-effort).
+
+    Stores the repository and (optional) Project board coordinates in the
+    connection's metadata; the run mirror resolves the board field ids lazily on
+    first use. A failure here must not block project creation — the run still
+    delivers on ADL's internal board.
+    """
+    if board_adapter != "github" or not repository.strip():
+        return
+    owner = project_owner.strip() or repository.strip().split("/", 1)[0]
+    metadata: dict[str, Any] = {"owner": owner}
+    if str(project_number).strip():
+        metadata["project_number"] = str(project_number).strip()
+    try:
+        repo.create_work_system_connection(
+            project_id=project_id,
+            system="github",
+            name="GitHub",
+            repository=repository.strip(),
+            metadata=metadata,
+        )
+    except Exception as exc:  # best-effort: never block project creation
+        LOGGER.warning("Could not create GitHub board connection: %s", exc)
 
 
 def normalize_agent_provider(provider: str) -> str:

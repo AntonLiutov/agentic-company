@@ -219,6 +219,56 @@ def test_create_project_starts_run_with_monkeypatched_runtime(tmp_path, monkeypa
     assert repo.list_projects_for_user(1)[0].name == "Task Tracker"
 
 
+def test_create_project_with_github_board_records_connection(tmp_path, monkeypatch):
+    repo = ConsoleRepository()
+    app = create_app(repo)
+    client = TestClient(app)
+    client.post(
+        "/register",
+        data={"email": "boarder@example.test", "username": "boarder", "password": "password-1"},
+    )
+    repo.save_provider_secret(1, "openai", "sk-test-board")
+    run_root = tmp_path / "runs"
+
+    def fake_create_console_run(username, requirements_text):
+        run_dir = run_root / "board-test"
+        run_dir.mkdir(parents=True)
+        (run_dir / "00-requirements.md").write_text(requirements_text, encoding="utf-8")
+        return run_dir
+
+    monkeypatch.setattr(
+        "agentic_company.console.web.app.create_web_console_run", fake_create_console_run
+    )
+    monkeypatch.setattr("agentic_company.console.web.app.start_codex_execution", lambda run_dir: 1)
+
+    response = client.post(
+        "/projects",
+        data={
+            "name": "Board App",
+            "request_text": "Build a board app",
+            "mode": "ui_web_app",
+            "complexity": "simple",
+            "agent_provider": "openai",
+            "agent_model": "gpt-4.1",
+            "codex_model": "gpt-5.5",
+            "codex_reasoning": "medium",
+            "service_tier": "standard",
+            "board_adapter": "github",
+            "repository": "AntonLiutov/board-app",
+            "project_number": "5",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    project_id = repo.list_projects_for_user(1)[0].id
+    conn = repo.get_active_work_system_connection(project_id=project_id)
+    assert conn is not None
+    assert conn.repository == "AntonLiutov/board-app"
+    assert conn.metadata["owner"] == "AntonLiutov"  # derived from the repository
+    assert conn.metadata["project_number"] == "5"
+
+
 def test_new_run_creates_canonical_planning_work_items(tmp_path):
     repo = ConsoleRepository()
     repo.init_schema()

@@ -118,6 +118,28 @@
           </label>
         </div>
       </details>
+      <details class="form-section">
+        <summary>
+          <span>Delivery board</span>
+          <small>{{ "GitHub Projects" if form_values.board_adapter == "github" else "Internal board" }}</small>
+        </summary>
+        <p class="section-hint">Mirror work items onto a kanban board. Internal keeps everything in ADL; GitHub mirrors issues, status columns and PRs onto a Project board.</p>
+        <div class="form-grid form-grid-three">
+          <label>Board
+            <select name="board_adapter">
+              <option value="internal" {{ "selected" if form_values.board_adapter != "github" else "" }}>Internal (default)</option>
+              <option value="github" {{ "selected" if form_values.board_adapter == "github" else "" }}>GitHub Projects</option>
+            </select>
+          </label>
+          <label>Repository <small>owner/repo</small>
+            <input name="repository" placeholder="AntonLiutov/my-app" value="{{ form_values.repository }}">
+          </label>
+          <label>Project number <small>optional</small>
+            <input name="project_number" placeholder="5" value="{{ form_values.project_number }}">
+          </label>
+        </div>
+        <p class="section-hint">Owner defaults to the repository owner. Leave the project number empty to mirror issues only (no kanban columns).</p>
+      </details>
     </div>
     <label class="full">Product request
       <textarea id="request-text" name="request_text" rows="8" placeholder="Paste the product request here..." required>{{ form_values.request_text }}</textarea>
