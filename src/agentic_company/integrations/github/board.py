@@ -110,6 +110,17 @@ class GitHubBoardAdapter:
             )
         return None
 
+    def set_milestone(self, work_item_id: str, milestone_title: str) -> None:
+        """Assign the work item's issue to a sprint Milestone (board grouping)."""
+        issue = self._ref(work_item_id, "issue")
+        if issue is None or not issue.external_id or not milestone_title:
+            return None
+        self._gh.run(
+            ["issue", "edit", issue.external_id, "--repo", self._repo,
+             "--milestone", milestone_title]
+        )
+        return None
+
     def link_pr(self, work_item_id: str, pr_url: str, pr_id: str = "") -> BoardRef:
         self._persist(work_item_id, "pr", pr_url or f"{work_item_id}:pr", pr_id, pr_url)
         issue = self._ref(work_item_id, "issue")

@@ -145,6 +145,21 @@ def test_link_pr_is_idempotent_when_issue_already_referenced():
     assert any(c[:2] == ["pr", "edit"] for c in gh2.calls)  # #1 != #12 -> still links
 
 
+def test_set_milestone_assigns_issue_to_sprint():
+    gh = _FakeGh({"issue:create": "https://github.com/o/r/issues/12\n"})
+    store = _FakeStore()
+    board = _adapter(gh, store)
+    board.ensure_item(BoardItem("F1", "Build F1"))
+
+    board.set_milestone("F1", "Sprint 1")
+    edits = [c for c in gh.calls if c[:2] == ["issue", "edit"]]
+    assert ["issue", "edit", "12", "--repo", "o/r", "--milestone", "Sprint 1"] in edits
+
+    board.set_milestone("F1", "")  # empty title -> no-op
+    edits = [c for c in gh.calls if c[:2] == ["issue", "edit"]]
+    assert len(edits) == 1
+
+
 def test_gh_runner_raises_when_gh_missing():
     runner = GhRunner(gh_binary="definitely-not-a-real-binary-xyz")
     with pytest.raises(GhError):

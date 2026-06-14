@@ -43,8 +43,51 @@ _COLUMN_COLORS = {
 }
 
 
+# ADL always has a planning sprint; the run's real sprint titles are passed in.
+DEFAULT_SPRINTS = ("Planning",)
+
+
 def _gql_str(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def ensure_sprints(
+    gh: GhLike,
+    *,
+    repository: str,
+    sprints: tuple[str, ...] = DEFAULT_SPRINTS,
+    descriptions: dict[str, str] | None = None,
+) -> dict[str, int]:
+    """Ensure the repo has one Milestone per ADL sprint; return ``title -> number``.
+
+    Milestones are how a GitHub board groups / filters / swimlanes by sprint (the
+    built-in *Milestone* field on every card). Run once when a GitHub board is
+    connected: existing milestones are reused, missing ones created. Idempotent —
+    a second call creates nothing. Best-effort by the caller (a milestone failure
+    must never break a run).
+    """
+
+    descriptions = descriptions or {}
+    out = gh.run(
+        [
+            "api",
+            f"repos/{repository}/milestones?state=all&per_page=100",
+            "--jq",
+            "[.[]|{title,number}]",
+        ]
+    )
+    existing = {m["title"]: int(m["number"]) for m in json.loads(out or "[]")}
+    result: dict[str, int] = {}
+    for title in sprints:
+        if title in existing:
+            result[title] = existing[title]
+            continue
+        args = ["api", f"repos/{repository}/milestones", "-f", f"title={title}", "-f", "state=open"]
+        if descriptions.get(title):
+            args += ["-f", f"description={descriptions[title]}"]
+        created = gh.run(args + ["--jq", ".number"])
+        result[title] = int(json.loads(created))
+    return result
 
 
 def ensure_status_columns(
@@ -210,6 +253,10 @@ class GitHubProjectsBoardAdapter:
                 )
             )
         return None
+
+    def set_milestone(self, work_item_id: str, milestone_title: str) -> None:
+        """Assign the card's issue to a sprint Milestone (board swimlane/group)."""
+        self._issues.set_milestone(work_item_id, milestone_title)
 
     def link_pr(self, work_item_id: str, pr_url: str, pr_id: str = "") -> BoardRef:
         # Native "Linked pull requests": the issues adapter adds a Closes #N
