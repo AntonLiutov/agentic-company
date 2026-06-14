@@ -13,10 +13,41 @@ PR link, comments and detail; the Project card is the kanban *view* of that issu
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 
 from agentic_company.integrations.github.board import BoardRefStore, GitHubBoardAdapter
 from agentic_company.integrations.github.cli import GhLike
 from agentic_company.ports.board import BoardComment, BoardItem, BoardRef
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedBoard:
+    """The GitHub Projects ids a board adapter needs, resolved from the API."""
+
+    project_id: str
+    status_field_id: str
+    status_options: dict[str, str] = field(default_factory=dict)  # column NAME -> option id
+
+
+def resolve_project_board(gh: GhLike, *, owner: str, project_number: int | str) -> ResolvedBoard:
+    """Resolve a user/org Project's node id, Status field id and current options.
+
+    One read per board connection (the ids are stable): the adapter needs the
+    project node id and the Status single-select field id + option ids to move
+    cards. Raises (via ``gh``) if the project or its Status field is absent.
+    """
+
+    number = str(project_number)
+    view = json.loads(gh.run(["project", "view", number, "--owner", owner, "--format", "json"]))
+    out = gh.run(["project", "field-list", number, "--owner", owner, "--format", "json"])
+    fields = json.loads(out)["fields"]
+    status = next((f for f in fields if f.get("name") == "Status"), None)
+    options = {o["name"]: o["id"] for o in (status or {}).get("options", [])}
+    return ResolvedBoard(
+        project_id=str(view["id"]),
+        status_field_id=str(status["id"]) if status else "",
+        status_options=options,
+    )
 
 # ADL status -> board column NAME. Every ADL status gets its own explicit column
 # and is always set, so GitHub's "No Status" bucket stays empty (it only appears
