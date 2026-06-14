@@ -506,8 +506,44 @@ _AGENT_DISPLAY = {
     "team-lead-agent": "Delivery Lead",
     "head-agent": "Coordinator",
 }
-# Only these artifact suffixes go on the board (no .json / internal traces).
-_BOARD_ARTIFACT_SUFFIXES = (".md", ".csv", ".png", ".mmd")
+# Only these artifact suffixes go on the board: human-facing text we can embed
+# inline. .json is excluded (internal/technical); .png is deferred (nothing to
+# show yet, and a comment can't host a binary anyway).
+_BOARD_ARTIFACT_SUFFIXES = (".md", ".csv", ".mmd")
+_ARTIFACT_EMBED_LIMIT = 8000  # cap per artifact so a comment stays under GitHub's limit
+
+
+def _artifact_section(repo: Any, db_run_id: int, run_uid: str, refs: list[str]) -> str:
+    """Markdown for a card comment that EMBEDS artifact content (no binary upload
+    needed): .mmd renders as a Mermaid diagram, .md/.csv collapse into <details>."""
+    from agentic_company.platform.artifact_registry import artifact_id_for
+
+    blocks: list[str] = []
+    for ref in refs:
+        low = str(ref).lower()
+        if not low.endswith(_BOARD_ARTIFACT_SUFFIXES):
+            continue
+        name = str(ref).rsplit("/", 1)[-1]
+        text = ""
+        try:
+            content = repo.get_artifact_content(db_run_id, artifact_id_for(run_uid, str(ref)))
+            text = str((content or {}).get("content_text") or "").strip()
+        except Exception:
+            text = ""
+        if not text:
+            blocks.append(f"- `{ref}`")
+            continue
+        if len(text) > _ARTIFACT_EMBED_LIMIT:
+            text = text[:_ARTIFACT_EMBED_LIMIT] + "\n… (truncated)"
+        if low.endswith(".mmd"):  # Mermaid renders natively in a comment
+            blocks.append(f"**{name}**\n\n```mermaid\n{text}\n```")
+        elif low.endswith(".csv"):
+            blocks.append(
+                f"<details><summary>📄 {name}</summary>\n\n```csv\n{text}\n```\n\n</details>"
+            )
+        else:  # .md
+            blocks.append(f"<details><summary>📄 {name}</summary>\n\n{text}\n\n</details>")
+    return "\n\n**Artifacts**\n\n" + "\n\n".join(blocks) if blocks else ""
 
 
 def _issue_body(item: RuntimeWorkItem) -> str:
@@ -577,9 +613,7 @@ def mirror_response_comment_now(
         )
         role = _AGENT_DISPLAY.get(from_agent, from_agent or "Agent")
         body = f"**{role}**\n\n{content.strip()}"
-        arts = [r for r in artifact_refs if str(r).lower().endswith(_BOARD_ARTIFACT_SUFFIXES)]
-        if arts:
-            body += "\n\n**Artifacts:**\n" + "\n".join(f"- `{a}`" for a in arts)
+        body += _artifact_section(repo, db_run_id, run_uid, artifact_refs)
         mirror.mirror_comment(
             BoardComment(
                 work_item_id,

@@ -269,10 +269,30 @@ def test_response_comment_posts_role_message_and_filters_artifacts(monkeypatch):
     comment = board.comments[0]
     assert comment.body.startswith("**Builder**")
     assert "Implemented F1" in comment.body
-    assert "a.md" in comment.body and "b.png" in comment.body and "d.mmd" in comment.body
-    assert "c.json" not in comment.body and "e.txt" not in comment.body  # only md/csv/png/mmd
+    assert "a.md" in comment.body and "d.mmd" in comment.body
+    assert "b.png" not in comment.body  # png deferred
+    assert "c.json" not in comment.body and "e.txt" not in comment.body  # only md/csv/mmd
     assert comment.idempotency_key == "F1:msg:msg-1"
     assert len(board.items) == 1  # the card is ensured before commenting
+
+
+def test_artifact_section_embeds_content_inline(monkeypatch):
+    class _Repo:
+        def get_artifact_content(self, db_run_id, aid):
+            return {"content_text": "graph TD; A-->B" if aid.endswith(".mmd") else "# Notes\nbody"}
+
+    monkeypatch.setattr(
+        "agentic_company.platform.artifact_registry.artifact_id_for",
+        lambda run, path: path,
+    )
+    section = rdb._artifact_section(
+        _Repo(), 1, "run", ["diagram.mmd", "notes.md", "data.csv", "shot.png", "x.json"]
+    )
+    assert "```mermaid" in section and "graph TD" in section  # mermaid renders natively
+    assert "<details>" in section and "notes.md" in section  # md collapsed
+    assert "```csv" in section  # csv as a code block
+    assert "shot.png" not in section  # png deferred
+    assert "x.json" not in section  # json excluded
 
 
 def test_sprint_title_matches_adl_board_labels():
