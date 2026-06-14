@@ -1,4 +1,7 @@
+import os
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import agentic_company.integrations.commands as commands
@@ -160,6 +163,53 @@ def test_stream_command_terminates_when_stop_requested(tmp_path: Path, monkeypat
     assert "exit_code=130" in log_text
 
 
+def test_stream_command_stop_terminates_child_process_tree(tmp_path: Path):
+    log_path = tmp_path / "commands.log"
+    child_pid = {"value": 0}
+
+    def capture_child_pid(line: str) -> None:
+        if line.strip().isdigit():
+            child_pid["value"] = int(line.strip())
+
+    result = stream_command(
+        StreamedCommand(
+            command=[sys.executable, "-c", _parent_with_sleeping_child_script()],
+            cwd=tmp_path,
+            timeout_seconds=10,
+            log_path=log_path,
+            on_stdout_line=capture_child_pid,
+            stop_requested=lambda: child_pid["value"] != 0,
+        )
+    )
+
+    assert result.returncode == 130
+    assert child_pid["value"] != 0
+    assert _wait_until_process_exits(child_pid["value"])
+
+
+def test_stream_command_timeout_terminates_child_process_tree(tmp_path: Path):
+    log_path = tmp_path / "commands.log"
+    child_pid = {"value": 0}
+
+    def capture_child_pid(line: str) -> None:
+        if line.strip().isdigit():
+            child_pid["value"] = int(line.strip())
+
+    result = stream_command(
+        StreamedCommand(
+            command=[sys.executable, "-c", _parent_with_sleeping_child_script()],
+            cwd=tmp_path,
+            timeout_seconds=1,
+            log_path=log_path,
+            on_stdout_line=capture_child_pid,
+        )
+    )
+
+    assert result.returncode == 124
+    assert child_pid["value"] != 0
+    assert _wait_until_process_exits(child_pid["value"])
+
+
 def test_append_completed_command_log_supports_injected_executors(tmp_path: Path):
     log_path = tmp_path / "commands.log"
 
@@ -182,3 +232,42 @@ def test_append_completed_command_log_supports_injected_executors(tmp_path: Path
     assert "status=passed" in log_text
     assert "details=Command completed successfully." in log_text
     assert "done" in log_text
+
+
+def _parent_with_sleeping_child_script() -> str:
+    return (
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "print(child.pid, flush=True)\n"
+        "try:\n"
+        "    child.wait()\n"
+        "finally:\n"
+        "    time.sleep(60)\n"
+    )
+
+
+def _wait_until_process_exits(pid: int, timeout_seconds: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not _process_is_alive(pid):
+            return True
+        time.sleep(0.1)
+    return not _process_is_alive(pid)
+
+
+def _process_is_alive(pid: int) -> bool:
+    if os.name == "nt":
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return str(pid) in result.stdout
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True

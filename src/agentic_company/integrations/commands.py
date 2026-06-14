@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import queue
+import signal
 import subprocess
 import threading
 import time
@@ -61,6 +63,7 @@ def stream_command(spec: StreamedCommand) -> subprocess.CompletedProcess[str]:
             env={str(key): str(value) for key, value in spec.env.items()}
             if spec.env is not None
             else None,
+            **_process_group_kwargs(),
         )
     except FileNotFoundError as exc:
         message = f"{exc.filename or command[0]} was not found on PATH."
@@ -138,7 +141,7 @@ def stream_command(spec: StreamedCommand) -> subprocess.CompletedProcess[str]:
             )
 
         if time.monotonic() - started_at > spec.timeout_seconds:
-            process.kill()
+            _kill_process(process)
             reason = f"Command timed out after {spec.timeout_seconds} seconds."
             output_parts.append(reason + "\n")
             log.write_output(reason)
@@ -157,12 +160,45 @@ def stream_command(spec: StreamedCommand) -> subprocess.CompletedProcess[str]:
 def _terminate_process(process: subprocess.Popen[str]) -> None:
     if process.poll() is not None:
         return
-    process.terminate()
+    _signal_process_tree(process, force=False)
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=5)
+        _kill_process(process)
+
+
+def _kill_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    _signal_process_tree(process, force=True)
+    process.wait(timeout=5)
+
+
+def _process_group_kwargs() -> dict[str, bool]:
+    if os.name == "nt":
+        return {}
+    return {"start_new_session": True}
+
+
+def _signal_process_tree(process: subprocess.Popen[str], *, force: bool) -> None:
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return
+    signal_number = signal.SIGKILL if force else signal.SIGTERM
+    try:
+        os.killpg(os.getpgid(process.pid), signal_number)
+    except ProcessLookupError:
+        return
+    except PermissionError:
+        if force:
+            process.kill()
+        else:
+            process.terminate()
 
 
 def append_completed_command_log(
