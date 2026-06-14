@@ -229,6 +229,13 @@ def _apply_result(state: FullstackAgentGraphState) -> FullstackAgentGraphState:
             owner_agent=result.agent_id,
         ),
     )
+    if result.status == "codex_completed" and work_item_id:
+        try:  # best-effort: branch -> commit -> PR for this feature; never breaks delivery
+            from agentic_company.platform.delivery_pr import publish_work_item_pr
+
+            publish_work_item_pr(str(delivery_state["run_id"]), work_item_id)
+        except Exception:
+            pass
     append_downstream_response(updated, from_agent="fullstack-agent", result=result)
     return {**state, "delivery_state": updated}
 

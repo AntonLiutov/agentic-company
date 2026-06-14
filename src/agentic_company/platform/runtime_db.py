@@ -148,6 +148,12 @@ def materialize_planning_items(run_id: str) -> None:
                 source_refs=[str(value) for value in item.get("source_refs", [])],
             )
     _mirror_seed_work_items(repo, db_run_id, run_id)  # all planning items -> board at once
+    try:  # run start: clone an existing delivery repo before any agent builds
+        from agentic_company.platform.delivery_pr import ensure_run_repo
+
+        ensure_run_repo(run_id)
+    except Exception:  # best-effort: never block the run on repo setup
+        pass
 
 
 def materialize_pm_work_items(run_id: str, pm_artifacts: str | Path | None = None) -> None:
@@ -539,6 +545,35 @@ def _clean_comment_content(content: str) -> str:
     if idx != -1:
         text = text[:idx]
     return text.strip()
+
+
+def _submit_pr_mirror(run_uid: str, work_item_id: str, pr_url: str, pr_id: str) -> None:
+    """Schedule mirroring a PR onto the work item's board card."""
+    if not work_item_id or not pr_url:
+        return
+    from agentic_company.platform.mirror_dispatch import submit_mirror
+
+    submit_mirror(
+        (run_uid, work_item_id, "pr", pr_url),
+        lambda: mirror_pr_now(run_uid, work_item_id, pr_url, pr_id),
+    )
+
+
+def mirror_pr_now(run_uid: str, work_item_id: str, pr_url: str, pr_id: str) -> None:
+    """Link a PR onto the card (native Linked-PR + Closes #N, records the ref)."""
+    if run_uid in _NO_MIRROR_RUNS:
+        return
+    try:
+        from agentic_company.platform.run_mirror import get_run_mirror
+
+        repo, db_run_id = _repo_and_run(run_uid)
+        mirror = get_run_mirror(repo, db_run_id)
+        if mirror is None:
+            _NO_MIRROR_RUNS.add(run_uid)
+            return
+        mirror.mirror_pr(work_item_id, pr_url, pr_id)
+    except Exception as exc:  # best-effort: a PR mirror must not break a run
+        LOGGER.warning("PR mirror failed (%s): %s", work_item_id, exc)
 
 
 def _artifact_section(repo: Any, db_run_id: int, run_uid: str, refs: list[str]) -> str:
