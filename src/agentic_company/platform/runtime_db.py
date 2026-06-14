@@ -640,10 +640,11 @@ def claim_work_item_for_execution(record: ToolExecutionRecord) -> WorkItemClaimR
     _repo, _db_run_id, result = _with_db_retry(operation)
     if result.claimed:  # the item just went in_progress -> mirror its start...
         _submit_item_mirror(record.run_id, record.work_item_id)
-        # ...and let its card settle (bounded) before the worker starts on it.
+        # ...and let its card settle, but only briefly — the board is a view, never
+        # a gate on real delivery, so a slow GitHub can't stall the run on claim.
         from agentic_company.platform.mirror_dispatch import flush_mirror
 
-        flush_mirror((record.run_id, record.work_item_id))
+        flush_mirror((record.run_id, record.work_item_id), timeout=1.5)
     return result
 
 
