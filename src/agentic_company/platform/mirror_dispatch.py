@@ -106,8 +106,16 @@ def _max_workers() -> int:
         return DEFAULT_WORKERS
 
 
+def _disabled() -> bool:
+    # Unit tests run hundreds of cases in one process and must not spin up the
+    # background pool (or do any board I/O); they set AGENTIC_DISABLE_MIRROR.
+    return os.getenv("AGENTIC_DISABLE_MIRROR", "").strip().lower() in ("1", "true", "yes")
+
+
 def submit_mirror(key: Any, fn: Callable[[], None]) -> None:
     """Schedule ``fn`` on the mirror pool (instant, best-effort)."""
+    if _disabled():
+        return
     try:
         _dispatcher().submit(key, fn)
     except Exception as exc:  # dispatch must never break a run
@@ -116,6 +124,8 @@ def submit_mirror(key: Any, fn: Callable[[], None]) -> None:
 
 def flush_mirror(key: Any, timeout: float = 6.0) -> bool:
     """Wait (bounded) for a key's latest mirror to finish; False on timeout."""
+    if _disabled():
+        return True
     try:
         return _dispatcher().flush(key, timeout)
     except Exception:

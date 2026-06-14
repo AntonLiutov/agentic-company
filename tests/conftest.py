@@ -39,17 +39,10 @@ def isolate_unit_database_env(
     monkeypatch.setenv("AGENTIC_DATABASE_URL", postgres_test_database_url)
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("APP_SECRET_KEY", "test-app-secret-key-0123456789ab")
-
-    # Drain any async board-mirror work left over from a prior test so its DB
-    # connections can't hold locks while we TRUNCATE below, and clear its caches.
-    from agentic_company.platform import mirror_dispatch, run_mirror, runtime_db
-
-    mirror_dispatch.reset_dispatcher()
-    run_mirror.reset_run_mirror()
-    runtime_db._MIRROR_CARDED.clear()
-    runtime_db._MIRROR_STATUS.clear()
-    runtime_db._MIRROR_MILESTONED.clear()
-    runtime_db._NO_MIRROR_RUNS.clear()
+    # Unit tests must not spin up the async board-mirror pool (hundreds of cases
+    # in one process) or do any real board I/O; the mirror is exercised directly
+    # in its own tests and validated live.
+    monkeypatch.setenv("AGENTIC_DISABLE_MIRROR", "1")
 
     import psycopg
 
