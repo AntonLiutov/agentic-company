@@ -102,6 +102,8 @@ def build_run_mirror(repo: Any, db_run_id: int, *, gh: Any = None) -> WorkMirror
         status_field_id=field_id,
         status_options=options,
     )
+    where = f"board #{number}" if number else "issues-only"
+    LOGGER.info("Board mirror connected: run %s -> GitHub %s (%s)", db_run_id, repository, where)
     return WorkMirror(board)
 
 
@@ -125,7 +127,9 @@ def _provision_board(
     from agentic_company.integrations.github.projects import provision_project_board
 
     title = _board_title(repo, project_id, repository)
+    LOGGER.info("Provisioning a fresh GitHub board for %s ...", repository)
     number, resolved = provision_project_board(gh, owner=owner, repository=repository, title=title)
+    LOGGER.info("Provisioned GitHub board #%s (%s)", number, title)
     return number, resolved.project_id, resolved.status_field_id, resolved.status_options
 
 

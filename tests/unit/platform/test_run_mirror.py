@@ -1,11 +1,13 @@
 import json
 
 from agentic_company.integrations.github.projects import GitHubProjectsBoardAdapter
+from agentic_company.platform import run_mirror as run_mirror_mod
 from agentic_company.platform.run_mirror import (
     build_run_mirror,
     get_run_mirror,
     reset_run_mirror,
 )
+from agentic_company.platform.runtime_db import _mirror_seed_work_items, _sprint_title
 from agentic_company.platform.work_mirror import WorkMirror
 
 
@@ -131,3 +133,73 @@ def test_get_run_mirror_caches_per_run():
     reset_run_mirror(7)
     get_run_mirror(repo, 7, gh=object())
     assert repo.lookups == 2  # reset forces a rebuild
+
+
+class _SeedBoard:
+    system = "fake"
+
+    def __init__(self):
+        self.calls = []
+
+    def ensure_item(self, item):
+        self.calls.append(("item", item.work_item_id))
+
+    def post_comment(self, comment):
+        pass
+
+    def set_status(self, work_item_id, status):
+        self.calls.append(("status", work_item_id, status))
+
+    def link_pr(self, work_item_id, pr_url, pr_id=""):
+        pass
+
+    def set_milestone(self, work_item_id, milestone_title):
+        self.calls.append(("milestone", work_item_id, milestone_title))
+
+
+class _SeedItem:
+    def __init__(self, wid, sprint):
+        self.work_item_id = wid
+        self.title = f"Build {wid}"
+        self.status = "todo"
+        self.sprint_id = sprint
+
+
+class _SeedRepo:
+    def list_work_items(self, db_run_id):
+        return [_SeedItem("F1", "s1"), _SeedItem("F2", "s1"), _SeedItem("F3", "s2")]
+
+    def get_sprint_title(self, db_run_id, sprint_id):
+        return {"s1": "Sprint 1", "s2": "Sprint 2"}[sprint_id]
+
+
+def test_seed_mirrors_the_whole_backlog_at_once(monkeypatch):
+    board = _SeedBoard()
+    monkeypatch.setattr(
+        run_mirror_mod, "get_run_mirror", lambda repo, db_run_id, **k: WorkMirror(board)
+    )
+
+    _mirror_seed_work_items(_SeedRepo(), 1)
+
+    # all three items become cards in one pass (not one-by-one as they're picked up)
+    assert ("item", "F1") in board.calls
+    assert ("item", "F2") in board.calls
+    assert ("item", "F3") in board.calls
+    assert ("status", "F1", "todo") in board.calls
+    assert ("milestone", "F3", "Sprint 2") in board.calls
+
+
+class _TitleRepo:
+    def __init__(self, mapping):
+        self._m = mapping
+
+    def get_sprint_title(self, db_run_id, sprint_id):
+        return self._m.get(sprint_id, "")
+
+
+def test_sprint_title_uses_stored_title_then_humanized_fallback():
+    repo = _TitleRepo({"s1": "Sprint 1"})
+    assert _sprint_title(repo, 1, "s1") == "Sprint 1"  # stored title wins
+    assert _sprint_title(repo, 1, "planning") == "Planning"  # no row -> humanized
+    assert _sprint_title(repo, 1, "sprint-2") == "Sprint 2"
+    assert _sprint_title(repo, 1, "") == ""

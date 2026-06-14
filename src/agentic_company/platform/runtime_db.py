@@ -144,6 +144,7 @@ def materialize_planning_items(run_id: str) -> None:
                 owner_agent=str(item["suggested_owner_agent"]),
                 source_refs=[str(value) for value in item.get("source_refs", [])],
             )
+    _mirror_seed_work_items(repo, db_run_id)  # all planning items -> board at once
 
 
 def materialize_pm_work_items(run_id: str, pm_artifacts: str | Path | None = None) -> None:
@@ -176,6 +177,7 @@ def materialize_pm_work_items(run_id: str, pm_artifacts: str | Path | None = Non
                 owner_agent=str(item["suggested_owner_agent"]),
                 source_refs=[str(value) for value in item.get("source_refs", [])],
             )
+    _mirror_seed_work_items(repo, db_run_id)  # all feature items -> board at once
 
 
 def next_work_item(run_id: str, sprint_id: str) -> RuntimeWorkItem | None:
@@ -443,11 +445,50 @@ def _mirror_work_item_transition(
         item = get_work_item(run_uid, work_item_id)
         mirror.mirror_item(BoardItem(work_item_id=work_item_id, title=item.title))
         mirror.mirror_status(work_item_id, item.status)
-        sprint_title = repo.get_sprint_title(db_run_id, item.sprint_id)
+        sprint_title = _sprint_title(repo, db_run_id, item.sprint_id)
         if sprint_title:  # group the card under its sprint (board Milestone)
             mirror.mirror_milestone(work_item_id, sprint_title)
     except Exception as exc:  # best-effort: a board mirror must not break a run
         LOGGER.warning("Work-item mirror failed (%s): %s", work_item_id, exc)
+
+
+def _sprint_title(repo: Any, db_run_id: int, sprint_id: str) -> str:
+    """Board Milestone name for a work item's sprint.
+
+    Uses the sprint's stored title; falls back to a humanized sprint_id when no
+    sprint row exists (e.g. the 'planning' phase has work items but no sprint
+    row), so planning cards still land under a 'Planning' milestone.
+    """
+    title = repo.get_sprint_title(db_run_id, sprint_id)
+    if title:
+        return title
+    sid = (sprint_id or "").strip()
+    return sid.replace("-", " ").replace("_", " ").title() if sid else ""
+
+
+def _mirror_seed_work_items(repo: Any, db_run_id: int) -> None:
+    """Mirror every current work item onto the board the moment items are created.
+
+    So the whole backlog shows up at once (all in their column, usually To Do)
+    instead of cards appearing one-by-one as items are later picked up. Best-effort
+    and idempotent — re-seeding an already-mirrored item is a no-op.
+    """
+    try:
+        from agentic_company.platform.run_mirror import get_run_mirror
+
+        mirror = get_run_mirror(repo, db_run_id)
+        if mirror is None:
+            return
+        from agentic_company.ports.board import BoardItem
+
+        for item in repo.list_work_items(db_run_id):
+            mirror.mirror_item(BoardItem(work_item_id=item.work_item_id, title=item.title))
+            mirror.mirror_status(item.work_item_id, item.status)
+            sprint_title = _sprint_title(repo, db_run_id, item.sprint_id)
+            if sprint_title:
+                mirror.mirror_milestone(item.work_item_id, sprint_title)
+    except Exception as exc:  # best-effort: a board mirror must not break a run
+        LOGGER.warning("Seed mirror failed for run %s: %s", db_run_id, exc)
 
 
 def claim_work_item_for_execution(record: ToolExecutionRecord) -> WorkItemClaimResult:
