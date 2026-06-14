@@ -32,17 +32,21 @@ class ResolvedBoard:
 def provision_project_board(
     gh: GhLike, *, owner: str, repository: str, title: str
 ) -> tuple[str, ResolvedBoard]:
-    """Create a fresh user/org Project for an ADL project, link it, shape columns.
+    """Ensure a user/org Project for an ADL project, link it, shape columns.
 
-    Run once per ADL project (the result is cached on the connection): creates the
-    board, links it to ``repository`` so its issues/PRs surface there, then ensures
-    the standard status columns. Returns ``(project_number, ResolvedBoard)``.
+    Adopts an existing board with the same title if one is already there (a
+    retried/concurrent/second-process run never creates a duplicate board), else
+    creates one. Then links it to ``repository`` and ensures the status columns.
+    Returns ``(project_number, ResolvedBoard)``.
     """
 
-    created = json.loads(
-        gh.run(["project", "create", "--owner", owner, "--title", title, "--format", "json"])
-    )
-    number = str(created["number"])
+    number = _find_project_number_by_title(gh, owner, title)
+    if not number:
+        created = json.loads(
+            gh.run(["project", "create", "--owner", owner, "--title", title, "--format", "json"])
+        )
+        number = str(created["number"])
+    # Link is idempotent server-side; safe to re-run on an adopted board.
     gh.run(["project", "link", number, "--owner", owner, "--repo", repository])
     resolved = resolve_project_board(gh, owner=owner, project_number=number)
     options = dict(resolved.status_options)
@@ -54,6 +58,22 @@ def provision_project_board(
         status_field_id=resolved.status_field_id,
         status_options=options,
     )
+
+
+def _find_project_number_by_title(gh: GhLike, owner: str, title: str) -> str:
+    """Return an existing user/org Project number whose title matches, else ''."""
+    try:
+        out = gh.run(
+            ["project", "list", "--owner", owner, "--format", "json", "--limit", "200"]
+        )
+        data = json.loads(out or "{}")
+        projects = data.get("projects", data) if isinstance(data, dict) else data
+        for project in projects or []:
+            if str(project.get("title")) == title and not project.get("closed"):
+                return str(project.get("number"))
+    except Exception:  # a list failure must not block provisioning
+        return ""
+    return ""
 
 
 def resolve_project_board(gh: GhLike, *, owner: str, project_number: int | str) -> ResolvedBoard:

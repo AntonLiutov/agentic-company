@@ -90,6 +90,14 @@ class _ProvisionGh:
         return ""
 
 
+class _AdoptGh(_ProvisionGh):
+    def run(self, args, *, cwd=None):
+        if args[:2] == ["project", "list"]:
+            self.calls.append(args)
+            return json.dumps({"projects": [{"number": 7, "title": "ADL · App", "closed": False}]})
+        return super().run(args, cwd=cwd)
+
+
 def test_provision_project_board_creates_links_and_shapes_columns():
     gh = _ProvisionGh()
     number, board = provision_project_board(gh, owner="o", repository="o/app", title="ADL · App")
@@ -100,3 +108,13 @@ def test_provision_project_board_creates_links_and_shapes_columns():
     # The board was linked to the repo and its status columns ensured.
     assert ["project", "link", "9", "--owner", "o", "--repo", "o/app"] in gh.calls
     assert "Blocked" in board.status_options and "In Review" in board.status_options
+
+
+def test_provision_adopts_existing_board_instead_of_duplicating():
+    gh = _AdoptGh()
+    number, board = provision_project_board(gh, owner="o", repository="o/app", title="ADL · App")
+
+    assert number == "7"  # adopted the existing board by title
+    assert not any(c[:2] == ["project", "create"] for c in gh.calls)  # no duplicate created
+    assert ["project", "link", "7", "--owner", "o", "--repo", "o/app"] in gh.calls
+    assert "Blocked" in board.status_options  # columns ensured on the adopted board too

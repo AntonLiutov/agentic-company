@@ -295,6 +295,22 @@ def test_artifact_section_embeds_content_inline(monkeypatch):
     assert "x.json" not in section  # json excluded
 
 
+def test_evict_run_mirror_caches_clears_only_that_run():
+    reset_run_mirror()
+    rdb._MIRROR_CARDED.update({("runX", "F1"), ("runY", "F9")})
+    rdb._MIRROR_STATUS[("runX", "F1")] = "done"
+    rdb._MIRROR_MILESTONED.add(("runX", "F1"))
+    rdb._NO_MIRROR_RUNS.add("runX")
+
+    rdb._evict_run_mirror_caches("runX", 123)
+
+    assert ("runX", "F1") not in rdb._MIRROR_CARDED
+    assert ("runX", "F1") not in rdb._MIRROR_STATUS
+    assert ("runX", "F1") not in rdb._MIRROR_MILESTONED
+    assert "runX" not in rdb._NO_MIRROR_RUNS
+    assert ("runY", "F9") in rdb._MIRROR_CARDED  # a different run is untouched
+
+
 def test_sprint_title_matches_adl_board_labels():
     # mirrors ADL's own board labels via sprint_label, NOT the descriptive title
     assert _sprint_title("sprint-01") == "Sprint 1"

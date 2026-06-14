@@ -775,6 +775,25 @@ def record_run_lifecycle(
     )
     if target_project_dir:
         repo.update_run_target_project_dir(db_run_id, target_project_dir)
+    if status in TERMINAL_RUN_STATUSES:  # free this run's mirror caches
+        _evict_run_mirror_caches(run_id, db_run_id)
+
+
+def _evict_run_mirror_caches(run_uid: str, db_run_id: int) -> None:
+    """Release a finished run's mirror state so a long-lived console doesn't leak."""
+    try:
+        from agentic_company.platform.run_mirror import reset_run_mirror
+
+        reset_run_mirror(db_run_id)
+    except Exception:  # eviction is hygiene, never fatal
+        pass
+    with _MIRROR_STATE_LOCK:
+        _NO_MIRROR_RUNS.discard(run_uid)
+        for cache in (_MIRROR_CARDED, _MIRROR_MILESTONED):
+            for stale in [key for key in cache if key[0] == run_uid]:
+                cache.discard(stale)
+        for stale in [key for key in _MIRROR_STATUS if key[0] == run_uid]:
+            _MIRROR_STATUS.pop(stale, None)
 
 
 def request_run_control_intent(run_id: str, intent: str, reason: str = "") -> None:

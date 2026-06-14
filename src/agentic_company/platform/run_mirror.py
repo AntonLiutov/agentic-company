@@ -24,18 +24,25 @@ LOGGER = logging.getLogger("agentic_company.run_mirror")
 
 # Built once per run (the connection + board ids are stable for the run).
 _RUN_MIRRORS: dict[int, WorkMirror | None] = {}
-_BUILD_LOCK = threading.Lock()
+_BUILD_LOCKS_GUARD = threading.Lock()
+_BUILD_LOCKS: dict[int, threading.Lock] = {}
+
+
+def _build_lock(db_run_id: int) -> threading.Lock:
+    with _BUILD_LOCKS_GUARD:
+        return _BUILD_LOCKS.setdefault(db_run_id, threading.Lock())
 
 
 def get_run_mirror(repo: Any, db_run_id: int, *, gh: Any = None) -> WorkMirror | None:
     """Return the cached mirror for a run, building it once on first use.
 
-    Thread-safe: concurrent first-touches for a run serialise on the build lock,
-    so a fresh board is provisioned exactly once (never raced into duplicates).
+    Thread-safe with a PER-RUN build lock: concurrent first-touches of the SAME
+    run serialise (a board is provisioned exactly once), but different runs never
+    block each other during slow live provisioning.
     """
     if db_run_id in _RUN_MIRRORS:
         return _RUN_MIRRORS[db_run_id]
-    with _BUILD_LOCK:
+    with _build_lock(db_run_id):
         if db_run_id in _RUN_MIRRORS:
             return _RUN_MIRRORS[db_run_id]
         try:
@@ -47,11 +54,14 @@ def get_run_mirror(repo: Any, db_run_id: int, *, gh: Any = None) -> WorkMirror |
 
 
 def reset_run_mirror(db_run_id: int | None = None) -> None:
-    """Forget cached mirror(s) — for tests and connection changes."""
-    if db_run_id is None:
-        _RUN_MIRRORS.clear()
-    else:
-        _RUN_MIRRORS.pop(db_run_id, None)
+    """Forget cached mirror(s) + per-run lock — for finalised runs and tests."""
+    with _BUILD_LOCKS_GUARD:
+        if db_run_id is None:
+            _RUN_MIRRORS.clear()
+            _BUILD_LOCKS.clear()
+        else:
+            _RUN_MIRRORS.pop(db_run_id, None)
+            _BUILD_LOCKS.pop(db_run_id, None)
 
 
 def build_run_mirror(repo: Any, db_run_id: int, *, gh: Any = None) -> WorkMirror | None:
