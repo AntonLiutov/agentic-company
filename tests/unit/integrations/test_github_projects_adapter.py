@@ -58,7 +58,12 @@ class _FakeGh:
         return ""
 
 
-STATUS_OPTIONS = {"Todo": "o-todo", "In Progress": "o-prog", "Blocked": "o-blk", "Done": "o-done"}
+STATUS_OPTIONS = {
+    "In Progress": "o-prog",
+    "In Review": "o-review",
+    "Blocked": "o-blk",
+    "Done": "o-done",
+}
 
 
 def _adapter(gh, store):
@@ -104,16 +109,26 @@ def test_set_status_moves_card_to_mapped_column():
     assert "PVTI_item5" in edits[0]  # the right card
 
 
-def test_review_maps_to_in_progress_with_an_annotation_comment():
+def test_review_moves_to_its_own_in_review_column():
     gh, store = _FakeGh(), _FakeStore()
     board = _adapter(gh, store)
     board.ensure_item(BoardItem("F1", "Build F1"))
 
     board.set_status("F1", "review")
     edits = [c for c in gh.calls if c[:2] == ["project", "item-edit"]]
-    assert "o-prog" in edits[-1]  # review shares the In Progress column
+    assert "o-review" in edits[-1]  # review has its own column now
     comments = [c for c in gh.calls if c[:2] == ["issue", "comment"]]
-    assert len(comments) == 1  # the sub-status is annotated on the issue
+    assert len(comments) == 0  # no annotation needed — the column exists
+
+
+def test_todo_clears_status_into_the_no_status_bucket():
+    gh, store = _FakeGh(), _FakeStore()
+    board = _adapter(gh, store)
+    board.ensure_item(BoardItem("F1", "Build F1"))
+
+    board.set_status("F1", "todo")
+    edits = [c for c in gh.calls if c[:2] == ["project", "item-edit"]]
+    assert "--clear" in edits[-1]  # todo -> cleared Status (No Status / backlog)
 
 
 def test_link_pr_comments_the_pr_on_the_issue_not_a_separate_card():

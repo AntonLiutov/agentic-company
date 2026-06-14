@@ -18,26 +18,26 @@ from agentic_company.integrations.github.board import BoardRefStore, GitHubBoard
 from agentic_company.integrations.github.cli import GhLike
 from agentic_company.ports.board import BoardComment, BoardItem, BoardRef
 
-# ADL status -> the GitHub Projects column NAME it belongs in. GitHub's default
-# board has Todo / In Progress / Blocked / Done (no In Review), so 'review'
-# shares the In Progress column and is annotated (see ANNOTATE_STATUSES).
+# ADL status -> board column NAME. 'todo' maps to "" = cleared Status, i.e.
+# GitHub's built-in "No Status" group (the not-started / backlog bucket) — so
+# there is NO redundant "Todo" column. The four explicit columns are ensured.
 DEFAULT_ADL_TO_COLUMN = {
-    "todo": "Todo",
-    "in_progress": "In Progress",
-    "review": "In Progress",
-    "done": "Done",
+    "todo": "",
     "blocked": "Blocked",
+    "in_progress": "In Progress",
+    "review": "In Review",
+    "done": "Done",
 }
-# ADL statuses without a dedicated column on the default board -> add a comment.
-DEFAULT_ANNOTATE_STATUSES = frozenset({"review"})
+# With every needed column ensured present, no status needs a comment fallback.
+DEFAULT_ANNOTATE_STATUSES = frozenset()
 
-# The columns ADL expects a board to have, with a default color for new ones.
-DEFAULT_BOARD_COLUMNS = ("Todo", "In Progress", "In Review", "Blocked", "Done")
+# Explicit columns ADL ensures on a board, in board order. 'todo' has no column
+# (it is the "No Status" bucket). Edit this tuple to reorder the board by code.
+DEFAULT_BOARD_COLUMNS = ("Blocked", "In Progress", "In Review", "Done")
 _COLUMN_COLORS = {
-    "Todo": "GRAY",
+    "Blocked": "RED",
     "In Progress": "YELLOW",
     "In Review": "PURPLE",
-    "Blocked": "RED",
     "Done": "GREEN",
 }
 
@@ -51,6 +51,7 @@ def ensure_status_columns(
     *,
     status_field_id: str,
     desired: tuple[str, ...] = DEFAULT_BOARD_COLUMNS,
+    remove: tuple[str, ...] = ("Todo",),
     colors: dict[str, str] | None = None,
 ) -> tuple[dict[str, str], list[str]]:
     """Ensure the board's Status field has the desired columns.
@@ -68,8 +69,15 @@ def ensure_status_columns(
     current = json.loads(out)["data"]["node"]["options"]
     have = {o["name"] for o in current}
     missing = [c for c in desired if c not in have]
-    if not missing:
-        return ({o["name"]: o["id"] for o in current}, [])
+    # Board order = the order of options: desired columns first, then any custom
+    # columns ADL doesn't manage, minus the ones to remove (the redundant default
+    # "Todo" — 'todo' lives in the No-Status bucket). Enforced by code.
+    target_names = list(desired) + [
+        o["name"] for o in current if o["name"] not in desired and o["name"] not in remove
+    ]
+    current_names = [o["name"] for o in current]
+    if current_names == target_names:
+        return ({o["name"]: o["id"] for o in current}, [])  # already correct
 
     by_name = {o["name"]: o for o in current}
 
@@ -82,10 +90,8 @@ def ensure_status_columns(
             )
         return f'{{name:"{_gql_str(name)}", color:{palette.get(name, "GRAY")}, description:""}}'
 
-    # Emit columns in the desired order (also fixes column order on the board),
-    # then keep any custom columns ADL does not manage.
-    ordered = [_opt(name) for name in desired]
-    ordered += [_opt(o["name"]) for o in current if o["name"] not in desired]
+    # Emit columns in the target order (this is what sets the board column order).
+    ordered = [_opt(name) for name in target_names]
     mutation = (
         "mutation($f:ID!){updateProjectV2Field(input:{fieldId:$f,singleSelectOptions:["
         + ",".join(ordered)
@@ -173,24 +179,27 @@ class GitHubProjectsBoardAdapter:
         return self._issues.post_comment(comment)
 
     def set_status(self, work_item_id: str, status: str) -> None:
-        column = self._map.get(status, "In Progress")
-        option = self._status_options.get(column)
         item_id = self._project_item_id(work_item_id)
-        if option and item_id:
-            self._gh.run(
-                [
-                    "project",
-                    "item-edit",
-                    "--id",
-                    item_id,
-                    "--project-id",
-                    self._project_id,
-                    "--field-id",
-                    self._status_field_id,
-                    "--single-select-option-id",
-                    option,
-                ]
-            )
+        if not item_id:
+            return None
+        column = self._map.get(status, "In Progress")
+        base = [
+            "project",
+            "item-edit",
+            "--id",
+            item_id,
+            "--project-id",
+            self._project_id,
+            "--field-id",
+            self._status_field_id,
+        ]
+        if column == "":
+            # 'todo' -> clear the Status so the card sits in the "No Status" bucket.
+            self._gh.run(base + ["--clear"])
+        else:
+            option = self._status_options.get(column)
+            if option:
+                self._gh.run(base + ["--single-select-option-id", option])
         if status in self._annotate:
             self._issues.post_comment(
                 BoardComment(
