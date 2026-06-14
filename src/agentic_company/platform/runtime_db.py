@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -33,6 +34,8 @@ from agentic_company.platform.work_item_contracts import (
     pm_sprints_from_run_dir,
     pm_work_items_from_run_dir,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -962,21 +965,26 @@ def stop_requested(run_id: str) -> bool:
 def run_stop_requested(run_id: str, run_dir: Path | str) -> bool:
     """Whether a user stop has been requested for a run.
 
-    Checks the run-local stop file, the runtime cache, and the durable DB flag so
-    coordinators can halt between tool calls, not only between graph nodes. Fails
-    open (returns False) on cache/DB errors so a transient fault never crashes a
-    tool mid-run.
+    Checks the run-local stop file, the durable DB flag, and then the runtime
+    cache so coordinators can halt between tool calls, not only between graph
+    nodes. Cache failures are ignored because Postgres and the stop file are the
+    source of truth.
     """
 
     if (Path(run_dir) / ".stop-requested").exists():
         return True
     try:
-        from agentic_company.platform.runtime_cache import runtime_cache_from_env
-
-        if runtime_cache_from_env().stop_requested(str(run_id)):
+        if stop_requested(str(run_id)):
             return True
-        return stop_requested(str(run_id))
-    except Exception:
+    except ValueError:
+        return False
+
+    try:
+        from agentic_company.platform.runtime_cache import redis_error_types, runtime_cache_from_env
+
+        return runtime_cache_from_env().stop_requested(str(run_id))
+    except redis_error_types() as exc:
+        LOGGER.warning("Redis runtime stop flag read failed run_id=%s error=%s", run_id, exc)
         return False
 
 

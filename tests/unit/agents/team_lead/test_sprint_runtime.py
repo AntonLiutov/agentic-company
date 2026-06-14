@@ -330,6 +330,85 @@ def test_head_does_not_finish_plan_04_when_non_final_sprint_only_started(tmp_pat
     assert get_work_item("run", "PLAN-04").status == "in_progress"
 
 
+def test_head_treats_stopped_planning_worker_as_user_stop(tmp_path, monkeypatch):
+    _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
+
+    def stopped_architect(worker_state):
+        return {**worker_state, "stage": "architecture", "status": "stopped"}
+
+    workers = HeadWorkers(
+        business_analyst=lambda worker_state: worker_state,
+        architect=stopped_architect,
+        project_manager=lambda worker_state: worker_state,
+        team_lead=lambda worker_state: worker_state,
+    )
+    toolbox = HeadToolbox(
+        delivery_state={**state, "stage": "head", "status": "running"},
+        workers=workers,
+        max_steps=5,
+        history=[],
+    )
+
+    payload = json.loads(toolbox.run_architect(reason="Create architecture."))
+
+    assert payload["status"] == "stopped"
+    assert payload["business_summary"] == "run_architect completed with status stopped."
+    assert toolbox.reached_terminal_state() is True
+    plan_02 = get_work_item("run", "PLAN-02")
+    assert plan_02.status == "blocked"
+    assert "Stopped by user." in plan_02.blocker
+
+
+def test_head_treats_stop_requested_during_worker_as_user_stop(tmp_path, monkeypatch):
+    _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
+
+    def stopped_during_architect(worker_state):
+        Path(worker_state["run_dir"], ".stop-requested").write_text("stop\n", encoding="utf-8")
+        return {
+            **worker_state,
+            "stage": "architecture",
+            "status": "architecture_blocked",
+            "blockers": ["Missing architecture artifacts."],
+        }
+
+    workers = HeadWorkers(
+        business_analyst=lambda worker_state: worker_state,
+        architect=stopped_during_architect,
+        project_manager=lambda worker_state: worker_state,
+        team_lead=lambda worker_state: worker_state,
+    )
+    toolbox = HeadToolbox(
+        delivery_state={**state, "stage": "head", "status": "running"},
+        workers=workers,
+        max_steps=5,
+        history=[],
+    )
+
+    payload = json.loads(toolbox.run_architect(reason="Create architecture."))
+
+    assert payload["status"] == "stopped"
+    assert toolbox.delivery_state["blockers"] == ["Stopped by user."]
+    assert toolbox.reached_terminal_state() is True
+    plan_02 = get_work_item("run", "PLAN-02")
+    assert plan_02.status == "blocked"
+    assert "Stopped by user." in plan_02.blocker
+
+
+def test_head_executor_does_not_block_planning_after_user_stop_exception(tmp_path, monkeypatch):
+    _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
+    executor = LangChainHeadExecutor(runtime=_StopThenRaiseRuntime())
+
+    result = executor.run(
+        delivery_state={**state, "stage": "head", "status": "running"},
+        workers=_head_workers(),
+        max_steps=5,
+    )
+
+    assert result.delivery_state["status"] == "stopped"
+    assert "Stopped by user." in result.delivery_state["blockers"]
+    assert get_work_item("run", "PLAN-04").status == "todo"
+
+
 def test_head_executor_blocks_if_runtime_stops_with_pending_db_sprint(tmp_path, monkeypatch):
     _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
     executor = LangChainHeadExecutor(runtime=_StartingTeamLeadRuntime())
@@ -564,6 +643,15 @@ class _StartingTeamLeadRuntime:
             if tool.__name__ == "run_team_lead":
                 return tool("sprint-01", "Start sprint.", "")
         raise AssertionError("run_team_lead tool was not available")
+
+
+class _StopThenRaiseRuntime:
+    def invoke(self, request):
+        Path(request.delivery_state["run_dir"], ".stop-requested").write_text(
+            "stop\n",
+            encoding="utf-8",
+        )
+        raise RuntimeError("provider quota")
 
 
 class _NoopTeamLeadExecutor:

@@ -45,6 +45,20 @@ def test_control_intent_cancel_is_durable_stop_and_reconciles_active_items(tmp_p
     assert "Operator stopped the run." in work_items["F1"].blocker
 
 
+def test_run_stop_requested_prefers_durable_cancel_before_runtime_cache(tmp_path, monkeypatch):
+    _repo, _run, run_dir = _setup_run(tmp_path)
+    request_run_control_intent("phase1-run", "cancel", "Operator stopped the run.")
+
+    def fail_if_called():
+        raise AssertionError("runtime cache should not be checked before DB cancel")
+
+    monkeypatch.setattr(
+        "agentic_company.platform.runtime_cache.runtime_cache_from_env", fail_if_called
+    )
+
+    assert run_stop_requested("phase1-run", run_dir) is True
+
+
 def test_cancel_reconciler_does_not_demote_completed_run(tmp_path):
     repo, run, _run_dir = _setup_run(tmp_path)
     _insert_work_item(repo, run.id, "F1", status="in_progress", lane="in_progress", active=1)

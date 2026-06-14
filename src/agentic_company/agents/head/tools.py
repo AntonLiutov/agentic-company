@@ -600,10 +600,23 @@ class HeadToolbox:
         )
 
     def reached_terminal_state(self) -> bool:
+        if self.delivery_state.get("status") == "stopped":
+            return True
         if self.delivery_state.get("blockers"):
             return True
         status = str(self.delivery_state.get("status") or "")
         return status in HEAD_TERMINAL_OUTCOMES
+
+    def stop_requested(self) -> bool:
+        return run_stop_requested(
+            str(self.delivery_state["run_id"]), self.delivery_state["run_dir"]
+        )
+
+    def mark_stopped(self, reason: str = "Stopped by user.") -> None:
+        self.delivery_state["status"] = "stopped"
+        self.delivery_state["blockers"] = [reason]
+        checkpoint_delivery_state(self.delivery_state)
+        write_head_event(self.delivery_state, "head_stopped", {"reason": reason})
 
     def block_incomplete_execution(self) -> None:
         run_id = str(self.delivery_state["run_id"])
@@ -650,9 +663,9 @@ class HeadToolbox:
         external_reference: str = "",
     ) -> str:
         started = time.perf_counter()
-        if run_stop_requested(str(self.delivery_state["run_id"]), self.delivery_state["run_dir"]):
+        if self.stop_requested():
             self.current_tool_name = tool
-            self.delivery_state["status"] = "stopped"
+            self.mark_stopped()
             return self._tool_response(
                 f"{tool} stopped: a user stop was requested.",
                 input_summary={
@@ -751,15 +764,18 @@ class HeadToolbox:
         )
         checkpoint_delivery_state(self.delivery_state)
         self.delivery_state = worker(self.delivery_state)
+        if self.stop_requested() or self.delivery_state.get("status") == "stopped":
+            self.mark_stopped()
         item_status = self._worker_item_finish_status(
             node_name=node_name,
             correlation_id=correlation_id,
         )
-        finish_message = (
-            f"{outbound.to_agent} completed {item_id}."
-            if item_status == "done"
-            else f"{outbound.to_agent} updated {item_id}."
-        )
+        if self.delivery_state.get("status") == "stopped":
+            finish_message = "Stopped by user."
+        elif item_status == "done":
+            finish_message = f"{outbound.to_agent} completed {item_id}."
+        else:
+            finish_message = f"{outbound.to_agent} updated {item_id}."
         record_work_item_transition(
             ToolExecutionRecord(
                 run_id=str(self.delivery_state["run_id"]),
@@ -809,6 +825,8 @@ class HeadToolbox:
         )
 
     def _worker_item_finish_status(self, *, node_name: str, correlation_id: str) -> str:
+        if self.delivery_state.get("status") == "stopped":
+            return "blocked"
         if self.delivery_state.get("blockers"):
             return "blocked"
         if node_name != "team_lead":

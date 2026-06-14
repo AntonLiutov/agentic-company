@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 from agentic_company.console.web.app import create_app
 from agentic_company.console.web.db import ConsoleRepository
@@ -1021,6 +1022,82 @@ def test_stop_project_marks_latest_run_stopped(tmp_path):
     assert process_state is not None
     assert process_state.status == "stop_requested"
     assert process_state.stop_requested_at
+
+
+def test_stop_project_completes_when_runtime_cache_is_unavailable(tmp_path, monkeypatch):
+    class FailingCache:
+        def set_stop_requested(self, _run_uid: str) -> None:
+            raise RedisConnectionError("redis unavailable")
+
+    repo = ConsoleRepository()
+    repo.init_schema()
+    user = repo.create_user(
+        email="stop-cache@example.test",
+        username="stopcache",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Stop Cache",
+        request_text="private",
+        mode="simple_prototype",
+        complexity="simple",
+        status="running",
+    )
+    run_dir = tmp_path / "runs" / "stop-cache"
+    run_dir.mkdir(parents=True)
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="stop-cache",
+        run_dir=run_dir,
+        status="running",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+    repo.upsert_sprint(
+        run.id,
+        sprint_id="sprint-01",
+        title="Sprint 1",
+        delivery_order=1,
+        status="running",
+        is_final=True,
+    )
+    with repo.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO work_items (
+                run_id, work_item_id, title, sprint_id, delivery_order, status,
+                lane, owner_agent, assigned_agent, active, source_refs,
+                artifact_ids, blocker, created_at, updated_at
+            )
+            VALUES (?, 'F1', 'F1', 'sprint-01', 1, 'in_progress',
+                    'in_progress', 'fullstack-agent', 'fullstack-agent', 1,
+                    '[]', '[]', '', '2026-01-01T00:00:00Z',
+                    '2026-01-01T00:00:00Z')
+            """,
+            (run.id,),
+        )
+    monkeypatch.setattr(
+        "agentic_company.console.web.app.runtime_cache_from_env",
+        lambda: FailingCache(),
+    )
+    app = create_app(repo)
+    client = TestClient(app)
+    client.cookies.set("agentic_console_session", repo.create_session(user.id))
+
+    response = client.post(f"/projects/{project.id}/stop", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert repo.get_run(run.id).status == "stopped"
+    assert repo.get_project_for_user(project.id, user.id).status == "stopped"
+    assert (run_dir / ".stop-requested").exists()
+    assert (run_dir / ".codex-execution.stop").exists()
+    process_state = repo.get_console_process_state(run.id, "codex_execution")
+    assert process_state is not None
+    assert process_state.status == "stop_requested"
+    work_items = {item.work_item_id: item for item in repo.list_work_items(run.id)}
+    assert work_items["F1"].status == "blocked"
+    assert "Stopped by user." in work_items["F1"].blocker
 
 
 def test_promote_and_demote_project_from_workspace(tmp_path):

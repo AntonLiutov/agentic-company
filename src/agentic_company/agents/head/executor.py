@@ -42,6 +42,16 @@ class LangChainHeadExecutor:
             workers=workers,
             max_steps=max_steps,
         )
+
+        def finish_if_stopped() -> bool:
+            if not toolbox.stop_requested():
+                return False
+            toolbox.mark_stopped()
+            return True
+
+        if finish_if_stopped():
+            return toolbox.result()
+
         try:
             self.runtime.invoke(
                 LangChainAgentRequest(
@@ -61,24 +71,32 @@ class LangChainHeadExecutor:
                 )
             )
         except MissingAgentRuntimeConfig:
+            if finish_if_stopped():
+                return toolbox.result()
             toolbox.block_planning(
                 reason="OPENAI_API_KEY is required for Head Agent decisions.",
                 message="Set OPENAI_API_KEY in Settings or the run-level agent runtime env.",
             )
             return toolbox.result()
         except LangChainAgentRuntimeError as exc:
+            if finish_if_stopped():
+                return toolbox.result()
             toolbox.block_planning(
                 reason=f"LangChain Head Agent dependencies are missing: {exc}",
                 message="Install langchain and langchain-openai.",
             )
             return toolbox.result()
         except Exception as exc:  # pragma: no cover - exercised through integration runs
+            if finish_if_stopped():
+                return toolbox.result()
             toolbox.block_planning(
                 reason=f"Head Agent executor failed: {exc}",
                 message="Executor failed before completing upstream planning.",
             )
             return toolbox.result()
 
+        if finish_if_stopped():
+            return toolbox.result()
         if not toolbox.tool_calls_made():
             toolbox.block_planning(
                 reason="Head Agent executor completed without calling any tool.",

@@ -19,3 +19,9 @@ def test_needs_repair_remains_blocked() -> None:
     assert dashboard_status_from_runtime_status("needs_repair") == "blocked"
     assert _normalize_work_item_status("needs_repair") == "blocked"
     assert failure_mode_from_status("needs_repair") == "needs_repair"
+
+
+def test_stopped_maps_to_blocked_attention_status() -> None:
+    assert dashboard_status_from_runtime_status("stopped") == "blocked"
+    assert _normalize_work_item_status("stopped") == "blocked"
+    assert failure_mode_from_status("stopped") == "blocked"
