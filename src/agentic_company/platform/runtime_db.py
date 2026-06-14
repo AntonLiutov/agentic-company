@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -144,7 +145,7 @@ def materialize_planning_items(run_id: str) -> None:
                 owner_agent=str(item["suggested_owner_agent"]),
                 source_refs=[str(value) for value in item.get("source_refs", [])],
             )
-    _mirror_seed_work_items(repo, db_run_id)  # all planning items -> board at once
+    _mirror_seed_work_items(repo, db_run_id, run_id)  # all planning items -> board at once
 
 
 def materialize_pm_work_items(run_id: str, pm_artifacts: str | Path | None = None) -> None:
@@ -177,7 +178,7 @@ def materialize_pm_work_items(run_id: str, pm_artifacts: str | Path | None = Non
                 owner_agent=str(item["suggested_owner_agent"]),
                 source_refs=[str(value) for value in item.get("source_refs", [])],
             )
-    _mirror_seed_work_items(repo, db_run_id)  # all feature items -> board at once
+    _mirror_seed_work_items(repo, db_run_id, run_id)  # all feature items -> board at once
 
 
 def next_work_item(run_id: str, sprint_id: str) -> RuntimeWorkItem | None:
@@ -425,29 +426,63 @@ def record_work_item_transition(record: ToolExecutionRecord) -> None:
             _record_work_item_transition_conn(conn, db_run_id, record, now)
         return repo, db_run_id
 
-    repo, db_run_id = _with_db_retry(operation)
+    _with_db_retry(operation)
     # DB is committed and is the source of truth; mirroring the new state onto an
-    # external board (if any) is best-effort and must never break the run.
-    _mirror_work_item_transition(repo, db_run_id, record.run_id, record.work_item_id)
+    # external board (if any) runs async off the critical path and never blocks.
+    _submit_item_mirror(record.run_id, record.work_item_id)
 
 
-def _mirror_work_item_transition(
-    repo: Any, db_run_id: int, run_uid: str, work_item_id: str
-) -> None:
+# --- async board mirror -------------------------------------------------------
+# Per (run_uid, work_item_id) de-dup so repeated transitions/seeds never re-issue
+# the same gh calls. Guarded because the background mirror threads share it.
+_MIRROR_STATE_LOCK = threading.Lock()
+_MIRROR_CARDED: set[tuple[str, str]] = set()
+_MIRROR_STATUS: dict[tuple[str, str], str] = {}
+_MIRROR_MILESTONED: set[tuple[str, str]] = set()
+
+
+def _submit_item_mirror(run_uid: str, work_item_id: str) -> None:
+    """Schedule a work item's board mirror off the run's critical path."""
+    from agentic_company.platform.mirror_dispatch import submit_mirror
+
+    submit_mirror((run_uid, work_item_id), lambda: mirror_work_item_now(run_uid, work_item_id))
+
+
+def mirror_work_item_now(run_uid: str, work_item_id: str) -> None:
+    """Apply one work item's current state to the external board (worker thread).
+
+    Reads the item's CURRENT status (so stacked events coalesce to the latest) and
+    only issues the gh calls that changed since this process last mirrored it.
+    """
     try:
         from agentic_company.platform.run_mirror import get_run_mirror
 
+        repo, db_run_id = _repo_and_run(run_uid)
         mirror = get_run_mirror(repo, db_run_id)
         if mirror is None:
             return
         from agentic_company.ports.board import BoardItem
 
         item = get_work_item(run_uid, work_item_id)
-        mirror.mirror_item(BoardItem(work_item_id=work_item_id, title=item.title))
-        mirror.mirror_status(work_item_id, item.status)
-        sprint_title = _sprint_title(repo, db_run_id, item.sprint_id)
-        if sprint_title:  # group the card under its sprint (board Milestone)
-            mirror.mirror_milestone(work_item_id, sprint_title)
+        key = (run_uid, work_item_id)
+        with _MIRROR_STATE_LOCK:
+            need_card = key not in _MIRROR_CARDED
+            need_status = _MIRROR_STATUS.get(key) != item.status
+            need_milestone = key not in _MIRROR_MILESTONED
+        if need_card:
+            mirror.mirror_item(BoardItem(work_item_id=work_item_id, title=item.title))
+            with _MIRROR_STATE_LOCK:
+                _MIRROR_CARDED.add(key)
+        if need_status:
+            mirror.mirror_status(work_item_id, item.status)
+            with _MIRROR_STATE_LOCK:
+                _MIRROR_STATUS[key] = item.status
+        if need_milestone:
+            sprint_title = _sprint_title(repo, db_run_id, item.sprint_id)
+            if sprint_title:  # group the card under its sprint (board Milestone)
+                mirror.mirror_milestone(work_item_id, sprint_title)
+                with _MIRROR_STATE_LOCK:
+                    _MIRROR_MILESTONED.add(key)
     except Exception as exc:  # best-effort: a board mirror must not break a run
         LOGGER.warning("Work-item mirror failed (%s): %s", work_item_id, exc)
 
@@ -466,27 +501,17 @@ def _sprint_title(repo: Any, db_run_id: int, sprint_id: str) -> str:
     return sid.replace("-", " ").replace("_", " ").title() if sid else ""
 
 
-def _mirror_seed_work_items(repo: Any, db_run_id: int) -> None:
-    """Mirror every current work item onto the board the moment items are created.
+def _mirror_seed_work_items(repo: Any, db_run_id: int, run_uid: str) -> None:
+    """Schedule a board mirror for every current work item the moment items exist.
 
     So the whole backlog shows up at once (all in their column, usually To Do)
-    instead of cards appearing one-by-one as items are later picked up. Best-effort
-    and idempotent — re-seeding an already-mirrored item is a no-op.
+    instead of cards trickling in as items are later picked up. Each item is
+    dispatched to the background pool, so they mirror in parallel without blocking
+    the run. De-dup makes a repeated seed a no-op.
     """
     try:
-        from agentic_company.platform.run_mirror import get_run_mirror
-
-        mirror = get_run_mirror(repo, db_run_id)
-        if mirror is None:
-            return
-        from agentic_company.ports.board import BoardItem
-
         for item in repo.list_work_items(db_run_id):
-            mirror.mirror_item(BoardItem(work_item_id=item.work_item_id, title=item.title))
-            mirror.mirror_status(item.work_item_id, item.status)
-            sprint_title = _sprint_title(repo, db_run_id, item.sprint_id)
-            if sprint_title:
-                mirror.mirror_milestone(item.work_item_id, sprint_title)
+            _submit_item_mirror(run_uid, item.work_item_id)
     except Exception as exc:  # best-effort: a board mirror must not break a run
         LOGGER.warning("Seed mirror failed for run %s: %s", db_run_id, exc)
 
@@ -509,9 +534,13 @@ def claim_work_item_for_execution(record: ToolExecutionRecord) -> WorkItemClaimR
             result = _claim_work_item_for_execution_conn(conn, db_run_id, record, now)
         return repo, db_run_id, result
 
-    repo, db_run_id, result = _with_db_retry(operation)
-    if result.claimed:  # the item just went in_progress -> mirror its start
-        _mirror_work_item_transition(repo, db_run_id, record.run_id, record.work_item_id)
+    _repo, _db_run_id, result = _with_db_retry(operation)
+    if result.claimed:  # the item just went in_progress -> mirror its start...
+        _submit_item_mirror(record.run_id, record.work_item_id)
+        # ...and let its card settle (bounded) before the worker starts on it.
+        from agentic_company.platform.mirror_dispatch import flush_mirror
+
+        flush_mirror((record.run_id, record.work_item_id))
     return result
 
 

@@ -1,7 +1,8 @@
 import json
 
+import agentic_company.platform.run_mirror as run_mirror_mod
+import agentic_company.platform.runtime_db as rdb
 from agentic_company.integrations.github.projects import GitHubProjectsBoardAdapter
-from agentic_company.platform import run_mirror as run_mirror_mod
 from agentic_company.platform.run_mirror import (
     build_run_mirror,
     get_run_mirror,
@@ -173,20 +174,43 @@ class _SeedRepo:
         return {"s1": "Sprint 1", "s2": "Sprint 2"}[sprint_id]
 
 
-def test_seed_mirrors_the_whole_backlog_at_once(monkeypatch):
+def test_seed_dispatches_every_item_at_once(monkeypatch):
+    submitted = []
+    monkeypatch.setattr(rdb, "_submit_item_mirror", lambda uid, wid: submitted.append((uid, wid)))
+
+    _mirror_seed_work_items(_SeedRepo(), 1, "run-uid-1")
+
+    # the whole backlog is dispatched in one pass (mirrored in parallel, not 1-by-1)
+    assert submitted == [
+        ("run-uid-1", "F1"),
+        ("run-uid-1", "F2"),
+        ("run-uid-1", "F3"),
+    ]
+
+
+def test_mirror_work_item_now_only_emits_what_changed(monkeypatch):
+    rdb._MIRROR_CARDED.clear()
+    rdb._MIRROR_STATUS.clear()
+    rdb._MIRROR_MILESTONED.clear()
     board = _SeedBoard()
-    monkeypatch.setattr(
-        run_mirror_mod, "get_run_mirror", lambda repo, db_run_id, **k: WorkMirror(board)
-    )
+    item = _SeedItem("Z1", "s1")  # status 'todo'
+    monkeypatch.setattr(rdb, "_repo_and_run", lambda uid: (object(), 1))
+    monkeypatch.setattr(run_mirror_mod, "get_run_mirror", lambda repo, dbid, **k: WorkMirror(board))
+    monkeypatch.setattr(rdb, "get_work_item", lambda uid, wid: item)
+    monkeypatch.setattr(rdb, "_sprint_title", lambda repo, dbid, sid: "Sprint 1")
 
-    _mirror_seed_work_items(_SeedRepo(), 1)
+    rdb.mirror_work_item_now("run", "Z1")
+    rdb.mirror_work_item_now("run", "Z1")  # nothing changed -> no extra gh calls
+    assert [c for c in board.calls if c[0] == "item"] == [("item", "Z1")]
+    assert [c for c in board.calls if c[0] == "status"] == [("status", "Z1", "todo")]
+    assert [c for c in board.calls if c[0] == "milestone"] == [("milestone", "Z1", "Sprint 1")]
 
-    # all three items become cards in one pass (not one-by-one as they're picked up)
-    assert ("item", "F1") in board.calls
-    assert ("item", "F2") in board.calls
-    assert ("item", "F3") in board.calls
-    assert ("status", "F1", "todo") in board.calls
-    assert ("milestone", "F3", "Sprint 2") in board.calls
+    item.status = "done"
+    rdb.mirror_work_item_now("run", "Z1")  # status changed -> exactly one more status call
+    assert [c for c in board.calls if c[0] == "status"] == [
+        ("status", "Z1", "todo"),
+        ("status", "Z1", "done"),
+    ]
 
 
 class _TitleRepo:

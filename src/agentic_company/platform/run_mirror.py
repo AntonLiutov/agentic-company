@@ -14,6 +14,7 @@ outage can never break a run.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 
 from agentic_company.platform.board_selection import select_board
@@ -23,11 +24,20 @@ LOGGER = logging.getLogger("agentic_company.run_mirror")
 
 # Built once per run (the connection + board ids are stable for the run).
 _RUN_MIRRORS: dict[int, WorkMirror | None] = {}
+_BUILD_LOCK = threading.Lock()
 
 
 def get_run_mirror(repo: Any, db_run_id: int, *, gh: Any = None) -> WorkMirror | None:
-    """Return the cached mirror for a run, building it on first use."""
-    if db_run_id not in _RUN_MIRRORS:
+    """Return the cached mirror for a run, building it once on first use.
+
+    Thread-safe: concurrent first-touches for a run serialise on the build lock,
+    so a fresh board is provisioned exactly once (never raced into duplicates).
+    """
+    if db_run_id in _RUN_MIRRORS:
+        return _RUN_MIRRORS[db_run_id]
+    with _BUILD_LOCK:
+        if db_run_id in _RUN_MIRRORS:
+            return _RUN_MIRRORS[db_run_id]
         try:
             _RUN_MIRRORS[db_run_id] = build_run_mirror(repo, db_run_id, gh=gh)
         except Exception as exc:  # never let mirror setup break a run
