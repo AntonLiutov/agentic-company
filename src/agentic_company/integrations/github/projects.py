@@ -31,6 +31,70 @@ DEFAULT_ADL_TO_COLUMN = {
 # ADL statuses without a dedicated column on the default board -> add a comment.
 DEFAULT_ANNOTATE_STATUSES = frozenset({"review"})
 
+# The columns ADL expects a board to have, with a default color for new ones.
+DEFAULT_BOARD_COLUMNS = ("Todo", "In Progress", "In Review", "Blocked", "Done")
+_COLUMN_COLORS = {
+    "Todo": "GRAY",
+    "In Progress": "YELLOW",
+    "In Review": "PURPLE",
+    "Blocked": "RED",
+    "Done": "GREEN",
+}
+
+
+def _gql_str(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def ensure_status_columns(
+    gh: GhLike,
+    *,
+    status_field_id: str,
+    desired: tuple[str, ...] = DEFAULT_BOARD_COLUMNS,
+    colors: dict[str, str] | None = None,
+) -> tuple[dict[str, str], list[str]]:
+    """Ensure the board's Status field has the desired columns.
+
+    Run once when a GitHub board is connected: queries the current options, adds
+    any missing ones, and returns ``(column_name -> option_id, added_columns)``.
+    Non-destructive — existing options are re-supplied WITH their ids so their
+    option ids (and every card's status) are preserved; only missing columns are
+    appended. Idempotent: a second call adds nothing.
+    """
+
+    palette = {**_COLUMN_COLORS, **(colors or {})}
+    query = "query($f:ID!){node(id:$f){... on ProjectV2SingleSelectField{options{id name color}}}}"
+    out = gh.run(["api", "graphql", "-f", f"query={query}", "-F", f"f={status_field_id}"])
+    current = json.loads(out)["data"]["node"]["options"]
+    have = {o["name"] for o in current}
+    missing = [c for c in desired if c not in have]
+    if not missing:
+        return ({o["name"]: o["id"] for o in current}, [])
+
+    by_name = {o["name"]: o for o in current}
+
+    def _opt(name: str) -> str:
+        existing = by_name.get(name)
+        if existing is not None:  # preserve id + color so cards keep their status
+            return (
+                f'{{id:"{existing["id"]}", name:"{_gql_str(name)}", '
+                f'color:{existing["color"]}, description:""}}'
+            )
+        return f'{{name:"{_gql_str(name)}", color:{palette.get(name, "GRAY")}, description:""}}'
+
+    # Emit columns in the desired order (also fixes column order on the board),
+    # then keep any custom columns ADL does not manage.
+    ordered = [_opt(name) for name in desired]
+    ordered += [_opt(o["name"]) for o in current if o["name"] not in desired]
+    mutation = (
+        "mutation($f:ID!){updateProjectV2Field(input:{fieldId:$f,singleSelectOptions:["
+        + ",".join(ordered)
+        + "]}){projectV2Field{... on ProjectV2SingleSelectField{options{id name}}}}}"
+    )
+    out = gh.run(["api", "graphql", "-f", f"query={mutation}", "-F", f"f={status_field_id}"])
+    opts = json.loads(out)["data"]["updateProjectV2Field"]["projectV2Field"]["options"]
+    return ({o["name"]: o["id"] for o in opts}, missing)
+
 
 class GitHubProjectsBoardAdapter:
     """Issues-as-cards on a GitHub Project board, with configurable status columns."""
