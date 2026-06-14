@@ -8,6 +8,7 @@ allowlist already drops it), so untrusted LLM code can't read it.
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from typing import Protocol
 
 
@@ -18,8 +19,8 @@ class GhError(RuntimeError):
 class GhLike(Protocol):
     """Anything that can run a gh subcommand and return stdout (for injection)."""
 
-    def run(self, args: list[str]) -> str:
-        """Run ``gh <args>`` and return stdout; raise GhError on failure."""
+    def run(self, args: list[str], *, cwd: Path | None = None) -> str:
+        """Run ``gh <args>`` (optionally in ``cwd``) and return stdout."""
 
 
 class GhRunner:
@@ -29,10 +30,11 @@ class GhRunner:
         self._gh = gh_binary
         self._timeout = timeout_seconds
 
-    def run(self, args: list[str]) -> str:
+    def run(self, args: list[str], *, cwd: Path | None = None) -> str:
         try:
             proc = subprocess.run(
                 [self._gh, *args],
+                cwd=str(cwd) if cwd is not None else None,
                 capture_output=True,
                 text=True,
                 timeout=self._timeout,

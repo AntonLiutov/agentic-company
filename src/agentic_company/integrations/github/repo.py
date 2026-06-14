@@ -114,6 +114,6 @@ class GitHubRepoAdapter:
             args += ["--base", base]
         if head:
             args += ["--head", head]
-        url = self._gh.run(args).strip()
+        url = self._gh.run(args, cwd=target_dir).strip()
         number = url.rsplit("/", 1)[-1] if url else ""
         return PullRequest(number=number, url=url, branch=head)

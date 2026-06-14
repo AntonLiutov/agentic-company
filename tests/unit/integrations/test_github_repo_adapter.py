@@ -11,7 +11,7 @@ class _FakeGh:
         self.calls = []
         self._outputs = outputs or {}
 
-    def run(self, args):
+    def run(self, args, *, cwd=None):
         self.calls.append(args)
         return self._outputs.get(args[0] + ":" + args[1], "")
 
