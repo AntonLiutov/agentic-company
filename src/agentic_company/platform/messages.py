@@ -153,7 +153,7 @@ def append_agent_response(
 ) -> AgentMessage:
     """Append a generic downstream response message for an upstream tool call."""
 
-    return AgentMessageStore(run_dir).append(
+    message = AgentMessageStore(run_dir).append(
         AgentMessage(
             from_agent=from_agent,
             to_agent=to_agent,
@@ -167,6 +167,21 @@ def append_agent_response(
             status="sent",
         )
     )
+    # Best-effort: mirror this agent's final message + artifacts onto its board card.
+    try:
+        from agentic_company.platform.runtime_db import _submit_response_comment
+
+        _submit_response_comment(
+            run_uid=Path(run_dir).name,
+            work_item_id=str(correlation_id or ""),
+            from_agent=from_agent,
+            content=content or "",
+            artifact_refs=list(artifact_refs or []),
+            message_id=message.message_id,
+        )
+    except Exception:  # never let board mirroring break message recording
+        pass
+    return message
 
 
 def _persist_message_to_db(run_dir: Path, message: AgentMessage) -> None:

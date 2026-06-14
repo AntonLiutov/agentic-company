@@ -474,7 +474,9 @@ def mirror_work_item_now(run_uid: str, work_item_id: str) -> None:
             need_status = _MIRROR_STATUS.get(key) != item.status
             need_milestone = key not in _MIRROR_MILESTONED
         if need_card:
-            mirror.mirror_item(BoardItem(work_item_id=work_item_id, title=item.title))
+            mirror.mirror_item(
+                BoardItem(work_item_id=work_item_id, title=item.title, body=_issue_body(item))
+            )
             with _MIRROR_STATE_LOCK:
                 _MIRROR_CARDED.add(key)
         if need_status:
@@ -489,6 +491,104 @@ def mirror_work_item_now(run_uid: str, work_item_id: str) -> None:
                     _MIRROR_MILESTONED.add(key)
     except Exception as exc:  # best-effort: a board mirror must not break a run
         LOGGER.warning("Work-item mirror failed (%s): %s", work_item_id, exc)
+
+
+# Friendly agent labels — the SAME names ADL shows on its own dashboard, so a
+# board comment reads "Builder" / "Quality Reviewer", not "fullstack-agent".
+_AGENT_DISPLAY = {
+    "business-analyst-agent": "Business Analyst",
+    "architect-agent": "Solution Architect",
+    "project-manager-agent": "Delivery Planner",
+    "fullstack-agent": "Builder",
+    "qa-agent": "Quality Reviewer",
+    "deployment-agent": "Publisher",
+    "documentation-handoff-agent": "Release Reporter",
+    "team-lead-agent": "Delivery Lead",
+    "head-agent": "Coordinator",
+}
+# Only these artifact suffixes go on the board (no .json / internal traces).
+_BOARD_ARTIFACT_SUFFIXES = (".md", ".csv", ".png", ".mmd")
+
+
+def _issue_body(item: RuntimeWorkItem) -> str:
+    """A meaningful GitHub issue body (not just '_Tracked by ADL_')."""
+    sprint = _sprint_title(item.sprint_id) or item.sprint_id or "—"
+    owner = _AGENT_DISPLAY.get(item.owner_agent, item.owner_agent or "—")
+    lines = [
+        f"**Work item** `{item.work_item_id}` · **Sprint:** {sprint} · **Owner:** {owner}",
+    ]
+    if item.title:
+        lines += ["", f"### {item.title}"]
+    if item.source_refs:
+        lines += ["", "**Source refs:** " + ", ".join(f"`{r}`" for r in item.source_refs)]
+    lines += [
+        "",
+        "_Mirrored from Agentic Delivery Lab — status, sprint and agent updates sync._",
+    ]
+    return "\n".join(lines)
+
+
+def _submit_response_comment(
+    run_uid: str,
+    work_item_id: str,
+    from_agent: str,
+    content: str,
+    artifact_refs: list[str],
+    message_id: str,
+) -> None:
+    """Schedule an agent's final message (+ its artifacts) as a board comment."""
+    if not work_item_id or not (content or "").strip():
+        return
+    from agentic_company.platform.mirror_dispatch import submit_mirror
+
+    refs = list(artifact_refs or [])
+    submit_mirror(
+        (run_uid, work_item_id, "comment", message_id),
+        lambda: mirror_response_comment_now(
+            run_uid, work_item_id, from_agent, content, refs, message_id
+        ),
+    )
+
+
+def mirror_response_comment_now(
+    run_uid: str,
+    work_item_id: str,
+    from_agent: str,
+    content: str,
+    artifact_refs: list[str],
+    message_id: str,
+) -> None:
+    """Post an agent's final message + artifact links onto its board card."""
+    if run_uid in _NO_MIRROR_RUNS:
+        return
+    try:
+        from agentic_company.platform.run_mirror import get_run_mirror
+        from agentic_company.ports.board import BoardComment, BoardItem
+
+        repo, db_run_id = _repo_and_run(run_uid)
+        mirror = get_run_mirror(repo, db_run_id)
+        if mirror is None:
+            _NO_MIRROR_RUNS.add(run_uid)
+            return
+        item = get_work_item(run_uid, work_item_id)
+        # Ensure the card exists before commenting (idempotent).
+        mirror.mirror_item(
+            BoardItem(work_item_id=work_item_id, title=item.title, body=_issue_body(item))
+        )
+        role = _AGENT_DISPLAY.get(from_agent, from_agent or "Agent")
+        body = f"**{role}**\n\n{content.strip()}"
+        arts = [r for r in artifact_refs if str(r).lower().endswith(_BOARD_ARTIFACT_SUFFIXES)]
+        if arts:
+            body += "\n\n**Artifacts:**\n" + "\n".join(f"- `{a}`" for a in arts)
+        mirror.mirror_comment(
+            BoardComment(
+                work_item_id,
+                body,
+                idempotency_key=f"{work_item_id}:msg:{message_id}",
+            )
+        )
+    except Exception as exc:  # best-effort: a comment mirror must not break a run
+        LOGGER.warning("Response-comment mirror failed (%s): %s", work_item_id, exc)
 
 
 def _sprint_title(sprint_id: str) -> str:

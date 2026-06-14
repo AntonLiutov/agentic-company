@@ -164,6 +164,8 @@ class _SeedItem:
         self.title = f"Build {wid}"
         self.status = "todo"
         self.sprint_id = sprint
+        self.owner_agent = "fullstack-agent"
+        self.source_refs = []
 
 
 class _SeedRepo:
@@ -208,6 +210,69 @@ def test_mirror_work_item_now_only_emits_what_changed(monkeypatch):
         ("status", "Z1", "todo"),
         ("status", "Z1", "done"),
     ]
+
+
+class _RichItem:
+    work_item_id = "F1"
+    title = "Core task list workflow"
+    status = "in_progress"
+    sprint_id = "sprint-01"
+    owner_agent = "fullstack-agent"
+    source_refs = ["US-01", "AC-01"]
+
+
+class _CommentBoard:
+    system = "fake"
+
+    def __init__(self):
+        self.items = []
+        self.comments = []
+
+    def ensure_item(self, item):
+        self.items.append(item)
+
+    def post_comment(self, comment):
+        self.comments.append(comment)
+
+    def set_status(self, *a, **k):
+        pass
+
+    def link_pr(self, *a, **k):
+        pass
+
+
+def test_issue_body_is_meaningful_not_a_placeholder():
+    body = rdb._issue_body(_RichItem())
+    assert "`F1`" in body
+    assert "Sprint 1" in body  # sprint label, not raw sprint-01
+    assert "Builder" in body  # owner friendly name
+    assert "Core task list workflow" in body
+    assert "US-01" in body
+
+
+def test_response_comment_posts_role_message_and_filters_artifacts(monkeypatch):
+    rdb._NO_MIRROR_RUNS.discard("run")
+    board = _CommentBoard()
+    monkeypatch.setattr(rdb, "_repo_and_run", lambda uid: (object(), 1))
+    monkeypatch.setattr(run_mirror_mod, "get_run_mirror", lambda repo, dbid, **k: WorkMirror(board))
+    monkeypatch.setattr(rdb, "get_work_item", lambda uid, wid: _RichItem())
+
+    rdb.mirror_response_comment_now(
+        "run",
+        "F1",
+        "fullstack-agent",
+        "Implemented F1 as a static SPA in browser memory only.",
+        ["a.md", "b.png", "c.json", "d.mmd", "e.txt"],
+        "msg-1",
+    )
+    assert len(board.comments) == 1
+    comment = board.comments[0]
+    assert comment.body.startswith("**Builder**")
+    assert "Implemented F1" in comment.body
+    assert "a.md" in comment.body and "b.png" in comment.body and "d.mmd" in comment.body
+    assert "c.json" not in comment.body and "e.txt" not in comment.body  # only md/csv/png/mmd
+    assert comment.idempotency_key == "F1:msg:msg-1"
+    assert len(board.items) == 1  # the card is ensured before commenting
 
 
 def test_sprint_title_matches_adl_board_labels():
