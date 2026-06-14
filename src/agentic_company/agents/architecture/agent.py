@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
-from agentic_company.agents.architecture.codex_cli import ArchitectCodexRunner
 from agentic_company.agents.architecture.graph import run_architect_agent_graph
 from agentic_company.platform.agent_contracts import (
     CODEX_EXEC_TOOL,
@@ -18,6 +17,7 @@ from agentic_company.platform.agent_contracts import (
 from agentic_company.platform.agent_runtime import SpecialistAgentExecutor
 from agentic_company.platform.models import AgentRunResult
 from agentic_company.platform.state import DeliveryState
+from agentic_company.ports.registry import worker_runner_for_agent
 
 
 class RunnerLike(Protocol):
@@ -51,7 +51,10 @@ class ArchitectAgent(BaseAgentExecutorDeliveryAgent):
             capabilities=capabilities,
             communication_policy=communication_policy,
         )
-        self.runner = runner or ArchitectCodexRunner()
+        self.runner = runner or worker_runner_for_agent(
+            "architect-agent",
+            stage="architecture",
+        )
 
     def run(self, state: DeliveryState) -> DeliveryState:
         return run_architect_agent_graph(state, self.runner, self.agent_executor)

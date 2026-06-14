@@ -37,11 +37,16 @@ from agentic_company.platform.run_trace import (
     sanitize_trace_data,
     tool_call_event_from_mapping,
 )
-from agentic_company.platform.status import classify_work_item_status
+from agentic_company.platform.status import (
+    InvalidStatusTransition,
+    WorkItemStatus,
+    classify_work_item_status,
+    transition,
+)
 from agentic_company.platform.work_item_contracts import HEAD_PLANNING_ITEMS
 
 SESSION_DAYS = 14
-CONSOLE_SCHEMA_VERSION = "2026-06-07.1"
+CONSOLE_SCHEMA_VERSION = "2026-06-13.1"
 _SCHEMA_INIT_LOCK = threading.Lock()
 _INITIALIZED_SCHEMA_KEYS: set[tuple[str, str]] = set()
 
@@ -156,6 +161,25 @@ class ConsoleProcessState:
     env_keys: list[str]
     stop_requested_at: str
     error: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalWorkRef:
+    id: int
+    run_id: int
+    work_item_id: str
+    connection_id: int | None
+    system: str
+    external_type: str
+    idempotency_key: str
+    source_event_id: str
+    external_id: str
+    external_url: str
+    sync_status: str
+    last_sync_error: str
+    last_synced_at: str
     created_at: str
     updated_at: str
 
@@ -734,6 +758,83 @@ class ConsoleRepository:
                 (run_id, process_name, now, now, now),
             )
 
+    def set_run_control_intent(self, run_id: int, *, intent: str, reason: str = "") -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE runs
+                SET control_intent = ?,
+                    control_intent_reason = ?,
+                    control_intent_requested_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (intent, reason, now, now, run_id),
+            )
+
+    def clear_run_control_intent(
+        self,
+        run_id: int,
+        *,
+        reconcile_status: str = "",
+        reconcile_reason: str = "",
+    ) -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE runs
+                SET control_intent = '',
+                    control_intent_reason = '',
+                    control_intent_requested_at = '',
+                    reconcile_status = ?,
+                    reconcile_reason = ?,
+                    reconciled_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (reconcile_status, reconcile_reason, now, now, run_id),
+            )
+
+    def cas_update_run_reconcile_state(
+        self,
+        run_id: int,
+        *,
+        expected_updated_at: str,
+        status: str | None = None,
+        control_intent: str | None = None,
+        reconcile_status: str = "",
+        reconcile_reason: str = "",
+    ) -> bool:
+        now = utc_now()
+        assignments = [
+            "reconcile_status = ?",
+            "reconcile_reason = ?",
+            "reconciled_at = ?",
+            "updated_at = ?",
+        ]
+        params: list[Any] = [reconcile_status, reconcile_reason, now, now]
+        if status is not None:
+            assignments.insert(0, "status = ?")
+            params.insert(0, status)
+        if control_intent is not None:
+            assignments.insert(0, "control_intent = ?")
+            params.insert(0, control_intent)
+            assignments.insert(1, "control_intent_reason = ''")
+            assignments.insert(2, "control_intent_requested_at = ''")
+        params.extend([run_id, expected_updated_at])
+        with self.connect() as conn:
+            cursor = conn.execute(
+                f"""
+                UPDATE runs
+                SET {", ".join(assignments)}
+                WHERE id = ? AND updated_at = ?
+                """,
+                tuple(params),
+            )
+        return cursor.rowcount > 0
+
     def get_console_process_state(
         self,
         run_id: int,
@@ -748,6 +849,188 @@ class ConsoleRepository:
                 (run_id, process_name),
             ).fetchone()
         return _console_process_state(row) if row else None
+
+    def list_run_uids_with_console_process_status(
+        self,
+        *,
+        process_name: str,
+        process_statuses: tuple[str, ...],
+        exclude_run_statuses: tuple[str, ...] = (),
+        updated_before: str = "",
+    ) -> list[str]:
+        if not process_statuses:
+            return []
+        process_placeholders = ", ".join("?" for _ in process_statuses)
+        params: list[Any] = [process_name, *process_statuses]
+        status_clause = ""
+        if exclude_run_statuses:
+            run_placeholders = ", ".join("?" for _ in exclude_run_statuses)
+            status_clause = f"AND r.status NOT IN ({run_placeholders})"
+            params.extend(exclude_run_statuses)
+        updated_clause = ""
+        if updated_before:
+            updated_clause = "AND cp.updated_at < ?"
+            params.append(updated_before)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT r.run_uid
+                FROM runs r
+                JOIN console_processes cp ON cp.run_id = r.id
+                WHERE cp.process_name = ?
+                  AND cp.status IN ({process_placeholders})
+                  {status_clause}
+                  {updated_clause}
+                ORDER BY r.created_at, r.id
+                """,
+                tuple(params),
+            ).fetchall()
+        return [str(row["run_uid"]) for row in rows]
+
+    def create_work_system_connection(
+        self,
+        *,
+        project_id: int | None = None,
+        run_id: int | None = None,
+        system: str,
+        name: str = "",
+        base_url: str = "",
+        repository: str = "",
+        default_branch: str = "",
+        token_ref: str = "",
+        risk_mode: str = "assisted",
+        status: str = "active",
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
+        now = utc_now()
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO work_system_connections (
+                    project_id, run_id, system, name, base_url, repository,
+                    default_branch, token_ref, risk_mode, status, metadata,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    project_id,
+                    run_id,
+                    system,
+                    name,
+                    base_url,
+                    repository,
+                    default_branch,
+                    token_ref,
+                    risk_mode,
+                    status,
+                    json.dumps(metadata or {}, sort_keys=True),
+                    now,
+                    now,
+                ),
+            )
+        return int(cursor.lastrowid)
+
+    def upsert_external_work_ref(
+        self,
+        run_id: int,
+        *,
+        work_item_id: str,
+        system: str,
+        external_type: str,
+        idempotency_key: str = "",
+        source_event_id: str = "",
+        external_id: str = "",
+        external_url: str = "",
+        connection_id: int | None = None,
+        sync_status: str = "pending",
+        last_sync_error: str = "",
+    ) -> ExternalWorkRef:
+        now = utc_now()
+        stable_key = (
+            idempotency_key.strip()
+            or source_event_id.strip()
+            or external_id.strip()
+            or external_url.strip()
+            or f"{work_item_id.strip()}:{system.strip()}:{external_type.strip()}"
+        )
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO external_work_refs (
+                    run_id, work_item_id, connection_id, system, external_type,
+                    idempotency_key, source_event_id, external_id, external_url,
+                    sync_status, last_sync_error, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, work_item_id, system, external_type, idempotency_key)
+                DO UPDATE SET
+                    connection_id = excluded.connection_id,
+                    source_event_id = excluded.source_event_id,
+                    external_id = excluded.external_id,
+                    external_url = excluded.external_url,
+                    sync_status = excluded.sync_status,
+                    last_sync_error = excluded.last_sync_error,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    run_id,
+                    work_item_id,
+                    connection_id,
+                    system,
+                    external_type,
+                    stable_key,
+                    source_event_id,
+                    external_id,
+                    external_url,
+                    sync_status,
+                    last_sync_error,
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT *
+                FROM external_work_refs
+                WHERE run_id = ?
+                  AND work_item_id = ?
+                  AND system = ?
+                  AND external_type = ?
+                  AND idempotency_key = ?
+                """,
+                (run_id, work_item_id, system, external_type, stable_key),
+            ).fetchone()
+        if row is None:  # pragma: no cover - defensive
+            raise RuntimeError("External work ref could not be loaded")
+        return _external_work_ref(row)
+
+    def list_external_work_refs(
+        self,
+        run_id: int,
+        *,
+        work_item_id: str = "",
+        system: str = "",
+    ) -> list[ExternalWorkRef]:
+        clauses = ["run_id = ?"]
+        params: list[Any] = [run_id]
+        if work_item_id:
+            clauses.append("work_item_id = ?")
+            params.append(work_item_id)
+        if system:
+            clauses.append("system = ?")
+            params.append(system)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM external_work_refs
+                WHERE {" AND ".join(clauses)}
+                ORDER BY created_at, id
+                """,
+                tuple(params),
+            ).fetchall()
+        return [_external_work_ref(row) for row in rows]
 
     def get_run_by_uid(self, run_uid: str) -> Run | None:
         with self.connect() as conn:
@@ -1326,6 +1609,14 @@ class ConsoleRepository:
         from_status = str(row["status"]) if row else ""
         from_owner = str(row["owner_agent"]) if row else ""
         to_status = _normalize_work_item_status(status)
+        if from_status:
+            try:
+                transition(
+                    WorkItemStatus(_normalize_work_item_status(from_status)),
+                    WorkItemStatus(to_status),
+                )
+            except (InvalidStatusTransition, ValueError):
+                to_status = _normalize_work_item_status(from_status)
         to_owner = owner_agent or from_owner
         if row is None:
             raise ValueError(f"Unknown work_item_id for DB transition: {item_id}")
@@ -1860,6 +2151,26 @@ def _console_process_state(row: Any) -> ConsoleProcessState:
         env_keys=_json_column(row["env_keys"], default=[]),
         stop_requested_at=str(row["stop_requested_at"] or ""),
         error=str(row["error"] or ""),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def _external_work_ref(row: Any) -> ExternalWorkRef:
+    return ExternalWorkRef(
+        id=int(row["id"]),
+        run_id=int(row["run_id"]),
+        work_item_id=str(row["work_item_id"] or ""),
+        connection_id=int(row["connection_id"]) if row["connection_id"] is not None else None,
+        system=str(row["system"]),
+        external_type=str(row["external_type"]),
+        idempotency_key=str(row["idempotency_key"] or ""),
+        source_event_id=str(row["source_event_id"] or ""),
+        external_id=str(row["external_id"] or ""),
+        external_url=str(row["external_url"] or ""),
+        sync_status=str(row["sync_status"] or ""),
+        last_sync_error=str(row["last_sync_error"] or ""),
+        last_synced_at=str(row["last_synced_at"] or ""),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )

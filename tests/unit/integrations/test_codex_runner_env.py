@@ -5,6 +5,7 @@ import threading
 import time
 from pathlib import Path
 
+import agentic_company.integrations.commands as commands
 from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.integrations.codex.runner import (
     _codex_subprocess_env,
@@ -405,6 +406,33 @@ def test_codex_stream_suppresses_duplicate_active_execution_lock(tmp_path: Path)
     events = load_run_events(run_dir)
     assert events[0].event_type == "duplicate_execution_suppressed"
     assert events[0].work_item_id == "US-rooms"
+
+
+def test_codex_stream_terminates_subprocess_when_stop_requested(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    terminated = {"called": False}
+    original_terminate = commands._terminate_process
+
+    def terminate(process):
+        terminated["called"] = True
+        original_terminate(process)
+
+    monkeypatch.setattr(commands, "_terminate_process", terminate)
+
+    result = stream_codex_exec_to_log(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        "prompt",
+        10,
+        run_dir / "codex" / "execution.log",
+        run_dir / "codex" / "events.jsonl",
+        env=dict(os.environ),
+        stop_requested=lambda: True,
+    )
+
+    assert terminated["called"] is True
+    assert result.returncode == 130
+    assert result.stderr == "stop_requested"
 
 
 def test_codex_exec_command_defaults_to_medium_reasoning_and_standard_service_tier(

@@ -17,6 +17,7 @@ from agentic_company.platform.agent_contracts import (
 from agentic_company.platform.agent_runtime import SpecialistAgentExecutor
 from agentic_company.platform.models import AgentRunResult
 from agentic_company.platform.state import DeliveryState
+from agentic_company.ports.registry import worker_runner_for_agent
 
 
 class RunnerLike(Protocol):
@@ -49,7 +50,10 @@ class QualityAgent(BaseAgentExecutorDeliveryAgent):
             capabilities=capabilities,
             communication_policy=communication_policy,
         )
-        self.runner = runner
+        self.runner = runner or worker_runner_for_agent(
+            "qa-agent",
+            stage="qa",
+        )
 
     def run(self, state: DeliveryState) -> DeliveryState:
         return run_quality_agent_graph(

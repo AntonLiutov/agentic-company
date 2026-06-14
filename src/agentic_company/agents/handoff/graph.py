@@ -7,10 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import NotRequired, Protocol, TypedDict, cast
 
-from agentic_company.agents.handoff.codex_cli import (
-    HANDOFF_CODEX_AGENT_ID,
-    HandoffCodexRunner,
-)
+from agentic_company.agents.handoff.codex_cli import HANDOFF_CODEX_AGENT_ID
 from agentic_company.agents.handoff.contracts import (
     FINAL_PROJECT_REPORT_SCOPE,
     SPRINT_HANDOFF_SCOPE,
@@ -215,6 +212,8 @@ def _handoff_input_artifacts(delivery_state: DeliveryState) -> list[str]:
 
 def _run_agent_executor(runner: HandoffRunner | None, agent_executor: SpecialistAgentExecutor):
     def run(state: HandoffAgentGraphState) -> HandoffAgentGraphState:
+        if runner is None:
+            raise ValueError("Handoff Agent requires an explicit worker runner.")
         run_dir = Path(state["run_dir"])
         result = agent_executor.run(
             SpecialistAgentRequest(
@@ -223,7 +222,7 @@ def _run_agent_executor(runner: HandoffRunner | None, agent_executor: Specialist
                 stage="handoff",
                 system_prompt=HANDOFF_AGENT_SYSTEM_PROMPT,
                 user_prompt=_handoff_user_prompt(state["delivery_state"]),
-                runner=runner or HandoffCodexRunner(),
+                runner=runner,
                 run_dir=run_dir,
                 delivery_state=state["delivery_state"],
                 packet=packet_for_work_item(

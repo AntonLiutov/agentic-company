@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
@@ -66,10 +67,16 @@ from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.platform.logging import configure_logging
 from agentic_company.platform.run_finalizer import RunStatus
 from agentic_company.platform.run_trace import trace_summary
-from agentic_company.platform.runtime_cache import runtime_cache_from_env
-from agentic_company.platform.runtime_db import record_run_lifecycle
+from agentic_company.platform.runtime_cache import redis_error_types, runtime_cache_from_env
+from agentic_company.platform.runtime_db import (
+    reconcile_run,
+    reconcile_stale_console_runs,
+    record_run_lifecycle,
+    request_run_control_intent,
+)
 
 COOKIE_NAME = "agentic_console_session"
+LOGGER = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -86,7 +93,17 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
     repo.init_schema()
     repo.seed_public_demo_from_env()
 
-    app = FastAPI(title="Agentic Company")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        try:
+            results = reconcile_stale_console_runs(repo)
+            if results:
+                LOGGER.info("Startup reconciled stale console runs count=%s", len(results))
+        except Exception:
+            LOGGER.exception("Startup stale-run reconciliation failed")
+        yield
+
+    app = FastAPI(title="Agentic Company", lifespan=lifespan)
     app.state.repo = repo
     app.state.login_rate_limiter = RateLimiter(max_attempts=10, window_seconds=300)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -439,10 +456,28 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             raise HTTPException(status_code=403)
         run = repo.latest_run_for_project(project.id, user.id)
         if run:
-            runtime_cache_from_env().set_stop_requested(run.run_uid)
+            request_run_control_intent(run.run_uid, "cancel", "Stopped by user.")
             repo.request_console_process_stop(run.id, process_name="codex_execution")
             request_codex_execution_stop(Path(run.run_dir))
+            reconcile_run(run.run_uid)
             record_run_lifecycle(run.run_uid, RunStatus.STOPPED)
+            try:
+                cache = runtime_cache_from_env()
+            except ValueError as exc:
+                LOGGER.warning(
+                    "Redis runtime cache config invalid after durable stop run_uid=%s error=%s",
+                    run.run_uid,
+                    exc,
+                )
+            else:
+                try:
+                    cache.set_stop_requested(run.run_uid)
+                except redis_error_types() as exc:
+                    LOGGER.warning(
+                        "Redis stop flag write failed after durable stop run_uid=%s error=%s",
+                        run.run_uid,
+                        exc,
+                    )
         repo.update_project_status(project.id, "stopped")
         return redirect(f"/projects/{project.id}")
 

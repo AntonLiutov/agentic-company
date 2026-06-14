@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
-from agentic_company.agents.deployment.codex_cli import DeploymentCodexRunner
 from agentic_company.agents.deployment.graph import run_deployment_agent_graph
 from agentic_company.platform.agent_contracts import (
     AgentCapabilities,
@@ -18,6 +17,7 @@ from agentic_company.platform.agent_contracts import (
 from agentic_company.platform.agent_runtime import SpecialistAgentExecutor
 from agentic_company.platform.models import AgentRunResult
 from agentic_company.platform.state import DeliveryState
+from agentic_company.ports.registry import worker_runner_for_agent
 
 
 class RunnerLike(Protocol):
@@ -50,7 +50,10 @@ class AzureDeploymentAgent(BaseAgentExecutorDeliveryAgent):
             capabilities=capabilities,
             communication_policy=communication_policy,
         )
-        self.runner = runner or DeploymentCodexRunner()
+        self.runner = runner or worker_runner_for_agent(
+            "deployment-agent",
+            stage="deployment",
+        )
 
     def run(self, state: DeliveryState) -> DeliveryState:
         return run_deployment_agent_graph(

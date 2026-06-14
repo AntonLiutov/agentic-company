@@ -12,7 +12,10 @@ from typing import Any, Protocol
 
 from langgraph.graph import END, START, StateGraph
 
-from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL, extract_codex_usage
+from agentic_company.integrations.codex import (
+    DEFAULT_CODEX_MODEL,
+    codex_usage_from_artifacts,
+)
 from agentic_company.platform.artifact_registry import (
     artifact_id_for,
     tool_artifact_refs_from_records,
@@ -79,11 +82,11 @@ CreateAgentFactory = Callable[[Any, Sequence[Callable[..., str]], str], Invokabl
 GraphNode = Callable[[Any], Any]
 
 
-class CodexRunner(Protocol):
-    """Runner contract exposed behind the standard `codex_exec` tool."""
+class SpecialistRunner(Protocol):
+    """Runner contract exposed behind the standard specialist execution tool."""
 
     def run(self, run_dir: Path) -> AgentRunResult:
-        """Run the Codex-backed specialist implementation."""
+        """Run the specialist implementation backend."""
 
 
 class SpecialistAgentExecutor(Protocol):
@@ -128,7 +131,7 @@ class SpecialistAgentRequest:
     stage: str
     system_prompt: str
     user_prompt: str
-    runner: CodexRunner
+    runner: SpecialistRunner
     run_dir: Path
     delivery_state: DeliveryState
     packet: WorkItemExecutionPacket
@@ -674,11 +677,9 @@ def _codex_exec_tool_response(
         failure_mode=failure_mode,
         duration_ms=duration_ms,
     )
-    raw_events_link = _raw_events_artifact_link(result.output_artifacts)
-    input_tokens, output_tokens = (
-        extract_codex_usage(Path(request.run_dir) / raw_events_link)
-        if raw_events_link
-        else (None, None)
+    input_tokens, output_tokens = codex_usage_from_artifacts(
+        Path(request.run_dir),
+        result.output_artifacts,
     )
     record_model_call_event(
         request.run_dir,
@@ -705,13 +706,6 @@ def _prompt_artifact_link(output_artifacts: list[str]) -> str:
     for artifact in output_artifacts:
         normalized = artifact.lower()
         if "prompt" in normalized and normalized.endswith((".md", ".txt", ".json")):
-            return artifact
-    return ""
-
-
-def _raw_events_artifact_link(output_artifacts: list[str]) -> str:
-    for artifact in output_artifacts:
-        if artifact.replace("\\", "/").endswith("events.jsonl"):
             return artifact
     return ""
 

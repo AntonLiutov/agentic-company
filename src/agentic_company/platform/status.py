@@ -24,7 +24,7 @@ class WorkItemStatus(StrEnum):
 
 
 # Whole-token signals, evaluated in precedence order (first match wins).
-_BLOCKED_TOKENS = frozenset({"blocked", "failed", "failure", "error", "precondition"})
+_BLOCKED_TOKENS = frozenset({"blocked", "failed", "failure", "error", "precondition", "stopped"})
 _DONE_TOKENS = frozenset({"done", "completed", "complete", "passed", "ready", "deployed"})
 _REVIEW_TOKENS = frozenset({"qa", "review", "inspect", "implemented"})
 _IN_PROGRESS_TOKENS = frozenset({"started", "running", "progress"})
@@ -178,6 +178,8 @@ def classify_failure_mode(
         return FailureMode.HUMAN_APPROVAL_REQUIRED
     if "needs_repair" in normalized or "qa_failed" in normalized:
         return FailureMode.NEEDS_REPAIR
+    if "stopped" in tokens:
+        return FailureMode.BLOCKED
     item_status = classify_work_item_status(normalized)
     if item_status is WorkItemStatus.BLOCKED:
         return FailureMode.FAILED

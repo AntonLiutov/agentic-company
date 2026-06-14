@@ -40,7 +40,7 @@ Create a local `.env` with infrastructure defaults and optional provider keys:
 AGENTIC_DATABASE_URL=postgresql://agentic:agentic_dev_password@127.0.0.1:54329/agentic_company
 AGENTIC_POSTGRES_POOL_MIN=1
 AGENTIC_POSTGRES_POOL_MAX=10
-AGENTIC_REDIS_URL=redis://127.0.0.1:63799/0
+AGENTIC_REDIS_URL=redis://127.0.0.1:6380/0
 AGENTIC_WEB_PORT=8503
 
 # Optional local defaults:

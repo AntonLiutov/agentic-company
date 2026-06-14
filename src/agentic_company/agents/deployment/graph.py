@@ -9,7 +9,6 @@ from typing import NotRequired, Protocol, TypedDict, cast
 
 from agentic_company.agents.deployment.codex_cli import (
     DEPLOYMENT_CODEX_AGENT_ID,
-    DeploymentCodexRunner,
     public_urls_from_deployment_result,
 )
 from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
@@ -211,6 +210,8 @@ def _unique_paths(paths: list[str]) -> list[str]:
 
 def _run_agent_executor(runner: DeploymentRunner | None, agent_executor: SpecialistAgentExecutor):
     def run(state: DeploymentAgentGraphState) -> DeploymentAgentGraphState:
+        if runner is None:
+            raise ValueError("Deployment Agent requires an explicit worker runner.")
         run_dir = Path(state["run_dir"])
         result = agent_executor.run(
             SpecialistAgentRequest(
@@ -219,7 +220,7 @@ def _run_agent_executor(runner: DeploymentRunner | None, agent_executor: Special
                 stage="deployment",
                 system_prompt=DEPLOYMENT_AGENT_SYSTEM_PROMPT,
                 user_prompt=_deployment_user_prompt(state["delivery_state"]),
-                runner=runner or DeploymentCodexRunner(),
+                runner=runner,
                 run_dir=run_dir,
                 delivery_state=state["delivery_state"],
                 packet=packet_for_work_item(

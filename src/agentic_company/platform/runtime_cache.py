@@ -1,14 +1,17 @@
 """Transient runtime cache/pubsub helpers.
 
 Postgres remains the source of truth. This module is intentionally limited to
-ephemeral coordination: locks, heartbeat/status cache, and update signals.
+ephemeral coordination: heartbeat/status cache, stop flags, and update signals.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any, Protocol
+
+LOGGER = logging.getLogger(__name__)
 
 
 class RuntimeCache(Protocol):
@@ -40,22 +43,47 @@ class NoopRuntimeCache:
 class RedisRuntimeCache:
     url: str
     _client: Any = None
+    _redis_errors: tuple[type[Exception], ...] = ()
 
     def __post_init__(self) -> None:
         try:
             import redis
         except ImportError as exc:  # pragma: no cover - exercised only without app extra
             raise RuntimeError("Redis runtime cache requires installing the app extra.") from exc
-        self._client = redis.Redis.from_url(self.url, decode_responses=True)
+        self._redis_errors = (redis.exceptions.RedisError,)
+        self._client = redis.Redis.from_url(
+            self.url,
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
 
     def publish_run_event(self, run_id: str, message: str) -> None:
-        self._client.publish(f"events:run:{run_id}", message)
+        try:
+            self._client.publish(f"events:run:{run_id}", message)
+        except self._redis_errors as exc:
+            LOGGER.warning("Redis runtime event publish failed run_id=%s error=%s", run_id, exc)
 
     def set_stop_requested(self, run_id: str, *, ttl_seconds: int = 3600) -> None:
-        self._client.setex(f"run:{run_id}:stop_requested", ttl_seconds, "1")
+        try:
+            self._client.set(f"run:{run_id}:stop_requested", "1", ex=ttl_seconds)
+        except self._redis_errors as exc:
+            LOGGER.warning("Redis runtime stop flag write failed run_id=%s error=%s", run_id, exc)
 
     def stop_requested(self, run_id: str) -> bool:
-        return bool(self._client.exists(f"run:{run_id}:stop_requested"))
+        try:
+            return bool(self._client.exists(f"run:{run_id}:stop_requested"))
+        except self._redis_errors as exc:
+            LOGGER.warning("Redis runtime stop flag read failed run_id=%s error=%s", run_id, exc)
+            return False
+
+
+def redis_error_types() -> tuple[type[Exception], ...]:
+    try:
+        import redis
+    except ImportError:
+        return ()
+    return (redis.exceptions.RedisError,)
 
 
 def runtime_cache_from_env() -> RuntimeCache:
@@ -69,5 +97,6 @@ __all__ = [
     "NoopRuntimeCache",
     "RedisRuntimeCache",
     "RuntimeCache",
+    "redis_error_types",
     "runtime_cache_from_env",
 ]

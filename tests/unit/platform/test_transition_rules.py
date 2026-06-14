@@ -26,6 +26,11 @@ def _effective(current, requested, *, tool_name, owner_agent, raw=None):
         # QA closes a feature straight from in_progress/review.
         ("in_progress", "done", "run_qa", "qa-agent", "done"),
         ("review", "done", "run_post_deploy_qa", "qa-agent", "done"),
+        # Planning cards are closed by Head tools directly; they do not go
+        # through a QA/review lane.
+        ("in_progress", "done", "run_business_analyst", "business-analyst-agent", "done"),
+        ("in_progress", "done", "run_architect", "architect-agent", "done"),
+        ("in_progress", "done", "run_project_manager", "project-manager-agent", "done"),
         # Deployment finishes into review (awaiting post-deploy QA).
         ("in_progress", "deployment_deployed", "codex_exec", "deployment-agent", "review"),
         # A per-sprint handoff is not terminal: the coordination card stays in review.

@@ -42,6 +42,16 @@ class LangChainHeadExecutor:
             workers=workers,
             max_steps=max_steps,
         )
+
+        def finish_if_stopped() -> bool:
+            if not toolbox.stop_requested():
+                return False
+            toolbox.mark_stopped()
+            return True
+
+        if finish_if_stopped():
+            return toolbox.result()
+
         try:
             self.runtime.invoke(
                 LangChainAgentRequest(
@@ -61,24 +71,32 @@ class LangChainHeadExecutor:
                 )
             )
         except MissingAgentRuntimeConfig:
+            if finish_if_stopped():
+                return toolbox.result()
             toolbox.block_planning(
                 reason="OPENAI_API_KEY is required for Head Agent decisions.",
                 message="Set OPENAI_API_KEY in Settings or the run-level agent runtime env.",
             )
             return toolbox.result()
         except LangChainAgentRuntimeError as exc:
+            if finish_if_stopped():
+                return toolbox.result()
             toolbox.block_planning(
                 reason=f"LangChain Head Agent dependencies are missing: {exc}",
                 message="Install langchain and langchain-openai.",
             )
             return toolbox.result()
         except Exception as exc:  # pragma: no cover - exercised through integration runs
+            if finish_if_stopped():
+                return toolbox.result()
             toolbox.block_planning(
                 reason=f"Head Agent executor failed: {exc}",
                 message="Executor failed before completing upstream planning.",
             )
             return toolbox.result()
 
+        if finish_if_stopped():
+            return toolbox.result()
         if not toolbox.tool_calls_made():
             toolbox.block_planning(
                 reason="Head Agent executor completed without calling any tool.",
@@ -171,9 +189,9 @@ def build_head_executor_prompt(*, delivery_state: DeliveryState) -> str:
             ),
             (
                 "When delivery starts after PM planning, call inspect_delivery_status before "
-                "the first run_team_lead. The inspector writes a status JSON file, the tool "
-                "reads it back, and you must use it only as delivery status/evidence "
-                "readback. Do not let the inspector choose the next tool."
+                "the first run_team_lead. The tool returns delivery status inspection readback, "
+                "and you must use it only as delivery status/evidence readback. Do not let "
+                "the inspection choose the next tool."
             ),
             (
                 "After every run_team_lead result, call inspect_delivery_status before "
@@ -286,8 +304,8 @@ Current bounded flow:
   passes when repairable;
 - ask Team Lead to execute sprint delivery from DB-materialized PM work items;
 - read the Team Lead tool response and artifacts;
-- after each Team Lead result, call `inspect_delivery_status`; it writes a
-  status JSON file and the platform reads that file back. Treat the readback as
+- after each Team Lead result, call `inspect_delivery_status`; it reads the
+  independent delivery status inspection readback. Treat the readback as
   status-only evidence; choose the next sprint/tool from PM artifacts and the
   Head workflow;
 - after each successful sprint, continue to the next pending sprint from the DB
@@ -367,8 +385,8 @@ artifacts and there are no real blockers, inspect DB work items
 for pending later sprints through `inspect_delivery_status`. If another sprint
 remains, call `run_team_lead` with that sprint id. If no planned sprint remains,
 expect Team Lead to produce a final project handoff and then call
-`complete_delivery` only after inspector confirmation. Do not rerun the same
-completed sprint.
+`complete_delivery` only after status-inspection confirmation. Do not rerun the
+same completed sprint.
 
 The communication shape is Head Agent <-> Business Analyst,
 Head Agent <-> Architect, Head Agent <-> Project Manager, and
@@ -442,7 +460,7 @@ def langchain_tools(toolbox: HeadToolbox) -> list[Callable[..., str]]:
         message: str = "",
         artifact_refs: str = "",
     ) -> str:
-        """Run Codex status inspection and read back the delivery status JSON."""
+        """Run delivery status inspection and read back structured evidence."""
         return toolbox.inspect_delivery_status(reason, message, artifact_refs)
 
     def complete_delivery(
@@ -450,7 +468,7 @@ def langchain_tools(toolbox: HeadToolbox) -> list[Callable[..., str]]:
         message: str = "",
         artifact_refs: str = "",
     ) -> str:
-        """Mark the company delivery run complete after inspector confirms readiness."""
+        """Mark the company delivery run complete after inspection confirms readiness."""
         return toolbox.complete_delivery(reason, message, artifact_refs)
 
     def block_planning(

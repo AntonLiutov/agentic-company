@@ -26,7 +26,7 @@ jobs:
       redis:
         image: redis:7-alpine
         ports:
-          - 63799:6379
+          - 6380:6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s
@@ -35,7 +35,7 @@ jobs:
     env:
       AGENTIC_TEST_DATABASE_URL: postgresql://agentic:agentic_dev_password@127.0.0.1:54329/agentic_company
       AGENTIC_DATABASE_URL: postgresql://agentic:agentic_dev_password@127.0.0.1:54329/agentic_company
-      AGENTIC_REDIS_URL: redis://127.0.0.1:63799/0
+      AGENTIC_REDIS_URL: redis://127.0.0.1:6380/0
 
     steps:
       - name: Check out repository

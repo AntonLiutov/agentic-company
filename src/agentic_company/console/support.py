@@ -31,6 +31,7 @@ AGENT_RUNTIME_ENV_RELATIVE_PATH = Path("delivery") / "agent-runtime.env"
 CODEX_PROCESS = "codex_execution"
 DEPLOYMENT_PROCESS = "azure_deployment"
 AGENT_RUNTIME_ENV_PROCESS = "agent_runtime_env"
+PROCESS_HEARTBEAT_SECONDS = 30
 
 
 @dataclass(slots=True)
@@ -309,9 +310,15 @@ def missing_required_env_keys(run_dir: Path, values: dict[str, str] | None = Non
 
 def _run_codex_in_thread(run_dir: Path) -> None:
     status_path = _codex_status_path(run_dir)
+    stop_heartbeat, heartbeat_thread = _start_process_heartbeat(run_dir, CODEX_PROCESS)
     try:
         status_path.write_text("running\n", encoding="utf-8")
-        _record_process_state(run_dir, CODEX_PROCESS, "running")
+        _record_process_state(
+            run_dir,
+            CODEX_PROCESS,
+            "running",
+            thread_name=threading.current_thread().name,
+        )
         LOGGER.info("Console execution graph thread running run_dir=%s", run_dir)
         _run_console_execution_graph(run_dir)
         status_path.write_text("completed\n", encoding="utf-8")
@@ -321,13 +328,25 @@ def _run_codex_in_thread(run_dir: Path) -> None:
         status_path.write_text(f"failed\nerror={exc}\n", encoding="utf-8")
         _record_process_state(run_dir, CODEX_PROCESS, "failed", error=str(exc))
         LOGGER.exception("Console execution graph thread failed run_dir=%s", run_dir)
+    finally:
+        stop_heartbeat.set()
+        heartbeat_thread.join(timeout=1)
 
 
 def _run_deployment_in_thread(run_dir: Path) -> None:
     status_path = _deployment_status_path(run_dir)
+    stop_heartbeat, heartbeat_thread = _start_process_heartbeat(
+        run_dir,
+        DEPLOYMENT_PROCESS,
+    )
     try:
         status_path.write_text("running\n", encoding="utf-8")
-        _record_process_state(run_dir, DEPLOYMENT_PROCESS, "running")
+        _record_process_state(
+            run_dir,
+            DEPLOYMENT_PROCESS,
+            "running",
+            thread_name=threading.current_thread().name,
+        )
         LOGGER.info("Console deployment graph thread running run_dir=%s", run_dir)
         DeliveryGraphRuntime(node_order=CONSOLE_DEPLOYMENT_NODE_ORDER).start(
             run_dir,
@@ -341,6 +360,9 @@ def _run_deployment_in_thread(run_dir: Path) -> None:
         status_path.write_text(f"failed\nerror={exc}\n", encoding="utf-8")
         _record_process_state(run_dir, DEPLOYMENT_PROCESS, "failed", error=str(exc))
         LOGGER.exception("Console deployment graph thread failed run_dir=%s", run_dir)
+    finally:
+        stop_heartbeat.set()
+        heartbeat_thread.join(timeout=1)
 
 
 def _run_console_execution_graph(run_dir: Path) -> dict[str, Any]:
@@ -377,6 +399,36 @@ def _thread_running(thread: threading.Thread | None) -> bool:
 def _process_is_terminal(run_dir: Path, process_name: str) -> bool:
     state = _process_state(run_dir, process_name)
     return bool(state and state.status.lower() in {"completed", "failed"})
+
+
+def _start_process_heartbeat(
+    run_dir: Path,
+    process_name: str,
+) -> tuple[threading.Event, threading.Thread]:
+    stop_event = threading.Event()
+    owner_thread_name = threading.current_thread().name
+
+    def heartbeat() -> None:
+        while not stop_event.wait(PROCESS_HEARTBEAT_SECONDS):
+            state = _process_state(run_dir, process_name)
+            if state and state.status.lower() in {"completed", "failed"}:
+                break
+            if state and state.status.lower() == "stop_requested":
+                continue
+            _record_process_state(
+                run_dir,
+                process_name,
+                "running",
+                thread_name=owner_thread_name,
+            )
+
+    thread = threading.Thread(
+        target=heartbeat,
+        name=f"{process_name}-heartbeat-{run_dir.name}",
+        daemon=True,
+    )
+    thread.start()
+    return stop_event, thread
 
 
 def _record_process_state(
