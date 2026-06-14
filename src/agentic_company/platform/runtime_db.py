@@ -416,13 +416,35 @@ def packet_for_work_item(
 def record_work_item_transition(record: ToolExecutionRecord) -> None:
     record.validate()
 
-    def operation() -> None:
+    def operation() -> tuple[Any, int]:
         repo, db_run_id = _repo_and_run(record.run_id)
         now = _now()
         with repo.connect() as conn:
             _record_work_item_transition_conn(conn, db_run_id, record, now)
+        return repo, db_run_id
 
-    _with_db_retry(operation)
+    repo, db_run_id = _with_db_retry(operation)
+    # DB is committed and is the source of truth; mirroring the new state onto an
+    # external board (if any) is best-effort and must never break the run.
+    _mirror_work_item_transition(repo, db_run_id, record.run_id, record.work_item_id)
+
+
+def _mirror_work_item_transition(
+    repo: Any, db_run_id: int, run_uid: str, work_item_id: str
+) -> None:
+    try:
+        from agentic_company.platform.run_mirror import get_run_mirror
+
+        mirror = get_run_mirror(repo, db_run_id)
+        if mirror is None:
+            return
+        from agentic_company.ports.board import BoardItem
+
+        item = get_work_item(run_uid, work_item_id)
+        mirror.mirror_item(BoardItem(work_item_id=work_item_id, title=item.title))
+        mirror.mirror_status(work_item_id, item.status)
+    except Exception as exc:  # best-effort: a board mirror must not break a run
+        LOGGER.warning("Work-item mirror failed (%s): %s", work_item_id, exc)
 
 
 def claim_work_item_for_execution(record: ToolExecutionRecord) -> WorkItemClaimResult:
@@ -436,13 +458,17 @@ def claim_work_item_for_execution(record: ToolExecutionRecord) -> WorkItemClaimR
 
     record.validate()
 
-    def operation() -> WorkItemClaimResult:
+    def operation() -> tuple[Any, int, WorkItemClaimResult]:
         repo, db_run_id = _repo_and_run(record.run_id)
         now = _now()
         with repo.connect() as conn:
-            return _claim_work_item_for_execution_conn(conn, db_run_id, record, now)
+            result = _claim_work_item_for_execution_conn(conn, db_run_id, record, now)
+        return repo, db_run_id, result
 
-    return _with_db_retry(operation)
+    repo, db_run_id, result = _with_db_retry(operation)
+    if result.claimed:  # the item just went in_progress -> mirror its start
+        _mirror_work_item_transition(repo, db_run_id, record.run_id, record.work_item_id)
+    return result
 
 
 def _claim_work_item_for_execution_conn(

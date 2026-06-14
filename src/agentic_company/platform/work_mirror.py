@@ -34,6 +34,14 @@ class WorkMirror:
     def mirror_pr(self, work_item_id: str, pr_url: str, pr_id: str = "") -> None:
         self._safe(lambda: self._board.link_pr(work_item_id, pr_url, pr_id), f"pr {work_item_id}")
 
+    def mirror_milestone(self, work_item_id: str, milestone_title: str) -> None:
+        # Optional capability: only boards that group by sprint (GitHub Milestone)
+        # implement set_milestone; the internal board has nothing to mirror.
+        setter = getattr(self._board, "set_milestone", None)
+        if setter is None or not milestone_title:
+            return
+        self._safe(lambda: setter(work_item_id, milestone_title), f"milestone {work_item_id}")
+
     def _safe(self, action, what: str) -> None:
         try:
             action()
