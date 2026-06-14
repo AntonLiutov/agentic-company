@@ -145,8 +145,14 @@ def test_link_pr_is_idempotent_when_issue_already_referenced():
     assert any(c[:2] == ["pr", "edit"] for c in gh2.calls)  # #1 != #12 -> still links
 
 
-def test_set_milestone_assigns_issue_to_sprint():
-    gh = _FakeGh({"issue:create": "https://github.com/o/r/issues/12\n"})
+def test_set_milestone_ensures_then_assigns_and_caches_the_milestone():
+    gh = _FakeGh(
+        {
+            "issue:create": "https://github.com/o/r/issues/12\n",
+            "api:repos/o/r/milestones?state=all&per_page=100": "[]",
+            "api:repos/o/r/milestones": "1",  # created milestone number
+        }
+    )
     store = _FakeStore()
     board = _adapter(gh, store)
     board.ensure_item(BoardItem("F1", "Build F1"))
@@ -154,10 +160,16 @@ def test_set_milestone_assigns_issue_to_sprint():
     board.set_milestone("F1", "Sprint 1")
     edits = [c for c in gh.calls if c[:2] == ["issue", "edit"]]
     assert ["issue", "edit", "12", "--repo", "o/r", "--milestone", "Sprint 1"] in edits
+    creates = [c for c in gh.calls if c[:2] == ["api", "repos/o/r/milestones"] and "-f" in c]
+    assert len(creates) == 1  # the milestone was ensured once
+
+    board.set_milestone("F1", "Sprint 1")  # same sprint -> cached, no re-ensure
+    creates = [c for c in gh.calls if c[:2] == ["api", "repos/o/r/milestones"] and "-f" in c]
+    assert len(creates) == 1
 
     board.set_milestone("F1", "")  # empty title -> no-op
     edits = [c for c in gh.calls if c[:2] == ["issue", "edit"]]
-    assert len(edits) == 1
+    assert len(edits) == 2  # two Sprint 1 assignments; the empty one was skipped
 
 
 def test_gh_runner_raises_when_gh_missing():

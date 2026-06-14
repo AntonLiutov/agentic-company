@@ -123,8 +123,8 @@
           <span>Delivery board</span>
           <small>{{ "GitHub Projects" if form_values.board_adapter == "github" else "Internal board" }}</small>
         </summary>
-        <p class="section-hint">Mirror work items onto a kanban board. Internal keeps everything in ADL; GitHub mirrors issues, status columns and PRs onto a Project board.</p>
-        <div class="form-grid form-grid-three">
+        <p class="section-hint">Mirror work items onto a kanban board. Internal keeps everything in ADL; GitHub creates a fresh Project board for this project and mirrors issues, status columns, sprints and PRs onto it.</p>
+        <div class="form-grid form-grid-two">
           <label>Board
             <select name="board_adapter">
               <option value="internal" {{ "selected" if form_values.board_adapter != "github" else "" }}>Internal (default)</option>
@@ -134,11 +134,8 @@
           <label>Repository <small>owner/repo</small>
             <input name="repository" placeholder="AntonLiutov/my-app" value="{{ form_values.repository }}">
           </label>
-          <label>Project number <small>optional</small>
-            <input name="project_number" placeholder="5" value="{{ form_values.project_number }}">
-          </label>
         </div>
-        <p class="section-hint">Owner defaults to the repository owner. Leave the project number empty to mirror issues only (no kanban columns).</p>
+        <p class="section-hint">A new board is created automatically for this project. The owner defaults to the repository owner.</p>
       </details>
     </div>
     <label class="full">Product request

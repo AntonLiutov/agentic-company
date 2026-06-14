@@ -59,21 +59,41 @@ def build_run_mirror(repo: Any, db_run_id: int, *, gh: Any = None) -> WorkMirror
 
         gh = GhRunner()
 
-    md = conn.metadata or {}
-    owner = str(md.get("owner", "")).strip()
+    repository = conn.repository.strip()
+    md = dict(conn.metadata or {})
+    owner = str(md.get("owner", "")).strip() or repository.split("/", 1)[0]
     number = str(md.get("project_number", "")).strip()
     node = str(md.get("project_id", "")).strip()
     field_id = str(md.get("status_field_id", "")).strip()
     options = md.get("status_options") or {}
-    # A Project is configured but its ids were not cached at setup -> resolve once.
-    if owner and number and not (node and field_id and options):
-        node, field_id, options = _resolve_board(gh, owner, number)
+
+    # First run for this ADL project: no board ids cached yet. Provision a fresh
+    # board (or resolve a previously-created one) and persist the ids back onto
+    # the connection so every later run reuses the same board.
+    if not (node and field_id and options):
+        if number:
+            node, field_id, options = _resolve_board(gh, owner, number)
+        else:
+            number, node, field_id, options = _provision_board(
+                gh, repo, project_id, owner, repository
+            )
+        md.update(
+            owner=owner,
+            project_number=number,
+            project_id=node,
+            status_field_id=field_id,
+            status_options=options,
+        )
+        try:
+            repo.update_work_system_connection_metadata(conn.id, md)
+        except Exception as exc:  # caching is an optimisation; never fatal
+            LOGGER.warning("Could not persist board ids for run %s: %s", db_run_id, exc)
 
     board = select_board(
         store=repo,
         run_id=db_run_id,
         system="github",
-        repository=conn.repository.strip(),
+        repository=repository,
         connection_id=conn.id,
         gh=gh,
         owner=owner,
@@ -97,3 +117,24 @@ def _resolve_board(gh: Any, owner: str, number: str) -> tuple[str, str, dict[str
         mapping, _ = ensure_status_columns(gh, status_field_id=resolved.status_field_id)
         options = mapping or options
     return resolved.project_id, resolved.status_field_id, options
+
+
+def _provision_board(
+    gh: Any, repo: Any, project_id: int | None, owner: str, repository: str
+) -> tuple[str, str, str, dict[str, str]]:
+    from agentic_company.integrations.github.projects import provision_project_board
+
+    title = _board_title(repo, project_id, repository)
+    number, resolved = provision_project_board(gh, owner=owner, repository=repository, title=title)
+    return number, resolved.project_id, resolved.status_field_id, resolved.status_options
+
+
+def _board_title(repo: Any, project_id: int | None, repository: str) -> str:
+    if project_id is not None:
+        try:
+            project = repo.get_project(project_id)
+            if project is not None and project.name.strip():
+                return f"ADL · {project.name.strip()}"
+        except Exception:  # fall back to the repo name
+            pass
+    return f"ADL · {repository.split('/', 1)[-1]}"

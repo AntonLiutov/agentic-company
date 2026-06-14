@@ -443,6 +443,9 @@ def _mirror_work_item_transition(
         item = get_work_item(run_uid, work_item_id)
         mirror.mirror_item(BoardItem(work_item_id=work_item_id, title=item.title))
         mirror.mirror_status(work_item_id, item.status)
+        sprint_title = repo.get_sprint_title(db_run_id, item.sprint_id)
+        if sprint_title:  # group the card under its sprint (board Milestone)
+            mirror.mirror_milestone(work_item_id, sprint_title)
     except Exception as exc:  # best-effort: a board mirror must not break a run
         LOGGER.warning("Work-item mirror failed (%s): %s", work_item_id, exc)
 

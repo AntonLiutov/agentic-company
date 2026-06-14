@@ -45,6 +45,7 @@ class GitHubBoardAdapter:
         self._run_id = run_id
         self._repo = repository
         self._connection_id = connection_id
+        self._ensured_milestones: set[str] = set()  # sprints created this run
 
     def ensure_item(self, item: BoardItem) -> BoardRef:
         existing = self._ref(item.work_item_id, "issue")
@@ -111,10 +112,19 @@ class GitHubBoardAdapter:
         return None
 
     def set_milestone(self, work_item_id: str, milestone_title: str) -> None:
-        """Assign the work item's issue to a sprint Milestone (board grouping)."""
+        """Assign the work item's issue to a sprint Milestone (board grouping).
+
+        Self-contained: ensures the milestone exists (once per run) before
+        assigning, since ``gh issue edit --milestone`` requires an existing one.
+        """
         issue = self._ref(work_item_id, "issue")
         if issue is None or not issue.external_id or not milestone_title:
             return None
+        if milestone_title not in self._ensured_milestones:
+            from agentic_company.integrations.github.projects import ensure_sprints
+
+            ensure_sprints(self._gh, repository=self._repo, sprints=(milestone_title,))
+            self._ensured_milestones.add(milestone_title)
         self._gh.run(
             ["issue", "edit", issue.external_id, "--repo", self._repo,
              "--milestone", milestone_title]

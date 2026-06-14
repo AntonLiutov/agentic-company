@@ -255,7 +255,6 @@ def test_create_project_with_github_board_records_connection(tmp_path, monkeypat
             "service_tier": "standard",
             "board_adapter": "github",
             "repository": "AntonLiutov/board-app",
-            "project_number": "5",
         },
         follow_redirects=False,
     )
@@ -266,7 +265,7 @@ def test_create_project_with_github_board_records_connection(tmp_path, monkeypat
     assert conn is not None
     assert conn.repository == "AntonLiutov/board-app"
     assert conn.metadata["owner"] == "AntonLiutov"  # derived from the repository
-    assert conn.metadata["project_number"] == "5"
+    assert "project_number" not in conn.metadata  # board provisioned lazily on first run
 
 
 def test_new_run_creates_canonical_planning_work_items(tmp_path):

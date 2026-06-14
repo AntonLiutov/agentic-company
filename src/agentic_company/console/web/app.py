@@ -277,7 +277,6 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         board_adapter: Annotated[str, Form()] = "internal",
         repository: Annotated[str, Form()] = "",
         project_owner: Annotated[str, Form()] = "",
-        project_number: Annotated[str, Form()] = "",
     ) -> Response:
         agent_provider = normalize_agent_provider(agent_provider)
         agent_model = normalize_agent_model(agent_provider, agent_model)
@@ -296,7 +295,6 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             board_adapter=board_adapter,
             repository=repository,
             project_owner=project_owner,
-            project_number=project_number,
         )
         if not name.strip() or not request_text.strip():
             return render_new_project(
@@ -342,7 +340,6 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             board_adapter=board_adapter,
             repository=repository,
             project_owner=project_owner,
-            project_number=project_number,
         )
         run_dir = create_web_console_run(
             user.username,
@@ -1160,7 +1157,6 @@ def new_project_form_values(
     board_adapter: str = "internal",
     repository: str = "",
     project_owner: str = "",
-    project_number: str = "",
 ) -> dict[str, str]:
     agent_provider = normalize_agent_provider(agent_provider)
     return {
@@ -1176,7 +1172,6 @@ def new_project_form_values(
         "board_adapter": normalize_board_adapter(board_adapter),
         "repository": repository.strip(),
         "project_owner": project_owner.strip(),
-        "project_number": str(project_number).strip(),
     }
 
 
@@ -1191,21 +1186,18 @@ def _maybe_create_board_connection(
     board_adapter: str,
     repository: str,
     project_owner: str,
-    project_number: str,
 ) -> None:
     """Record a project-scoped GitHub work-system connection (best-effort).
 
-    Stores the repository and (optional) Project board coordinates in the
-    connection's metadata; the run mirror resolves the board field ids lazily on
-    first use. A failure here must not block project creation — the run still
-    delivers on ADL's internal board.
+    Stores the repository and board owner; the run mirror provisions a fresh
+    Project board on first use and caches its ids back onto the connection. A
+    failure here must not block project creation — the run still delivers on
+    ADL's internal board.
     """
     if board_adapter != "github" or not repository.strip():
         return
     owner = project_owner.strip() or repository.strip().split("/", 1)[0]
     metadata: dict[str, Any] = {"owner": owner}
-    if str(project_number).strip():
-        metadata["project_number"] = str(project_number).strip()
     try:
         repo.create_work_system_connection(
             project_id=project_id,

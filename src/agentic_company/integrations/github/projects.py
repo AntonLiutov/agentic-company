@@ -29,6 +29,33 @@ class ResolvedBoard:
     status_options: dict[str, str] = field(default_factory=dict)  # column NAME -> option id
 
 
+def provision_project_board(
+    gh: GhLike, *, owner: str, repository: str, title: str
+) -> tuple[str, ResolvedBoard]:
+    """Create a fresh user/org Project for an ADL project, link it, shape columns.
+
+    Run once per ADL project (the result is cached on the connection): creates the
+    board, links it to ``repository`` so its issues/PRs surface there, then ensures
+    the standard status columns. Returns ``(project_number, ResolvedBoard)``.
+    """
+
+    created = json.loads(
+        gh.run(["project", "create", "--owner", owner, "--title", title, "--format", "json"])
+    )
+    number = str(created["number"])
+    gh.run(["project", "link", number, "--owner", owner, "--repo", repository])
+    resolved = resolve_project_board(gh, owner=owner, project_number=number)
+    options = dict(resolved.status_options)
+    if resolved.status_field_id:
+        mapping, _ = ensure_status_columns(gh, status_field_id=resolved.status_field_id)
+        options = mapping or options
+    return number, ResolvedBoard(
+        project_id=resolved.project_id,
+        status_field_id=resolved.status_field_id,
+        status_options=options,
+    )
+
+
 def resolve_project_board(gh: GhLike, *, owner: str, project_number: int | str) -> ResolvedBoard:
     """Resolve a user/org Project's node id, Status field id and current options.
 

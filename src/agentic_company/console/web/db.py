@@ -412,6 +412,27 @@ class ConsoleRepository:
             ).fetchone()
         return _project(row) if row else None
 
+    def get_project(self, project_id: int) -> Project | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT p.*,
+                       r.id AS latest_run_id,
+                       r.status AS latest_run_status,
+                       r.generated_app_url AS generated_app_url
+                FROM projects p
+                LEFT JOIN runs r ON r.id = (
+                    SELECT id FROM runs
+                    WHERE project_id = p.id
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                )
+                WHERE p.id = ?
+                """,
+                (project_id,),
+            ).fetchone()
+        return _project(row) if row else None
+
     def project_request_text(self, project_id: int, user_id: int) -> str:
         with self.connect() as conn:
             row = conn.execute(
@@ -975,6 +996,31 @@ class ConsoleRepository:
                 (system, run_id, project_id),
             ).fetchone()
         return _work_system_connection(row) if row else None
+
+    def update_work_system_connection_metadata(
+        self, connection_id: int, metadata: dict[str, Any]
+    ) -> None:
+        """Persist resolved/provisioned board ids back onto the connection."""
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE work_system_connections
+                SET metadata = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (json.dumps(metadata or {}, sort_keys=True), utc_now(), connection_id),
+            )
+
+    def get_sprint_title(self, run_id: int, sprint_id: str) -> str:
+        """Human title for a run's sprint (used as the board Milestone name)."""
+        if not sprint_id:
+            return ""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT title FROM sprints WHERE run_id = ? AND sprint_id = ?",
+                (run_id, sprint_id),
+            ).fetchone()
+        return str(row["title"]) if row and row["title"] else ""
 
     def upsert_external_work_ref(
         self,
