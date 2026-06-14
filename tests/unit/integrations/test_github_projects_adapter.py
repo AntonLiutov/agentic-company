@@ -59,9 +59,10 @@ class _FakeGh:
 
 
 STATUS_OPTIONS = {
+    "Todo": "o-todo",
+    "Blocked": "o-blk",
     "In Progress": "o-prog",
     "In Review": "o-review",
-    "Blocked": "o-blk",
     "Done": "o-done",
 }
 
@@ -121,14 +122,14 @@ def test_review_moves_to_its_own_in_review_column():
     assert len(comments) == 0  # no annotation needed — the column exists
 
 
-def test_todo_clears_status_into_the_no_status_bucket():
+def test_todo_moves_to_its_own_todo_column():
     gh, store = _FakeGh(), _FakeStore()
     board = _adapter(gh, store)
     board.ensure_item(BoardItem("F1", "Build F1"))
 
     board.set_status("F1", "todo")
     edits = [c for c in gh.calls if c[:2] == ["project", "item-edit"]]
-    assert "--clear" in edits[-1]  # todo -> cleared Status (No Status / backlog)
+    assert "o-todo" in edits[-1]  # todo has its own explicit column
 
 
 def test_link_pr_comments_the_pr_on_the_issue_not_a_separate_card():

@@ -19,24 +19,23 @@ class _FakeGh:
         return json.dumps({"data": {"updateProjectV2Field": {"projectV2Field": {"options": opts}}}})
 
 
-def test_ensure_status_columns_adds_missing_removes_todo_and_reports():
+def test_ensure_status_columns_adds_missing_and_reports():
     gh = _FakeGh(present=["Todo", "In Progress", "Done"])
     mapping, added = ensure_status_columns(gh, status_field_id="F")
 
     assert set(added) == {"In Review", "Blocked"}
     mutation = " ".join(next(c for c in gh.calls if any("query=mutation" in a for a in c)))
-    # Existing kept WITH its id (non-destructive)...
+    # Existing options are re-supplied WITH their ids (non-destructive).
+    assert 'id:"id-Todo"' in mutation
     assert 'id:"id-In Progress"' in mutation
-    # ...and the redundant default "Todo" is dropped (todo = No-Status bucket).
-    assert "Todo" not in mutation
 
 
 def test_ensure_status_columns_is_noop_when_all_present_and_ordered():
-    gh = _FakeGh(present=["Blocked", "In Progress", "In Review", "Done"])
+    gh = _FakeGh(present=["Todo", "Blocked", "In Progress", "In Review", "Done"])
     mapping, added = ensure_status_columns(gh, status_field_id="F")
 
     assert added == []
-    assert set(mapping) == {"Blocked", "In Progress", "In Review", "Done"}
+    assert set(mapping) == {"Todo", "Blocked", "In Progress", "In Review", "Done"}
     # No mutation when the desired columns are present AND already in order.
     assert not any(any("query=mutation" in a for a in c) for c in gh.calls)
 

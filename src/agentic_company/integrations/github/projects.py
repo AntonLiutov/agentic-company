@@ -18,23 +18,24 @@ from agentic_company.integrations.github.board import BoardRefStore, GitHubBoard
 from agentic_company.integrations.github.cli import GhLike
 from agentic_company.ports.board import BoardComment, BoardItem, BoardRef
 
-# ADL status -> board column NAME. 'todo' maps to "" = cleared Status, i.e.
-# GitHub's built-in "No Status" group (the not-started / backlog bucket) — so
-# there is NO redundant "Todo" column. The four explicit columns are ensured.
+# ADL status -> board column NAME. Every ADL status gets its own explicit column
+# and is always set, so GitHub's "No Status" bucket stays empty (it only appears
+# when a status is missing — which, for us, would be a bug).
 DEFAULT_ADL_TO_COLUMN = {
-    "todo": "",
+    "todo": "Todo",
     "blocked": "Blocked",
     "in_progress": "In Progress",
     "review": "In Review",
     "done": "Done",
 }
-# With every needed column ensured present, no status needs a comment fallback.
+# With every column ensured present, no status needs a comment fallback.
 DEFAULT_ANNOTATE_STATUSES = frozenset()
 
-# Explicit columns ADL ensures on a board, in board order. 'todo' has no column
-# (it is the "No Status" bucket). Edit this tuple to reorder the board by code.
-DEFAULT_BOARD_COLUMNS = ("Blocked", "In Progress", "In Review", "Done")
+# Explicit columns ADL ensures on a board, in board order. Edit this tuple to
+# reorder the board by code (enforced even if reordered by hand).
+DEFAULT_BOARD_COLUMNS = ("Todo", "Blocked", "In Progress", "In Review", "Done")
 _COLUMN_COLORS = {
+    "Todo": "GRAY",
     "Blocked": "RED",
     "In Progress": "YELLOW",
     "In Review": "PURPLE",
@@ -51,7 +52,7 @@ def ensure_status_columns(
     *,
     status_field_id: str,
     desired: tuple[str, ...] = DEFAULT_BOARD_COLUMNS,
-    remove: tuple[str, ...] = ("Todo",),
+    remove: tuple[str, ...] = (),
     colors: dict[str, str] | None = None,
 ) -> tuple[dict[str, str], list[str]]:
     """Ensure the board's Status field has the desired columns.
