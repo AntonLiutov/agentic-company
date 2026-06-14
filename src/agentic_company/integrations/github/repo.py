@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Protocol
 
 from agentic_company.integrations.github.cli import GhLike
-from agentic_company.ports.repo import PullRequest, RepoSpec
+from agentic_company.ports.repo import PullRequest, RepoCapabilities, RepoSpec
 
 LOGGER = logging.getLogger("agentic_company.github.repo")
 
@@ -91,6 +91,9 @@ class GitHubRepoAdapter:
     """Provides a working git repo for a run and opens linked pull requests."""
 
     system = "github"
+    capabilities = RepoCapabilities(
+        branch=True, pull_request=True, merge=True, review_comment=True
+    )
 
     def __init__(self, *, gh: GhLike, git: GitLike) -> None:
         self._gh = gh
@@ -178,3 +181,15 @@ class GitHubRepoAdapter:
         url = self._gh.run(args, cwd=target_dir).strip()
         number = url.rsplit("/", 1)[-1] if url else ""
         return PullRequest(number=number, url=url, branch=head)
+
+    def comment_pr(self, pr: str, body: str) -> None:
+        """Leave a review comment on a PR (gh infers the repo from the URL)."""
+        if not pr or not body.strip():
+            return
+        self._gh.run(["pr", "comment", pr, "--body", body])
+
+    def merge_pr(self, pr: str) -> None:
+        """Squash-merge a PR and delete its branch (QA's accept action)."""
+        if not pr:
+            return
+        self._gh.run(["pr", "merge", pr, "--squash", "--delete-branch"])

@@ -34,10 +34,25 @@ class PullRequest:
     branch: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class RepoCapabilities:
+    """What a repo host supports; the orchestrator degrades gracefully on the rest.
+
+    A host that can branch+commit but has no PR API (or none ADL drives) simply
+    pushes a branch and links it on the card — "do what's possible, skip the rest".
+    """
+
+    branch: bool = False
+    pull_request: bool = False
+    merge: bool = False
+    review_comment: bool = False
+
+
 class RepoPort(Protocol):
-    """Swappable source-repo boundary."""
+    """Swappable source-repo boundary (independent of the BoardPort host)."""
 
     system: str
+    capabilities: RepoCapabilities
 
     def ensure_repo(self, spec: RepoSpec) -> None:
         """Make ``spec.target_dir`` a ready git working tree (clone or init)."""
@@ -58,3 +73,9 @@ class RepoPort(Protocol):
         head: str = "",
     ) -> PullRequest:
         """Open a pull request and return its number/url/branch."""
+
+    def comment_pr(self, pr: str, body: str) -> None:
+        """Leave a review comment on a PR (when ``capabilities.review_comment``)."""
+
+    def merge_pr(self, pr: str) -> None:
+        """Merge a PR (when ``capabilities.merge``)."""

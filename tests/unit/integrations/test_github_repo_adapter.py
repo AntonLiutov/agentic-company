@@ -102,6 +102,24 @@ def test_secrets_gitignore_is_idempotent(tmp_path: Path):
     assert (tmp_path / ".gitignore").read_text(encoding="utf-8").count("ADL secrets safety") == 1
 
 
+def test_capabilities_and_pr_review_actions():
+    gh, git = _FakeGh(), _FakeGit()
+    adapter = GitHubRepoAdapter(gh=gh, git=git)
+
+    assert adapter.capabilities.pull_request and adapter.capabilities.merge
+    assert adapter.capabilities.review_comment
+
+    adapter.comment_pr("https://github.com/o/app/pull/9", "Please fix the empty state")
+    adapter.merge_pr("https://github.com/o/app/pull/9")
+    assert ["pr", "comment", "https://github.com/o/app/pull/9", "--body",
+            "Please fix the empty state"] in gh.calls
+    assert any(c[:2] == ["pr", "merge"] and "--squash" in c for c in gh.calls)
+
+    adapter.comment_pr("", "x")  # empty pr -> no-op
+    adapter.merge_pr("")  # empty pr -> no-op
+    assert sum(1 for c in gh.calls if c[:2] == ["pr", "comment"]) == 1
+
+
 def test_git_runner_raises_when_git_missing(tmp_path: Path):
     runner = GitRunner(git_binary="definitely-not-a-real-git-xyz")
     with pytest.raises(GitError):
