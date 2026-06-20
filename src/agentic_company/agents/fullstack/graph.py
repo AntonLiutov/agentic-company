@@ -294,6 +294,7 @@ def _write_feature_execution_request(
             "changes only; the platform publishes the branch and PR host-side "
             "after your Codex execution completes."
         )
+        instructions.pop(-2)
     request = build_execution_request_payload(
         delivery_state,
         agent_id="fullstack-agent",

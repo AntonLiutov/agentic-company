@@ -177,6 +177,7 @@ def _write_deployment_execution_request(run_dir: Path, delivery_state: DeliveryS
             "config changes and evidence only; the platform publishes branch/PR "
             "host-side after your Codex execution completes."
         )
+        instructions.pop(-2)
     request = build_execution_request_payload(
         delivery_state,
         agent_id=DEPLOYMENT_AGENT_ID,
