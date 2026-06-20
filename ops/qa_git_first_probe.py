@@ -24,11 +24,11 @@ from pathlib import Path
 
 from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.integrations.codex.runner import (
+    _NATIVE_SKILLS_READY,
     build_codex_exec_command,
     stream_codex_exec_to_log,
-    _NATIVE_SKILLS_READY,
 )
-from agentic_company.platform.skills import provision_native_skills, SKILL_CATALOG_DIR
+from agentic_company.platform.skills import SKILL_CATALOG_DIR, provision_native_skills
 
 _REAL_SKILL = SKILL_CATALOG_DIR / "git-pr-workflow" / "SKILL.md"
 _QA_HEADER = "## Reviewer workflow (QA)"
@@ -40,8 +40,25 @@ _VARIANTS = {
 }
 
 # A step counts as git-first only if it inspects the repo/PR BEFORE any app exercise.
-_GIT_SIGNALS = ("git remote", "git status", "git branch", "git log", "gh pr", "git fetch", "pull request")
-_APP_SIGNALS = ("serve", "browser", "playwright", "npm", "open the app", "localhost", "screenshot", "http://")
+_GIT_SIGNALS = (
+    "git remote",
+    "git status",
+    "git branch",
+    "git log",
+    "gh pr",
+    "git fetch",
+    "pull request",
+)
+_APP_SIGNALS = (
+    "serve",
+    "browser",
+    "playwright",
+    "npm",
+    "open the app",
+    "localhost",
+    "screenshot",
+    "http://",
+)
 
 
 def _spliced_skill(section_file: str) -> str:
@@ -90,8 +107,13 @@ def main() -> int:
     log = run_dir / "exec.log"
     raw = run_dir / "raw.jsonl"
     cmd = build_codex_exec_command(
-        codex_binary=None, model=DEFAULT_CODEX_MODEL, sandbox="workspace-write",
-        target_project_dir=str(run_dir), run_dir=run_dir, summary_path=summary, force_sandbox=True,
+        codex_binary=None,
+        model=DEFAULT_CODEX_MODEL,
+        sandbox="workspace-write",
+        target_project_dir=str(run_dir),
+        run_dir=run_dir,
+        summary_path=summary,
+        force_sandbox=True,
     )
     prompt = (
         "You are the Quality Reviewer (QA). The run has a connected repository "

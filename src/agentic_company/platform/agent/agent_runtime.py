@@ -21,26 +21,6 @@ from agentic_company.platform.artifacts.artifact_registry import (
     tool_artifact_refs_from_records,
 )
 from agentic_company.platform.artifacts.artifacts import discover_implementation_artifacts
-from agentic_company.platform.mirror.messages import AgentMessage, AgentMessageStore
-from agentic_company.platform.db.models import AgentRunResult
-from agentic_company.platform.run.run_trace import (
-    record_model_call_event,
-    record_run_event,
-    record_tool_call_event,
-)
-from agentic_company.platform.db.runtime_db import record_artifact_link
-from agentic_company.platform.skills import (
-    SkillSelection,
-    render_skill_instructions,
-    select_skills_for_agent,
-    selected_skill_trace_data,
-)
-from agentic_company.platform.db.state import DeliveryState, record_codex_thread
-from agentic_company.platform.status.status import (
-    WorkItemStatus,
-    classify_failure_mode,
-    classify_work_item_status,
-)
 from agentic_company.platform.contracts.tool_contracts import (
     CODEX_EXEC_TOOL_CONTRACT,
     ArtifactRegistrationRequest,
@@ -50,6 +30,26 @@ from agentic_company.platform.contracts.tool_contracts import (
     dashboard_status_from_runtime_status,
     failure_mode_from_status,
     render_tool_docstring,
+)
+from agentic_company.platform.db.models import AgentRunResult
+from agentic_company.platform.db.runtime_db import record_artifact_link
+from agentic_company.platform.db.state import DeliveryState, record_codex_thread
+from agentic_company.platform.mirror.messages import AgentMessage, AgentMessageStore
+from agentic_company.platform.run.run_trace import (
+    record_model_call_event,
+    record_run_event,
+    record_tool_call_event,
+)
+from agentic_company.platform.skills import (
+    SkillSelection,
+    render_skill_instructions,
+    select_skills_for_agent,
+    selected_skill_trace_data,
+)
+from agentic_company.platform.status.status import (
+    WorkItemStatus,
+    classify_failure_mode,
+    classify_work_item_status,
 )
 
 AGENT_EXECUTOR_GRAPH_NODE_ORDER: tuple[str, str, str] = (

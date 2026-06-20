@@ -562,8 +562,8 @@ def _record_card_log_from_run_event(event: RunEvent) -> None:
     if not _is_card_log_run_event(event):
         return
     try:
-        from agentic_company.platform.db.runtime_db import record_activity_event
         from agentic_company.platform.contracts.tool_contracts import ActivityEventRecord
+        from agentic_company.platform.db.runtime_db import record_activity_event
 
         record_activity_event(
             ActivityEventRecord(

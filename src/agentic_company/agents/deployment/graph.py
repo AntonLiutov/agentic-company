@@ -31,7 +31,6 @@ from agentic_company.platform.artifacts.artifacts import (
     update_execution_request_context,
     write_execution_request,
 )
-from agentic_company.platform.run.events import write_event
 from agentic_company.platform.db.models import AgentRunResult
 from agentic_company.platform.db.runtime_db import (
     completed_work_item_ids,
@@ -43,6 +42,7 @@ from agentic_company.platform.db.state import (
     DeliveryState,
     codex_resume_thread_id,
 )
+from agentic_company.platform.run.events import write_event
 
 DEPLOYMENT_AGENT_ID = "deployment-agent"
 

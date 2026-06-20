@@ -15,15 +15,16 @@ from agentic_company.agents.registry import agent_by_id, route_for_node
 from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.platform.agent.agent_runtime import agent_env_value
 from agentic_company.platform.artifacts.artifact_registry import artifact_id_for
-from agentic_company.platform.delivery.codex_review import (
-    CodexReviewRequest,
-    CodexReviewResult,
-    CodexReviewRunner,
+from agentic_company.platform.contracts.tool_contracts import (
+    ArtifactRegistrationRequest,
+    ToolCallResult,
+    ToolDashboardUpdate,
+    ToolExecutionRecord,
+    dashboard_status_from_runtime_status,
+    failure_mode_from_status,
+    normalize_external_reference,
 )
-from agentic_company.platform.run.events import write_event
-from agentic_company.platform.run.executions import build_agent_execution_id, short_hash
-from agentic_company.platform.mirror.messages import AgentMessage, AgentMessageStore
-from agentic_company.platform.run.run_trace import record_tool_call_event
+from agentic_company.platform.contracts.work_item_contracts import HEAD_WORK_ITEM_BY_NODE
 from agentic_company.platform.db.runtime_db import (
     artifact_links_for_paths,
     artifact_paths_by_owner,
@@ -46,6 +47,15 @@ from agentic_company.platform.db.state import (
     record_codex_thread,
     write_delivery_state,
 )
+from agentic_company.platform.delivery.codex_review import (
+    CodexReviewRequest,
+    CodexReviewResult,
+    CodexReviewRunner,
+)
+from agentic_company.platform.mirror.messages import AgentMessage, AgentMessageStore
+from agentic_company.platform.run.events import write_event
+from agentic_company.platform.run.executions import build_agent_execution_id, short_hash
+from agentic_company.platform.run.run_trace import record_tool_call_event
 from agentic_company.platform.status.status import (
     HEAD_TERMINAL_OUTCOMES,
     CoordinatorOutcome,
@@ -55,16 +65,6 @@ from agentic_company.platform.status.status_inspector import (
     StatusInspectorLike,
     StatusInspectorRunner,
 )
-from agentic_company.platform.contracts.tool_contracts import (
-    ArtifactRegistrationRequest,
-    ToolCallResult,
-    ToolDashboardUpdate,
-    ToolExecutionRecord,
-    dashboard_status_from_runtime_status,
-    failure_mode_from_status,
-    normalize_external_reference,
-)
-from agentic_company.platform.contracts.work_item_contracts import HEAD_WORK_ITEM_BY_NODE
 
 HEAD_AGENT_ID = "head-agent"
 HEAD_CODEX_REVIEW_AGENT_ID = "head-codex-review"

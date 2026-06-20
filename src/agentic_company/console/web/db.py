@@ -28,6 +28,7 @@ from agentic_company.platform.artifacts.artifact_registry import (
     artifact_record_from_mapping,
     register_artifact,
 )
+from agentic_company.platform.contracts.work_item_contracts import HEAD_PLANNING_ITEMS
 from agentic_company.platform.run.run_trace import (
     ModelCallEvent,
     RunEvent,
@@ -43,7 +44,6 @@ from agentic_company.platform.status.status import (
     classify_work_item_status,
     transition,
 )
-from agentic_company.platform.contracts.work_item_contracts import HEAD_PLANNING_ITEMS
 
 SESSION_DAYS = 14
 CONSOLE_SCHEMA_VERSION = "2026-06-13.1"

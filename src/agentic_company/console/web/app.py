@@ -66,9 +66,6 @@ from agentic_company.console.web.product import (
 )
 from agentic_company.console.web.rate_limit import RateLimiter
 from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
-from agentic_company.platform.logging import configure_logging
-from agentic_company.platform.run.run_finalizer import RunStatus
-from agentic_company.platform.run.run_trace import trace_summary
 from agentic_company.platform.db.runtime_cache import redis_error_types, runtime_cache_from_env
 from agentic_company.platform.db.runtime_db import (
     reconcile_run,
@@ -76,6 +73,9 @@ from agentic_company.platform.db.runtime_db import (
     record_run_lifecycle,
     request_run_control_intent,
 )
+from agentic_company.platform.logging import configure_logging
+from agentic_company.platform.run.run_finalizer import RunStatus
+from agentic_company.platform.run.run_trace import trace_summary
 
 COOKIE_NAME = "agentic_console_session"
 LOGGER = logging.getLogger(__name__)
@@ -436,9 +436,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             user.username,
             _run_requirements(project.name, request_text, project.mode, project.complexity),
         )
-        gh_conn = repo.get_active_work_system_connection(
-            project_id=project.id, system="github"
-        )
+        gh_conn = repo.get_active_work_system_connection(project_id=project.id, system="github")
         prepare_run_environment(
             run_dir,
             api_key=api_key,
@@ -637,9 +635,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         return f"http://127.0.0.1:{port}/auth/github/callback"
 
     @app.get("/auth/github/login")
-    def github_login(
-        request: Request, user: CurrentUser, next: str = "/projects/new"
-    ) -> Response:
+    def github_login(request: Request, user: CurrentUser, next: str = "/projects/new") -> Response:
         if not github_oauth.is_configured():
             return redirect("/settings?github_error=not_configured")
         state = secrets.token_urlsafe(24)

@@ -22,14 +22,14 @@ from agentic_company.platform.agent.agent_runtime import (
     agent_env_value,
     build_agent_executor_graph,
 )
-from agentic_company.platform.mirror.messages import render_incoming_messages_for_prompt
+from agentic_company.platform.contracts.tool_contracts import WorkItemExecutionPacket
 from agentic_company.platform.db.models import AgentRunResult
 from agentic_company.platform.db.runtime_db import materialize_pm_work_items
 from agentic_company.platform.db.state import (
     DeliveryState,
     codex_resume_thread_id,
 )
-from agentic_company.platform.contracts.tool_contracts import WorkItemExecutionPacket
+from agentic_company.platform.mirror.messages import render_incoming_messages_for_prompt
 
 PROJECT_MANAGER_AGENT_ID = "project-manager-agent"
 PROJECT_MANAGER_AGENT_GRAPH_NODE_ORDER = AGENT_EXECUTOR_GRAPH_NODE_ORDER

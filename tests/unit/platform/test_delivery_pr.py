@@ -10,9 +10,7 @@ class _Adapter:
     """The git interface. The platform now only uses find_pr (detect); the agent owns
     branch/commit/push/merge via the git-pr-workflow skill."""
 
-    capabilities = RepoCapabilities(
-        branch=True, pull_request=True, merge=True, review_comment=True
-    )
+    capabilities = RepoCapabilities(branch=True, pull_request=True, merge=True, review_comment=True)
 
     def __init__(self):
         self.calls = []

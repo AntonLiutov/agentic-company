@@ -20,7 +20,9 @@ from typing import Any
 AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 TOKEN_URL = "https://github.com/login/oauth/access_token"
 API_BASE = "https://api.github.com"
-SCOPE = "repo,project,read:org"  # clone/PR/merge + Projects board (read:org = gh owner-type resolution)
+SCOPE = (
+    "repo,project,read:org"  # clone/PR/merge + Projects board (read:org = gh owner-type resolution)
+)
 PROVIDER = "github_oauth"
 LOGIN_PROVIDER = "github_login"  # stores the resolved username (non-secret) for display
 _UA = "ADL-Console"
@@ -111,7 +113,9 @@ def _api_request(method: str, path: str, token: str, body: dict | None = None) -
             message = str(json.loads(exc.read().decode("utf-8")).get("message") or "")
         except Exception:
             pass
-        raise GitHubOAuthError(message or f"GitHub API {method} {path} failed ({exc.code})") from exc
+        raise GitHubOAuthError(
+            message or f"GitHub API {method} {path} failed ({exc.code})"
+        ) from exc
     except urllib.error.URLError as exc:
         raise GitHubOAuthError(f"GitHub API {method} {path} failed: {exc}") from exc
 

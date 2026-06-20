@@ -11,12 +11,12 @@ from agentic_company.platform.agent.agent_runtime import (
     LangChainSpecialistAgentExecutor,
     SpecialistAgentRequest,
 )
-from agentic_company.platform.db.models import AgentRunResult
-from agentic_company.platform.db.runtime_db import materialize_planning_items
 from agentic_company.platform.contracts.tool_contracts import (
     CODEX_EXEC_TOOL_CONTRACT,
     WorkItemExecutionPacket,
 )
+from agentic_company.platform.db.models import AgentRunResult
+from agentic_company.platform.db.runtime_db import materialize_planning_items
 
 
 def test_head_tool_contract_parameters_match_callable_signatures():

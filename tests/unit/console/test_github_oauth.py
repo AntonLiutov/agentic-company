@@ -60,7 +60,9 @@ def test_exchange_raises_when_no_token(monkeypatch):
     monkeypatch.setattr(
         g.urllib.request,
         "urlopen",
-        lambda req, timeout=0: _Resp(json.dumps({"error_description": "bad_verification_code"}).encode()),
+        lambda req, timeout=0: _Resp(
+            json.dumps({"error_description": "bad_verification_code"}).encode()
+        ),
     )
     with pytest.raises(g.GitHubOAuthError):
         g.exchange_code_for_token("bad", "http://x/cb")

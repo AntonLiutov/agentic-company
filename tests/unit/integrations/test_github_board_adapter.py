@@ -136,9 +136,7 @@ def test_link_pr_is_idempotent_when_issue_already_referenced():
     assert edits == []  # already linked -> no body rewrite
 
     # #1 must not match the existing "#12" reference (word boundary).
-    gh2 = _FakeGh(
-        {"issue:create": "https://github.com/o/r/issues/1\n", "pr:view": "Closes #12"}
-    )
+    gh2 = _FakeGh({"issue:create": "https://github.com/o/r/issues/1\n", "pr:view": "Closes #12"})
     board2 = _adapter(gh2, _FakeStore())
     board2.ensure_item(BoardItem("F2", "Build F2"))
     board2.link_pr("F2", "https://github.com/o/r/pull/21", pr_id="21")
@@ -191,7 +189,9 @@ def test_gh_runner_retries_transient_github_conflict(monkeypatch):
     import agentic_company.integrations.github.cli as cli
 
     calls: list[list[str]] = []
-    conflict = "GraphQL: Your attempt to move this item created a temporary conflict. Please try again."
+    conflict = (
+        "GraphQL: Your attempt to move this item created a temporary conflict. Please try again."
+    )
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
@@ -258,7 +258,9 @@ def test_resolve_oauth_github_token_decrypts_connection_credential(monkeypatch):
     conn = type("C", (), {"token_ref": "user:7:github_oauth"})()
     assert repo_manager.resolve_oauth_github_token(_Repo(), conn) == "gho_decrypted"
     # a connection without an OAuth token_ref falls back to host gh auth ("")
-    assert repo_manager.resolve_oauth_github_token(_Repo(), type("C", (), {"token_ref": ""})()) == ""
+    assert (
+        repo_manager.resolve_oauth_github_token(_Repo(), type("C", (), {"token_ref": ""})()) == ""
+    )
 
 
 def test_gh_runner_does_not_retry_a_real_error(monkeypatch):

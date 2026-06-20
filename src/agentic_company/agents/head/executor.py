@@ -20,8 +20,8 @@ from agentic_company.platform.agent.agent_runtime import (
     coordinator_quality_review_policy,
     coordinator_repair_policy,
 )
-from agentic_company.platform.db.state import DeliveryState
 from agentic_company.platform.contracts.tool_contracts import render_tool_docstring
+from agentic_company.platform.db.state import DeliveryState
 
 
 class LangChainHeadExecutor:

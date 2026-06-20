@@ -4,7 +4,7 @@ import pytest
 
 from agentic_company.agents.head.contracts import HEAD_TOOL_CONTRACT_REGISTRY
 from agentic_company.agents.team_lead.contracts import TEAM_LEAD_TOOL_CONTRACT_REGISTRY
-
+from agentic_company.platform.contracts.tool_contracts import CODEX_EXEC_TOOL_CONTRACT
 from agentic_company.platform.skills import (
     DEFAULT_SKILL_CATALOG,
     KNOWN_ARTIFACT_TYPES,
@@ -17,7 +17,6 @@ from agentic_company.platform.skills import (
     render_skill_instructions,
     select_skills_for_agent,
 )
-from agentic_company.platform.contracts.tool_contracts import CODEX_EXEC_TOOL_CONTRACT
 
 
 def test_skill_catalog_loads_initial_skills_with_unique_ids():
@@ -256,7 +255,9 @@ def test_qa_runtime_worker_can_review_and_merge():
 def test_both_coordinators_select_the_repair_loop_skill():
     # Head and Team Lead are LangChain agents (skills via select_skills_for_agent paste).
     for agent_id, stage in (("head-agent", "head"), ("team-lead-agent", "team_lead")):
-        ids = [s.skill_id for s in select_skills_for_agent(agent_id=agent_id, stage=stage).selections]
+        ids = [
+            s.skill_id for s in select_skills_for_agent(agent_id=agent_id, stage=stage).selections
+        ]
         assert "repair-loop" in ids, f"{agent_id} missing repair-loop; got {ids}"
 
 

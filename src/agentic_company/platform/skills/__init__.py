@@ -430,9 +430,7 @@ def applicable_skills_for_agent(
 
     active = catalog or DEFAULT_SKILL_CATALOG
     canonical = canonical_skill_agent_id(agent_id)
-    return tuple(
-        skill for skill in active.all() if canonical in skill.applies_to_agents
-    )
+    return tuple(skill for skill in active.all() if canonical in skill.applies_to_agents)
 
 
 def provision_native_skills(

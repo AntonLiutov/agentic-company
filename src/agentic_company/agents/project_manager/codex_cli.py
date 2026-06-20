@@ -30,6 +30,8 @@ from agentic_company.integrations.codex import (
     write_structured_codex_artifacts,
 )
 from agentic_company.platform.artifacts.artifacts import read_json_artifact, read_text_artifact
+from agentic_company.platform.db.models import AgentRunResult
+from agentic_company.platform.mirror.messages import render_incoming_messages_for_prompt
 from agentic_company.platform.run.events import write_event
 from agentic_company.platform.run.executions import (
     build_agent_execution_id,
@@ -37,8 +39,6 @@ from agentic_company.platform.run.executions import (
     execution_artifact_dir,
     extract_codex_thread_id,
 )
-from agentic_company.platform.mirror.messages import render_incoming_messages_for_prompt
-from agentic_company.platform.db.models import AgentRunResult
 
 LOGGER = logging.getLogger(__name__)
 PROJECT_MANAGER_WORK_DIR = Path("upstream-planning") / "project-manager"

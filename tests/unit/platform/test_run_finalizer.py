@@ -5,14 +5,14 @@ from __future__ import annotations
 import pytest
 
 from agentic_company.console.web.db import ConsoleRepository
+from agentic_company.platform.db.runtime_db import (
+    record_generated_app_url,
+    record_run_lifecycle,
+)
 from agentic_company.platform.run.run_finalizer import (
     RunStatus,
     is_terminal_run_status,
     resolve_run_status,
-)
-from agentic_company.platform.db.runtime_db import (
-    record_generated_app_url,
-    record_run_lifecycle,
 )
 
 

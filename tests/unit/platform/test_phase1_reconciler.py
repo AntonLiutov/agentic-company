@@ -3,6 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from agentic_company.console.web.db import ConsoleRepository
+from agentic_company.platform.contracts.tool_contracts import (
+    ArtifactRegistrationRequest,
+    ToolExecutionRecord,
+)
 from agentic_company.platform.db.runtime_db import (
     artifact_links_for_paths,
     build_run_reconcile_snapshot,
@@ -16,10 +20,6 @@ from agentic_company.platform.db.runtime_db import (
 from agentic_company.platform.status.status_snapshot import (
     build_delivery_status_snapshot,
     build_sprint_status_snapshot,
-)
-from agentic_company.platform.contracts.tool_contracts import (
-    ArtifactRegistrationRequest,
-    ToolExecutionRecord,
 )
 
 

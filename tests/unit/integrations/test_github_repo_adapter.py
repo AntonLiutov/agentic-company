@@ -99,9 +99,7 @@ class _DiffGit:
 
 
 def test_commit_push_writes_gitignore_and_unstages_secrets(tmp_path: Path):
-    git = _DiffGit(
-        ".env\nsrc/app.py\nconfig.key\nagent-runtime.env\nREADME.md\nsecrets/token.txt"
-    )
+    git = _DiffGit(".env\nsrc/app.py\nconfig.key\nagent-runtime.env\nREADME.md\nsecrets/token.txt")
     adapter = GitHubRepoAdapter(gh=_FakeGh(), git=git)
     adapter.commit_push(tmp_path, "feat: F1", branch="adl/F1")
 
@@ -161,8 +159,13 @@ def test_capabilities_and_pr_review_actions():
 
     adapter.comment_pr("https://github.com/o/app/pull/9", "Please fix the empty state")
     adapter.merge_pr("https://github.com/o/app/pull/9")
-    assert ["pr", "comment", "https://github.com/o/app/pull/9", "--body",
-            "Please fix the empty state"] in gh.calls
+    assert [
+        "pr",
+        "comment",
+        "https://github.com/o/app/pull/9",
+        "--body",
+        "Please fix the empty state",
+    ] in gh.calls
     assert any(c[:2] == ["pr", "merge"] and "--squash" in c for c in gh.calls)
 
     adapter.comment_pr("", "x")  # empty pr -> no-op

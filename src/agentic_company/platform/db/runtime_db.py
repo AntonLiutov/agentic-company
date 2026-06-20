@@ -19,13 +19,6 @@ from agentic_company.platform.artifacts.artifact_registry import (
     register_artifact,
     resolve_run_artifact_path,
 )
-from agentic_company.platform.run.run_finalizer import TERMINAL_RUN_STATUSES, RunStatus
-from agentic_company.platform.status.status import (
-    InvalidStatusTransition,
-    WorkItemStatus,
-    classify_work_item_status,
-    transition,
-)
 from agentic_company.platform.contracts.tool_contracts import (
     ActivityEventRecord,
     ArtifactRegistrationRequest,
@@ -36,6 +29,13 @@ from agentic_company.platform.contracts.work_item_contracts import (
     HEAD_PLANNING_ITEMS,
     pm_sprints_from_run_dir,
     pm_work_items_from_run_dir,
+)
+from agentic_company.platform.run.run_finalizer import TERMINAL_RUN_STATUSES, RunStatus
+from agentic_company.platform.status.status import (
+    InvalidStatusTransition,
+    WorkItemStatus,
+    classify_work_item_status,
+    transition,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -622,7 +622,9 @@ def _artifact_section(repo: Any, db_run_id: int, run_uid: str, refs: list[str]) 
             inner = _csv_to_markdown_table(text) or f"```\n{text}\n```"
             blocks.append(f"<details><summary>📄 {name}</summary>\n\n{inner}\n\n</details>")
         elif is_html:
-            blocks.append(f"<details><summary>📄 {name} (rendered)</summary>\n\n{text}\n\n</details>")
+            blocks.append(
+                f"<details><summary>📄 {name} (rendered)</summary>\n\n{text}\n\n</details>"
+            )
         else:  # .md
             blocks.append(f"<details><summary>📄 {name}</summary>\n\n{text}\n\n</details>")
     return "\n\n**Artifacts**\n\n" + "\n\n".join(blocks) if blocks else ""
@@ -835,9 +837,7 @@ def mirror_coordinator_comment_now(
             parts += ["", clean_detail]
         body = "\n".join(parts)
         body += _artifact_section(repo, db_run_id, run_uid, artifact_refs)
-        mirror.mirror_comment(
-            BoardComment(work_item_id, body, idempotency_key=idempotency_key)
-        )
+        mirror.mirror_comment(BoardComment(work_item_id, body, idempotency_key=idempotency_key))
     except Exception as exc:  # best-effort: a coordination note must not break a run
         LOGGER.warning("Coordinator-comment mirror failed (%s): %s", work_item_id, exc)
 
@@ -1464,7 +1464,10 @@ def run_stop_requested(run_id: str, run_dir: Path | str) -> bool:
         LOGGER.warning("Durable stop flag read failed run_id=%s error=%s", run_id, exc)
 
     try:
-        from agentic_company.platform.db.runtime_cache import redis_error_types, runtime_cache_from_env
+        from agentic_company.platform.db.runtime_cache import (
+            redis_error_types,
+            runtime_cache_from_env,
+        )
 
         return runtime_cache_from_env().stop_requested(str(run_id))
     except redis_error_types() as exc:

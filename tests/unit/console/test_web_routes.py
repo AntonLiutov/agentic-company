@@ -7,8 +7,8 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 from agentic_company.console.web.app import create_app
 from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.platform.artifacts.artifact_registry import artifact_id_for, register_artifact
-from agentic_company.platform.run.run_trace import RunEvent, ToolCallEvent
 from agentic_company.platform.db.state import DELIVERY_STATE_SNAPSHOT
+from agentic_company.platform.run.run_trace import RunEvent, ToolCallEvent
 
 
 def delivery_state_path(run_dir: Path) -> Path:

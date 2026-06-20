@@ -132,8 +132,15 @@ class GitHubBoardAdapter:
                     ensure_sprints(self._gh, repository=self._repo, sprints=(milestone_title,))
                     self._ensured_milestones.add(milestone_title)
         self._gh.run(
-            ["issue", "edit", issue.external_id, "--repo", self._repo,
-             "--milestone", milestone_title]
+            [
+                "issue",
+                "edit",
+                issue.external_id,
+                "--repo",
+                self._repo,
+                "--milestone",
+                milestone_title,
+            ]
         )
         return None
 

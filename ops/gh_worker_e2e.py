@@ -84,9 +84,7 @@ def resolve_token(arg_token: str) -> str:
         if val:
             return val
     try:
-        out = subprocess.run(
-            ["gh", "auth", "token"], capture_output=True, text=True, timeout=15
-        )
+        out = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=15)
         if out.returncode == 0 and out.stdout.strip():
             return out.stdout.strip()
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -108,7 +106,7 @@ def build_prompt(owner: str, repo: str) -> str:
         "retry. Never print the token value.\n\n"
         f'TASK — use a throwaway private repo named "{repo}" (it does not exist yet; you '
         "create it and later delete it):\n"
-        f"  1. CONFIRM AUTH:  `gh api user` and check the login is \"{owner}\".\n"
+        f'  1. CONFIRM AUTH:  `gh api user` and check the login is "{owner}".\n'
         f"  2. CREATE REPO:   `gh repo create {repo} --private --add-readme` "
         "(this gives it an initialized `main` branch).\n"
         f"  3. CLONE:         clone {owner}/{repo} into a subfolder ./work, then cd into it.\n"
@@ -253,7 +251,8 @@ def main() -> int:
     print("worker EXECUTED these commands (from raw events):")
     for k in ("create", "push", "pr", "merge", "delete"):
         print(f"    gh/git {k:<7}: {'yes' if ran[k] else 'NO'}")
-    print(f"repo {owner}/{repo} now: {'DELETED (404)' if repo_gone else f'still exists ({final_status})'}")
+    repo_state = "DELETED (404)" if repo_gone else f"still exists ({final_status})"
+    print(f"repo {owner}/{repo} now: {repo_state}")
     if reported:
         print("worker self-report  :", " ".join(f"{k}={reported.get(k, '?')}" for k in STEPS))
     print("====================================================")

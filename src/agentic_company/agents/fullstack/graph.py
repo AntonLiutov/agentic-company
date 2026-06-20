@@ -25,7 +25,6 @@ from agentic_company.platform.artifacts.artifacts import (
     build_execution_request_payload,
     write_execution_request,
 )
-from agentic_company.platform.mirror.messages import AgentMessageStore
 from agentic_company.platform.db.models import AgentRunResult
 from agentic_company.platform.db.runtime_db import (
     completed_work_item_ids,
@@ -36,6 +35,7 @@ from agentic_company.platform.db.state import (
     DeliveryState,
     codex_resume_thread_id,
 )
+from agentic_company.platform.mirror.messages import AgentMessageStore
 
 FULLSTACK_AGENT_GRAPH_NODE_ORDER = AGENT_EXECUTOR_GRAPH_NODE_ORDER
 FULLSTACK_AGENT_SYSTEM_PROMPT = """You are the Fullstack Agent for agentic-company.
@@ -282,7 +282,8 @@ def _write_feature_execution_request(
         instructions.append(
             f"A git repository is connected for this run: {repo_ctx['repository']} "
             f"(base branch `{repo_ctx['base_branch']}`). After you finish this work item, DELIVER "
-            "IT AS A PULL REQUEST using the git-pr-workflow skill: orient first (check your current "
+            "IT AS A PULL REQUEST using the git-pr-workflow skill: orient first "
+            "(check your current "
             f"branch and recent commits), put your work on branch `adl/{work_item_id.lower()}`, "
             "commit (never secrets), push, and open the PR. Never commit to the base branch "
             "directly; QA reviews and merges the PR." + existing_note

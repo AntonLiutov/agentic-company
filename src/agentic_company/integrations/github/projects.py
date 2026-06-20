@@ -63,9 +63,7 @@ def provision_project_board(
 def _find_project_number_by_title(gh: GhLike, owner: str, title: str) -> str:
     """Return an existing user/org Project number whose title matches, else ''."""
     try:
-        out = gh.run(
-            ["project", "list", "--owner", owner, "--format", "json", "--limit", "200"]
-        )
+        out = gh.run(["project", "list", "--owner", owner, "--format", "json", "--limit", "200"])
         data = json.loads(out or "{}")
         projects = data.get("projects", data) if isinstance(data, dict) else data
         for project in projects or []:

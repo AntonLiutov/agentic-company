@@ -22,9 +22,9 @@ from pathlib import Path
 
 from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
 from agentic_company.integrations.codex.runner import (
+    _NATIVE_SKILLS_READY,
     build_codex_exec_command,
     stream_codex_exec_to_log,
-    _NATIVE_SKILLS_READY,
 )
 
 REPO = "AntonLiutov/adl-phase2-smoke"
@@ -52,15 +52,35 @@ def main() -> int:
         )
         sh(["git", "add", "-A"], cwd=str(proj))
         sh(
-            ["git", "-c", "user.email=qa-e2e@adl.local", "-c", "user.name=ADL QA E2E",
-             "commit", "-m", "test(qatest): throwaway change for QA-merge e2e"],
+            [
+                "git",
+                "-c",
+                "user.email=qa-e2e@adl.local",
+                "-c",
+                "user.name=ADL QA E2E",
+                "commit",
+                "-m",
+                "test(qatest): throwaway change for QA-merge e2e",
+            ],
             cwd=str(proj),
         )
         sh(["git", "push", "-u", "origin", branch], cwd=str(proj))
         pr_url = sh(
-            ["gh", "pr", "create", "--repo", REPO, "--base", "main", "--head", branch,
-             "--title", "[QATEST] QA-merge e2e (throwaway)",
-             "--body", "Throwaway PR to verify the QA worker reviews AND merges. Safe to merge/close."]
+            [
+                "gh",
+                "pr",
+                "create",
+                "--repo",
+                REPO,
+                "--base",
+                "main",
+                "--head",
+                branch,
+                "--title",
+                "[QATEST] QA-merge e2e (throwaway)",
+                "--body",
+                "Throwaway PR to verify the QA worker reviews AND merges. Safe to merge/close.",
+            ]
         )
         pr_num = pr_url.rstrip("/").split("/")[-1]
         print(f"[e2e] opened PR #{pr_num}: {pr_url}")
@@ -72,8 +92,13 @@ def main() -> int:
         sandbox = sys.argv[1] if len(sys.argv) > 1 else "workspace-write"
         print(f"[e2e] sandbox policy = {sandbox}")
         cmd = build_codex_exec_command(
-            codex_binary=None, model=DEFAULT_CODEX_MODEL, sandbox=sandbox,
-            target_project_dir=str(proj), run_dir=work, summary_path=summary, force_sandbox=True,
+            codex_binary=None,
+            model=DEFAULT_CODEX_MODEL,
+            sandbox=sandbox,
+            target_project_dir=str(proj),
+            run_dir=work,
+            summary_path=summary,
+            force_sandbox=True,
         )
         prompt = (
             "You are the Quality Reviewer (QA) for work item QATEST. The connected repository "

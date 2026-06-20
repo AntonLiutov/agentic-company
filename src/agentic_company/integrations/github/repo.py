@@ -108,9 +108,7 @@ class GitHubRepoAdapter:
     """Provides a working git repo for a run and opens linked pull requests."""
 
     system = "github"
-    capabilities = RepoCapabilities(
-        branch=True, pull_request=True, merge=True, review_comment=True
-    )
+    capabilities = RepoCapabilities(branch=True, pull_request=True, merge=True, review_comment=True)
 
     def __init__(self, *, gh: GhLike, git: GitLike, github_token: str = "") -> None:
         self._gh = gh
@@ -156,7 +154,10 @@ class GitHubRepoAdapter:
             return
         # POSIX shell helper (git ships sh on Windows too): answer only credential `get`
         # with username + the token from the environment.
-        helper = '!f() { test "$1" = get && printf "username=x-access-token\\npassword=%s\\n" "$GH_TOKEN"; }; f'
+        helper = (
+            '!f() { test "$1" = get && '
+            'printf "username=x-access-token\\npassword=%s\\n" "$GH_TOKEN"; }; f'
+        )
         try:
             self._git.run(
                 ["config", "--local", "--replace-all", "credential.helper", helper],
@@ -207,9 +208,7 @@ class GitHubRepoAdapter:
             rel = rel.strip()
             if rel and _SECRET_PATH_RE.search(rel):
                 LOGGER.warning("Refusing to commit secret-looking file: %s", rel)
-                self._git.run(
-                    ["rm", "--cached", "-r", "--ignore-unmatch", rel], cwd=target_dir
-                )
+                self._git.run(["rm", "--cached", "-r", "--ignore-unmatch", rel], cwd=target_dir)
 
     def _unstage_scaffolding(self, target_dir: Path) -> None:
         """Fail-safe: drop ADL run scaffolding (.agents/, qa/, execution summary, debug
@@ -220,9 +219,7 @@ class GitHubRepoAdapter:
             rel = rel.strip()
             if rel and _SCAFFOLDING_PATH_RE.search(rel):
                 LOGGER.info("Dropping ADL scaffolding from the commit: %s", rel)
-                self._git.run(
-                    ["rm", "--cached", "-r", "--ignore-unmatch", rel], cwd=target_dir
-                )
+                self._git.run(["rm", "--cached", "-r", "--ignore-unmatch", rel], cwd=target_dir)
 
     def open_pr(
         self,
@@ -270,7 +267,9 @@ class GitHubRepoAdapter:
             return None
         item = items[0]
         url = str(item.get("url") or "")
-        return PullRequest(number=str(item.get("number") or ""), url=url, branch=head) if url else None
+        return (
+            PullRequest(number=str(item.get("number") or ""), url=url, branch=head) if url else None
+        )
 
     def comment_pr(self, pr: str, body: str) -> None:
         """Leave a review comment on a PR (gh infers the repo from the URL)."""

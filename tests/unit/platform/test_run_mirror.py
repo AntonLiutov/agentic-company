@@ -1,15 +1,15 @@
 import json
 
-import agentic_company.platform.run.run_mirror as run_mirror_mod
 import agentic_company.platform.db.runtime_db as rdb
+import agentic_company.platform.run.run_mirror as run_mirror_mod
 from agentic_company.integrations.github.projects import GitHubProjectsBoardAdapter
+from agentic_company.platform.db.runtime_db import _mirror_seed_work_items, _sprint_title
+from agentic_company.platform.mirror.work_mirror import WorkMirror
 from agentic_company.platform.run.run_mirror import (
     build_run_mirror,
     get_run_mirror,
     reset_run_mirror,
 )
-from agentic_company.platform.db.runtime_db import _mirror_seed_work_items, _sprint_title
-from agentic_company.platform.mirror.work_mirror import WorkMirror
 
 
 class _Run:

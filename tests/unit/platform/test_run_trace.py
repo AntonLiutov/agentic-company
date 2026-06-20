@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 
 from agentic_company.console.web.db import ConsoleRepository
+from agentic_company.platform.db.runtime_db import materialize_planning_items
 from agentic_company.platform.delivery.codex_review import CodexReviewRequest, CodexReviewRunner
 from agentic_company.platform.run.events import write_event
 from agentic_company.platform.run.run_trace import (
@@ -20,8 +21,10 @@ from agentic_company.platform.run.run_trace import (
     sanitize_trace_data,
     trace_summary,
 )
-from agentic_company.platform.db.runtime_db import materialize_planning_items
-from agentic_company.platform.status.status_inspector import StatusInspectionRequest, StatusInspectorRunner
+from agentic_company.platform.status.status_inspector import (
+    StatusInspectionRequest,
+    StatusInspectorRunner,
+)
 
 
 def test_write_event_records_structured_trace_without_retired_root_log(tmp_path: Path):

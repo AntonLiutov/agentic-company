@@ -6,12 +6,12 @@ from agentic_company.platform.artifacts.artifact_registry import (
     artifact_record_from_mapping,
     register_artifact,
 )
+from agentic_company.platform.contracts.tool_contracts import ArtifactRegistrationRequest
 from agentic_company.platform.db.runtime_db import (
     artifact_links_for_paths,
     materialize_planning_items,
     record_artifact_link,
 )
-from agentic_company.platform.contracts.tool_contracts import ArtifactRegistrationRequest
 
 
 def test_artifact_id_is_stable():

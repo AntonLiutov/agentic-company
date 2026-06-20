@@ -22,7 +22,8 @@ def test_quality_prompt_includes_execution_instructions(tmp_path, monkeypatch):
         input_artifacts=["00-requirements.md"],
         expected_outputs=["08-qa-report-F1.md", "qa/results-F1.json"],
         instructions=[
-            "A git repository is connected. Follow git-pr-workflow and merge with `gh pr merge` on a pass.",
+            "A git repository is connected. Follow git-pr-workflow and merge with "
+            "`gh pr merge` on a pass.",
         ],
         constraints=[],
         completed_work_item_ids=[],
@@ -60,9 +61,11 @@ def test_quality_request_delegates_merge_only_when_pr_is_recorded(tmp_path, monk
     monkeypatch.setattr(
         quality_graph,
         "write_execution_request",
-        lambda run_dir, payload: (run_dir / "delivery").mkdir(exist_ok=True)
-        or (run_dir / "delivery" / "execution-request.json").write_text(
-            json.dumps(payload), encoding="utf-8"
+        lambda run_dir, payload: (
+            (run_dir / "delivery").mkdir(exist_ok=True)
+            or (run_dir / "delivery" / "execution-request.json").write_text(
+                json.dumps(payload), encoding="utf-8"
+            )
         ),
     )
 
@@ -95,9 +98,11 @@ def test_quality_request_does_not_invent_pr_gate_without_recorded_pr(tmp_path, m
     monkeypatch.setattr(
         quality_graph,
         "write_execution_request",
-        lambda run_dir, payload: (run_dir / "delivery").mkdir(exist_ok=True)
-        or (run_dir / "delivery" / "execution-request.json").write_text(
-            json.dumps(payload), encoding="utf-8"
+        lambda run_dir, payload: (
+            (run_dir / "delivery").mkdir(exist_ok=True)
+            or (run_dir / "delivery" / "execution-request.json").write_text(
+                json.dumps(payload), encoding="utf-8"
+            )
         ),
     )
 

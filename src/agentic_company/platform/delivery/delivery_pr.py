@@ -54,8 +54,8 @@ def ensure_run_repo(run_uid: str, *, gh: Any = None, git: Any = None) -> None:
     if run_uid in _REPO_ENSURED:
         return
     try:
-        from agentic_company.platform.delivery.repo_manager import build_run_repo
         from agentic_company.platform.db.runtime_db import _repo_and_run
+        from agentic_company.platform.delivery.repo_manager import build_run_repo
 
         repo, db_run_id = _repo_and_run(run_uid)
         built = build_run_repo(repo, db_run_id, gh=gh, git=git)
@@ -83,8 +83,8 @@ def publish_work_item_pr(
     repo host or the agent has not opened a PR. Never raises into delivery.
     """
     try:
-        from agentic_company.platform.delivery.repo_manager import build_run_repo
         from agentic_company.platform.db.runtime_db import _repo_and_run
+        from agentic_company.platform.delivery.repo_manager import build_run_repo
 
         repo, db_run_id = _repo_and_run(run_uid)
         built = build_run_repo(repo, db_run_id, gh=gh, git=git)
@@ -114,8 +114,8 @@ def run_repo_context(run_uid: str, *, gh: Any = None, git: Any = None) -> dict[s
     it triggers the git-pr-workflow skill and delivers via a PR.
     """
     try:
-        from agentic_company.platform.delivery.repo_manager import build_run_repo
         from agentic_company.platform.db.runtime_db import _repo_and_run
+        from agentic_company.platform.delivery.repo_manager import build_run_repo
 
         repo, db_run_id = _repo_and_run(run_uid)
         built = build_run_repo(repo, db_run_id, gh=gh, git=git)
@@ -140,9 +140,7 @@ def _run_dir(run_uid: str) -> Path | None:
 
         repo, db_run_id = _repo_and_run(run_uid)
         with repo.connect() as conn:
-            row = conn.execute(
-                "SELECT run_dir FROM runs WHERE id = ?", (db_run_id,)
-            ).fetchone()
+            row = conn.execute("SELECT run_dir FROM runs WHERE id = ?", (db_run_id,)).fetchone()
     except Exception:
         return None
     run_dir = row["run_dir"] if row else None
@@ -238,8 +236,8 @@ def ensure_recorded_pr_merged(
         pr_url = str(pr.get("url") or "")
         if bool(pr.get("merged")):
             return PrMergeOutcome(status="already_merged", pr_url=pr_url)
-        from agentic_company.platform.delivery.repo_manager import build_run_repo
         from agentic_company.platform.db.runtime_db import _repo_and_run
+        from agentic_company.platform.delivery.repo_manager import build_run_repo
 
         repo, db_run_id = _repo_and_run(run_uid)
         built = build_run_repo(repo, db_run_id, gh=gh, git=git)
