@@ -21,9 +21,9 @@ from fastapi.templating import Jinja2Templates
 from agentic_company.console.support import (
     agent_runtime_env_path,
     create_console_run,
+    prepare_codex_execution_continue,
     read_env_keys,
     repo_root,
-    prepare_codex_execution_continue,
     request_codex_execution_stop,
     start_codex_execution,
     write_target_env,
@@ -73,6 +73,8 @@ from agentic_company.integrations.codex.runner import (
     CODEX_AUTH_MODE_USER_CHATGPT,
     codex_auth_mode_from_env,
 )
+from agentic_company.platform.agent.runtime_modes import RiskMode, RunMode, mode_policy
+from agentic_company.platform.agent.team_spec import TeamPreset
 from agentic_company.platform.db.runtime_cache import redis_error_types, runtime_cache_from_env
 from agentic_company.platform.db.runtime_db import (
     reconcile_run,
@@ -80,8 +82,6 @@ from agentic_company.platform.db.runtime_db import (
     record_run_lifecycle,
     request_run_control_intent,
 )
-from agentic_company.platform.agent.runtime_modes import RiskMode, RunMode, mode_policy
-from agentic_company.platform.agent.team_spec import TeamPreset
 from agentic_company.platform.logging import configure_logging
 from agentic_company.platform.run.run_finalizer import RunStatus
 from agentic_company.platform.run.run_trace import trace_summary
@@ -466,7 +466,6 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             user.username,
             _run_requirements(project.name, request_text, project.mode, project.complexity),
         )
-        gh_conn = repo.get_active_work_system_connection(project_id=project.id, system="github")
         prepare_run_environment(
             run_dir,
             gemini_api_key=gemini_api_key,
@@ -568,6 +567,26 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
                     )
         repo.update_project_status(project.id, "stopped")
         return redirect(f"/projects/{project.id}")
+
+    @app.post("/projects/{project_id}/approvals/{approval_id}/approve")
+    def approve_project_gate(
+        request: Request,
+        project_id: int,
+        approval_id: int,
+        user: CurrentUser,
+    ) -> Response:
+        _decide_project_approval(request, project_id, approval_id, user, status="approved")
+        return redirect(f"/projects/{project_id}")
+
+    @app.post("/projects/{project_id}/approvals/{approval_id}/reject")
+    def reject_project_gate(
+        request: Request,
+        project_id: int,
+        approval_id: int,
+        user: CurrentUser,
+    ) -> Response:
+        _decide_project_approval(request, project_id, approval_id, user, status="rejected")
+        return redirect(f"/projects/{project_id}")
 
     @app.post("/projects/{project_id}/promote")
     def promote_project(
@@ -890,7 +909,9 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             return HTMLResponse(
                 html_report_document(str(payload["content"])),
                 headers={
-                    "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+                    "Content-Security-Policy": (
+                        "sandbox; default-src 'none'; style-src 'unsafe-inline'"
+                    ),
                     "X-Content-Type-Options": "nosniff",
                 },
             )
@@ -1282,6 +1303,9 @@ def render_workspace(
                     and not run_running
                     and not _run_delivery_done(run.status)
                 ),
+                "pending_approvals": repo.list_run_approvals(run.id, status="pending")
+                if project.owner_user_id == user.id
+                else [],
                 "showcase_ready": _run_showcase_ready(repo, run),
                 "run_timing": run_timing_from_work_items(
                     work_items,
@@ -1304,15 +1328,42 @@ def _sync_canonical_run_completion(
         repo.update_project_status(project.id, run.status)
 
 
+def _decide_project_approval(
+    request: Request,
+    project_id: int,
+    approval_id: int,
+    user: User,
+    *,
+    status: str,
+) -> None:
+    repo = get_repo(request)
+    project = repo.get_project_for_user(project_id, user.id)
+    if not project or project.visibility == "public_demo" or project.owner_user_id != user.id:
+        raise HTTPException(status_code=403)
+    run = repo.latest_run_for_project(project.id, user.id)
+    approval = repo.get_run_approval(approval_id)
+    if run is None or approval is None or approval.run_id != run.id:
+        raise HTTPException(status_code=404)
+    repo.decide_run_approval(approval_id, status=status, decided_by=user.username)
+
+
 def _run_status_running(status: str) -> bool:
     return status in {"starting", "running", "initialized"}
 
 
 def _run_status_completed(status: str) -> bool:
     normalized = status.lower()
-    if normalized in {"stopped", "complete", "completed", "failed", "blocked"}:
+    if normalized in {
+        "stopped",
+        "complete",
+        "completed",
+        "failed",
+        "blocked",
+        "paused_provider_limit",
+        "paused_codex_auth",
+    }:
         return True
-    return any(token in normalized for token in ("blocked", "failed", "complete"))
+    return any(token in normalized for token in ("blocked", "failed", "complete", "paused"))
 
 
 def _run_delivery_done(status: str) -> bool:

@@ -29,6 +29,8 @@ class RunStatus(StrEnum):
     FAILED = "failed"
     STOPPED = "stopped"
     FAILED_TO_START = "failed_to_start"
+    PAUSED_PROVIDER_LIMIT = "paused_provider_limit"
+    PAUSED_CODEX_AUTH = "paused_codex_auth"
 
 
 # Statuses past which a run's outcome is settled; the first one written wins.
@@ -39,6 +41,8 @@ TERMINAL_RUN_STATUSES = frozenset(
         RunStatus.FAILED,
         RunStatus.STOPPED,
         RunStatus.FAILED_TO_START,
+        RunStatus.PAUSED_PROVIDER_LIMIT,
+        RunStatus.PAUSED_CODEX_AUTH,
     }
 )
 
@@ -58,6 +62,12 @@ def resolve_run_status(state: DeliveryState) -> RunStatus:
     raw = str(state.get("status") or "")
     if raw == RunStatus.STOPPED:
         return RunStatus.STOPPED
+    normalized = raw.lower()
+    provider_limit_tokens = ("provider_limit", "usage_limit", "rate_limit", "quota")
+    if any(token in normalized for token in provider_limit_tokens):
+        return RunStatus.PAUSED_PROVIDER_LIMIT
+    if any(token in normalized for token in ("codex_auth", "auth_expired", "needs_relogin")):
+        return RunStatus.PAUSED_CODEX_AUTH
     if state.get("blockers"):
         return RunStatus.BLOCKED
     canonical = classify_work_item_status(raw)

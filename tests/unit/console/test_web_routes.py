@@ -269,6 +269,51 @@ def test_create_project_persists_control_modes(tmp_path, monkeypatch):
     assert run.team_preset == "small"
 
 
+def test_workspace_can_approve_pending_gate(tmp_path):
+    repo = ConsoleRepository()
+    repo.init_schema()
+    user = repo.create_user(
+        email="approver@example.test",
+        username="approver",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Approval Project",
+        request_text="Build",
+        mode="simple_prototype",
+        complexity="simple",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="approval-ui",
+        run_dir=tmp_path / "approval-ui",
+        status="paused_provider_limit",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+    approval = repo.request_run_approval(
+        run.id,
+        gate_type="deployment",
+        requested_action="publish",
+        risk_summary="Deployment needs operator approval.",
+    )
+    app = create_app(repo)
+    client = TestClient(app)
+    client.cookies.set("agentic_console_session", repo.create_session(user.id))
+
+    page = client.get(f"/projects/{project.id}")
+    response = client.post(
+        f"/projects/{project.id}/approvals/{approval.id}/approve",
+        follow_redirects=False,
+    )
+
+    assert page.status_code == 200
+    assert "Pending Approval" in page.text
+    assert response.status_code == 303
+    assert repo.get_run_approval(approval.id).status == "approved"
+
+
 def test_create_project_requires_codex_connection_in_user_chatgpt_mode(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "user_chatgpt")
     repo = ConsoleRepository()

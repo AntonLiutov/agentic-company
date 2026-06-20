@@ -51,6 +51,29 @@
     </div>
   </section>
 
+  {% if pending_approvals %}
+    <section class="panel">
+      <div class="panel-heading">
+        <h2>Pending Approval</h2>
+        <span class="badge">{{ pending_approvals|length }} gate{{ "" if pending_approvals|length == 1 else "s" }}</span>
+      </div>
+      <div class="artifact-list">
+        {% for approval in pending_approvals %}
+          <div class="artifact-row">
+            <span>{{ approval.gate_type|replace("_", " ")|title }} · {{ approval.requested_action }}</span>
+            <small>{{ approval.risk_summary }}</small>
+            <form method="post" action="/projects/{{ project.id }}/approvals/{{ approval.id }}/approve">
+              <button class="primary" type="submit">Approve</button>
+            </form>
+            <form method="post" action="/projects/{{ project.id }}/approvals/{{ approval.id }}/reject">
+              <button class="danger" type="submit">Reject</button>
+            </form>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+
   <nav class="tabs">
     {% for item in ["overview", "board", "agents", "artifacts", "handoff"] %}
       <a class="{{ 'active' if tab == item else '' }}" href="/projects/{{ project.id }}?tab={{ item }}">{{ "Reports" if item == "artifacts" else "Release" if item == "handoff" else item.title() }}</a>
