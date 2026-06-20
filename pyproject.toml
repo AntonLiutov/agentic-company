@@ -40,6 +40,7 @@ agentic-run-codex = "agentic_company.agents.fullstack.codex_cli:main"
 agentic-db-upgrade = "agentic_company.console.web.migrations:main"
 agentic-web-console = "agentic_company.console.web.app:main"
 agentic-qa-setup = "agentic_company.console.qa_setup:main"
+agentic-doctor = "agentic_company.platform.runtime_profile:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
