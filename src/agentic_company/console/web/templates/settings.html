@@ -83,6 +83,12 @@
           {% endif %}
         </span>
       </div>
+      {% if codex_device_login.output %}
+      <div class="conn-row">
+        <span class="conn-name">Device</span>
+        <pre class="conn-status" style="white-space:pre-wrap;">{{ codex_device_login.output }}</pre>
+      </div>
+      {% endif %}
     </div>
   </section>
 {% endblock %}
