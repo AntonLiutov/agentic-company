@@ -1,5 +1,5 @@
 from agentic_company.console.web.db import ConsoleRepository
-from agentic_company.platform.messages import (
+from agentic_company.platform.mirror.messages import (
     AgentMessage,
     AgentMessageStore,
     append_agent_response,

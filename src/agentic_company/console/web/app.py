@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -26,6 +27,7 @@ from agentic_company.console.support import (
     start_codex_execution,
     write_target_env,
 )
+from agentic_company.console.web import github_oauth
 from agentic_company.console.web.auth import SecretEncryptionUnavailable, decrypt_secret
 from agentic_company.console.web.db import ConsoleRepository, Project, Run, User
 from agentic_company.console.web.product import (
@@ -64,16 +66,16 @@ from agentic_company.console.web.product import (
 )
 from agentic_company.console.web.rate_limit import RateLimiter
 from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
-from agentic_company.platform.logging import configure_logging
-from agentic_company.platform.run_finalizer import RunStatus
-from agentic_company.platform.run_trace import trace_summary
-from agentic_company.platform.runtime_cache import redis_error_types, runtime_cache_from_env
-from agentic_company.platform.runtime_db import (
+from agentic_company.platform.db.runtime_cache import redis_error_types, runtime_cache_from_env
+from agentic_company.platform.db.runtime_db import (
     reconcile_run,
     reconcile_stale_console_runs,
     record_run_lifecycle,
     request_run_control_intent,
 )
+from agentic_company.platform.logging import configure_logging
+from agentic_company.platform.run.run_finalizer import RunStatus
+from agentic_company.platform.run.run_trace import trace_summary
 
 COOKIE_NAME = "agentic_console_session"
 LOGGER = logging.getLogger(__name__)
@@ -274,26 +276,36 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         codex_model: Annotated[str, Form()] = DEFAULT_CODEX_MODEL,
         codex_reasoning: Annotated[str, Form()] = "medium",
         service_tier: Annotated[str, Form()] = "standard",
+        board_adapter: Annotated[str, Form()] = "internal",
+        repository: Annotated[str, Form()] = "",
+        project_owner: Annotated[str, Form()] = "",
+        new_repo_name: Annotated[str, Form()] = "",
+        new_repo_private: Annotated[str, Form()] = "",
     ) -> Response:
         agent_provider = normalize_agent_provider(agent_provider)
         agent_model = normalize_agent_model(agent_provider, agent_model)
         codex_model = normalize_codex_model(codex_model)
+        board_adapter = normalize_board_adapter(board_adapter)
+        form_values = new_project_form_values(
+            name=name,
+            request_text=request_text,
+            mode=mode,
+            complexity=complexity,
+            agent_provider=agent_provider,
+            agent_model=agent_model,
+            codex_model=codex_model,
+            codex_reasoning=codex_reasoning,
+            service_tier=service_tier,
+            board_adapter=board_adapter,
+            repository=repository,
+            project_owner=project_owner,
+        )
         if not name.strip() or not request_text.strip():
             return render_new_project(
                 request,
                 user,
                 error="Project name and request are required.",
-                form_values=new_project_form_values(
-                    name=name,
-                    request_text=request_text,
-                    mode=mode,
-                    complexity=complexity,
-                    agent_provider=agent_provider,
-                    agent_model=agent_model,
-                    codex_model=codex_model,
-                    codex_reasoning=codex_reasoning,
-                    service_tier=service_tier,
-                ),
+                form_values=form_values,
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         repo = get_repo(request)
@@ -306,17 +318,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
                     "Add your OpenAI key in Settings before starting. "
                     "It powers your private projects."
                 ),
-                form_values=new_project_form_values(
-                    name=name,
-                    request_text=request_text,
-                    mode=mode,
-                    complexity=complexity,
-                    agent_provider=agent_provider,
-                    agent_model=agent_model,
-                    codex_model=codex_model,
-                    codex_reasoning=codex_reasoning,
-                    service_tier=service_tier,
-                ),
+                form_values=form_values,
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         gemini_api_key = user_or_platform_gemini_key(repo, user)
@@ -325,19 +327,28 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
                 request,
                 user,
                 error="Gemini is not configured yet. Add a Gemini key in Settings.",
-                form_values=new_project_form_values(
-                    name=name,
-                    request_text=request_text,
-                    mode=mode,
-                    complexity=complexity,
-                    agent_provider=agent_provider,
-                    agent_model=agent_model,
-                    codex_model=codex_model,
-                    codex_reasoning=codex_reasoning,
-                    service_tier=service_tier,
-                ),
+                form_values=form_values,
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
+        # GitHub repo: create a new one on the user's account if asked, else use the
+        # picked one. Any repo selection implies the GitHub board.
+        gh_token = _github_token(repo, user)
+        if new_repo_name.strip() and gh_token:
+            try:
+                created = github_oauth.create_repo(
+                    gh_token, new_repo_name.strip(), private=bool(new_repo_private.strip())
+                )
+                repository = created.full_name
+            except github_oauth.GitHubOAuthError as exc:
+                return render_new_project(
+                    request,
+                    user,
+                    error=f"Could not create repository '{new_repo_name.strip()}': {exc}",
+                    form_values=form_values,
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+        if repository.strip():
+            board_adapter = "github"
         project = repo.create_project(
             owner_user_id=user.id,
             name=name,
@@ -345,6 +356,14 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             mode=mode,
             complexity=complexity,
             status="starting",
+        )
+        _maybe_create_board_connection(
+            repo,
+            project_id=project.id,
+            board_adapter=board_adapter,
+            repository=repository,
+            project_owner=project_owner,
+            token_ref=f"user:{user.id}:{github_oauth.PROVIDER}" if gh_token else "",
         )
         run_dir = create_web_console_run(
             user.username,
@@ -360,6 +379,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             codex_model=codex_model,
             codex_reasoning=codex_reasoning,
             service_tier=service_tier,
+            github_token=gh_token if repository.strip() else "",
         )
         run = repo.create_run(
             project_id=project.id,
@@ -416,6 +436,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             user.username,
             _run_requirements(project.name, request_text, project.mode, project.complexity),
         )
+        gh_conn = repo.get_active_work_system_connection(project_id=project.id, system="github")
         prepare_run_environment(
             run_dir,
             api_key=api_key,
@@ -426,6 +447,11 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             codex_model=settings["codex_model"],
             codex_reasoning=settings["codex_reasoning"],
             service_tier=settings["service_tier"],
+            github_token=(
+                _github_token(repo, user)
+                if gh_conn is not None and gh_conn.repository.strip()
+                else ""
+            ),
         )
         run = repo.create_run(
             project_id=project.id,
@@ -544,6 +570,9 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             key_error=bool(key_error),
             credential=credential,
             gemini_credential=gemini_credential,
+            github_configured=github_oauth.is_configured(),
+            github_connected=bool(_github_token(repo, user)),
+            github_login=_github_login(repo, user),
             checks=system_checks(
                 openai_key_configured=bool(user_openai_key(repo, user)),
                 gemini_key_configured=bool(user_or_platform_gemini_key(repo, user)),
@@ -592,6 +621,96 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
     def delete_gemini_key(request: Request, user: CurrentUser) -> Response:
         get_repo(request).delete_provider_secret(user.id, "google_gemini")
         return redirect("/settings")
+
+    # ---- GitHub OAuth: "Login with GitHub" + repo picker ----
+    def _github_callback_uri(request: Request) -> str:
+        # MUST exactly match the OAuth App's registered Authorization callback URL.
+        # Derive a stable 127.0.0.1:<port> URL (not request.base_url) so opening the
+        # console as "localhost" never mismatches the registration. Override with
+        # GITHUB_OAUTH_CALLBACK_URL when the console is hosted elsewhere.
+        configured = (os.environ.get("GITHUB_OAUTH_CALLBACK_URL") or "").strip()
+        if configured:
+            return configured
+        port = (os.environ.get("AGENTIC_WEB_PORT") or "8503").strip() or "8503"
+        return f"http://127.0.0.1:{port}/auth/github/callback"
+
+    @app.get("/auth/github/login")
+    def github_login(request: Request, user: CurrentUser, next: str = "/projects/new") -> Response:
+        if not github_oauth.is_configured():
+            return redirect("/settings?github_error=not_configured")
+        state = secrets.token_urlsafe(24)
+        url = github_oauth.build_authorize_url(_github_callback_uri(request), state)
+        resp = RedirectResponse(url, status_code=status.HTTP_303_SEE_OTHER)
+        resp.set_cookie("gh_oauth_state", state, max_age=600, httponly=True, samesite="lax")
+        resp.set_cookie(
+            "gh_oauth_next",
+            next if next.startswith("/") else "/projects/new",
+            max_age=600,
+            httponly=True,
+            samesite="lax",
+        )
+        return resp
+
+    @app.get("/auth/github/callback")
+    def github_callback(
+        request: Request,
+        user: CurrentUser,
+        code: str = "",
+        state: str = "",
+        error: str = "",
+    ) -> Response:
+        nxt = request.cookies.get("gh_oauth_next") or "/projects/new"
+        nxt = nxt if nxt.startswith("/") else "/projects/new"
+        if error or not code:
+            return redirect("/settings?github_error=denied")
+        if not state or state != request.cookies.get("gh_oauth_state"):
+            return redirect("/settings?github_error=state")
+        try:
+            token = github_oauth.exchange_code_for_token(code, _github_callback_uri(request))
+            login = github_oauth.viewer_login(token)
+        except github_oauth.GitHubOAuthError:
+            return redirect("/settings?github_error=exchange")
+        repo = get_repo(request)
+        try:
+            repo.save_provider_secret(user.id, github_oauth.PROVIDER, token)
+            if login:
+                repo.save_provider_secret(user.id, github_oauth.LOGIN_PROVIDER, login)
+        except SecretEncryptionUnavailable:
+            return redirect("/settings?github_error=encryption")
+        resp = redirect(nxt)
+        resp.delete_cookie("gh_oauth_state")
+        resp.delete_cookie("gh_oauth_next")
+        return resp
+
+    @app.post("/auth/github/disconnect")
+    def github_disconnect(request: Request, user: CurrentUser) -> Response:
+        repo = get_repo(request)
+        repo.delete_provider_secret(user.id, github_oauth.PROVIDER)
+        repo.delete_provider_secret(user.id, github_oauth.LOGIN_PROVIDER)
+        return redirect("/settings")
+
+    @app.get("/api/github/repos")
+    def github_repos_api(request: Request, user: CurrentUser) -> JSONResponse:
+        token = _github_token(get_repo(request), user)
+        if not token:
+            return JSONResponse({"connected": False, "repos": []})
+        try:
+            repos = github_oauth.list_repos(token)
+        except github_oauth.GitHubOAuthError as exc:
+            return JSONResponse({"connected": True, "error": str(exc), "repos": []})
+        return JSONResponse(
+            {
+                "connected": True,
+                "repos": [
+                    {
+                        "full_name": r.full_name,
+                        "private": r.private,
+                        "default_branch": r.default_branch,
+                    }
+                    for r in repos
+                ],
+            }
+        )
 
     @app.get("/agents", response_class=HTMLResponse)
     def agents_page(request: Request, user: CurrentUser) -> HTMLResponse:
@@ -834,6 +953,28 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
 
 def get_repo(request: Request) -> ConsoleRepository:
     return request.app.state.repo
+
+
+def _github_token(repo: ConsoleRepository, user: User) -> str:
+    """The user's decrypted GitHub OAuth access token, or '' when not connected."""
+    cred = repo.get_provider_secret(user.id, github_oauth.PROVIDER)
+    if cred is None:
+        return ""
+    try:
+        return decrypt_secret(cred.encrypted_value)
+    except Exception:
+        return ""
+
+
+def _github_login(repo: ConsoleRepository, user: User) -> str:
+    """The connected GitHub username (for display), or '' when not connected."""
+    cred = repo.get_provider_secret(user.id, github_oauth.LOGIN_PROVIDER)
+    if cred is None:
+        return ""
+    try:
+        return decrypt_secret(cred.encrypted_value)
+    except Exception:
+        return ""
 
 
 def optional_user(request: Request) -> User | None:
@@ -1127,6 +1268,14 @@ def render_new_project(
     status_code: int = 200,
 ) -> HTMLResponse:
     values = form_values or new_project_form_values()
+    repo = get_repo(request)
+    gh_token = _github_token(repo, user)
+    gh_repos: list[github_oauth.Repo] = []
+    if gh_token:
+        try:
+            gh_repos = github_oauth.list_repos(gh_token)
+        except github_oauth.GitHubOAuthError:
+            gh_repos = []
     return render(
         request,
         "new_project.html",
@@ -1134,8 +1283,12 @@ def render_new_project(
         formatted="",
         error=error,
         form_values=values,
-        credential=get_repo(request).get_provider_secret(user.id, "openai"),
-        gemini_credential=get_repo(request).get_provider_secret(user.id, "google_gemini"),
+        github_configured=github_oauth.is_configured(),
+        github_connected=bool(gh_token),
+        github_login=_github_login(repo, user),
+        github_repos=gh_repos,
+        credential=repo.get_provider_secret(user.id, "openai"),
+        gemini_credential=repo.get_provider_secret(user.id, "google_gemini"),
         platform_gemini_configured=bool(platform_agent_gemini_key()),
         formatter_gemini_configured=bool(platform_formatter_gemini_key()),
         agent_providers=AGENT_PROVIDER_OPTIONS,
@@ -1159,6 +1312,9 @@ def new_project_form_values(
     codex_model: str = DEFAULT_CODEX_MODEL,
     codex_reasoning: str = "medium",
     service_tier: str = "standard",
+    board_adapter: str = "internal",
+    repository: str = "",
+    project_owner: str = "",
 ) -> dict[str, str]:
     agent_provider = normalize_agent_provider(agent_provider)
     return {
@@ -1171,7 +1327,47 @@ def new_project_form_values(
         "codex_model": normalize_codex_model(codex_model),
         "codex_reasoning": codex_reasoning,
         "service_tier": service_tier,
+        "board_adapter": normalize_board_adapter(board_adapter),
+        "repository": repository.strip(),
+        "project_owner": project_owner.strip(),
     }
+
+
+def normalize_board_adapter(value: str) -> str:
+    return value if value in {"internal", "github"} else "internal"
+
+
+def _maybe_create_board_connection(
+    repo: ConsoleRepository,
+    *,
+    project_id: int,
+    board_adapter: str,
+    repository: str,
+    project_owner: str,
+    token_ref: str = "",
+) -> None:
+    """Record a project-scoped GitHub work-system connection (best-effort).
+
+    Stores the repository and board owner; the run mirror provisions a fresh
+    Project board on first use and caches its ids back onto the connection. A
+    failure here must not block project creation — the run still delivers on
+    ADL's internal board.
+    """
+    if board_adapter != "github" or not repository.strip():
+        return
+    owner = project_owner.strip() or repository.strip().split("/", 1)[0]
+    metadata: dict[str, Any] = {"owner": owner}
+    try:
+        repo.create_work_system_connection(
+            project_id=project_id,
+            system="github",
+            name="GitHub",
+            repository=repository.strip(),
+            token_ref=token_ref,
+            metadata=metadata,
+        )
+    except Exception as exc:  # best-effort: never block project creation
+        LOGGER.warning("Could not create GitHub board connection: %s", exc)
 
 
 def normalize_agent_provider(provider: str) -> str:
@@ -1283,6 +1479,7 @@ def prepare_run_environment(
     service_tier: str,
     gemini_api_key: str = "",
     agent_provider: str = "google_gemini",
+    github_token: str = "",
 ) -> Path:
     agent_provider = normalize_agent_provider(agent_provider)
     agent_model = normalize_agent_model(agent_provider, agent_model)
@@ -1307,6 +1504,13 @@ def prepare_run_environment(
     }
     if values["AGENT_LLM_PROVIDER"] == "google_gemini" and gemini_api_key.strip():
         values["GOOGLE_API_KEY"] = gemini_api_key.strip()
+    if github_token.strip():
+        # The connected user's GitHub OAuth token, so the Codex worker delivers
+        # (git push / gh pr / merge) under THAT user's account on any host —
+        # including a fresh VM with no host gh auth. It lives only in the run-local
+        # delivery env (never the generated-project deliverable).
+        values["GH_TOKEN"] = github_token.strip()
+        values["GITHUB_TOKEN"] = github_token.strip()
     return write_target_env(run_dir, values)
 
 

@@ -1,5 +1,5 @@
 from agentic_company.console.web.db import _normalize_work_item_status
-from agentic_company.platform.tool_contracts import (
+from agentic_company.platform.contracts.tool_contracts import (
     dashboard_status_from_runtime_status,
     failure_mode_from_status,
 )

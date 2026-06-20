@@ -12,9 +12,9 @@ from agentic_company.agents.head.tools import (
     write_head_event,
     write_head_result,
 )
-from agentic_company.platform.agent_runtime import build_agent_executor_graph
-from agentic_company.platform.runtime_db import materialize_planning_items
-from agentic_company.platform.state import DeliveryState
+from agentic_company.platform.agent.agent_runtime import build_agent_executor_graph
+from agentic_company.platform.db.runtime_db import materialize_planning_items
+from agentic_company.platform.db.state import DeliveryState
 
 HEAD_AGENT_GRAPH_NODE_ORDER: tuple[str, ...] = (
     "prepare_context",

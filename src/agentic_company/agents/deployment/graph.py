@@ -12,37 +12,37 @@ from agentic_company.agents.deployment.codex_cli import (
     public_urls_from_deployment_result,
 )
 from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
-from agentic_company.platform.agent_contracts import (
+from agentic_company.platform.agent.agent_contracts import (
     append_downstream_response,
     artifact_refs,
     extend_artifacts,
     record_specialist_completion,
     record_specialist_start,
 )
-from agentic_company.platform.agent_runtime import (
+from agentic_company.platform.agent.agent_runtime import (
     AGENT_EXECUTOR_GRAPH_NODE_ORDER,
     SpecialistAgentExecutor,
     SpecialistAgentRequest,
     agent_env_value,
     build_agent_executor_graph,
 )
-from agentic_company.platform.artifacts import (
+from agentic_company.platform.artifacts.artifacts import (
     build_execution_request_payload,
     update_execution_request_context,
     write_execution_request,
 )
-from agentic_company.platform.events import write_event
-from agentic_company.platform.models import AgentRunResult
-from agentic_company.platform.runtime_db import (
+from agentic_company.platform.db.models import AgentRunResult
+from agentic_company.platform.db.runtime_db import (
     completed_work_item_ids,
     get_work_item,
     packet_for_work_item,
     record_generated_app_url,
 )
-from agentic_company.platform.state import (
+from agentic_company.platform.db.state import (
     DeliveryState,
     codex_resume_thread_id,
 )
+from agentic_company.platform.run.events import write_event
 
 DEPLOYMENT_AGENT_ID = "deployment-agent"
 
@@ -156,6 +156,21 @@ def _write_deployment_execution_request(run_dir: Path, delivery_state: DeliveryS
 
     work_item_id = str(delivery_state.get("agent_call_correlation_id") or "").strip()
     work_item = get_work_item(str(delivery_state["run_id"]), work_item_id).to_dict()
+    instructions = [
+        "Inspect the current run artifacts, generated project, and deployment assignment.",
+        "Use available Azure/Docker configuration when present.",
+        "Deploy only when the current assignment and evidence support deployment.",
+        "If required privileged inputs are missing, return an evidence-backed blocker.",
+    ]
+    repo_ctx = _run_repo_context(str(delivery_state["run_id"]))
+    if repo_ctx:
+        instructions.append(
+            f"A git repository is connected for this run: {repo_ctx['repository']} "
+            f"(base branch `{repo_ctx['base_branch']}`). If you commit any deployment config "
+            "(Dockerfile, infra, manifests), DELIVER IT AS A PULL REQUEST using the "
+            f"git-pr-workflow skill: branch `adl/{work_item_id.lower()}`, commit (never secrets), "
+            "push, open the PR. Never commit to the base branch directly."
+        )
     request = build_execution_request_payload(
         delivery_state,
         agent_id=DEPLOYMENT_AGENT_ID,
@@ -173,12 +188,7 @@ def _write_deployment_execution_request(run_dir: Path, delivery_state: DeliveryS
             "12-deployment-request.md",
             "13-deployment-summary.md",
         ],
-        instructions=[
-            "Inspect the current run artifacts, generated project, and deployment assignment.",
-            "Use available Azure/Docker configuration when present.",
-            "Deploy only when the current assignment and evidence support deployment.",
-            "If required privileged inputs are missing, return an evidence-backed blocker.",
-        ],
+        instructions=instructions,
         constraints=[
             "Do not invent Azure resource names, credentials, or public URLs.",
             "Do not commit or print secrets.",
@@ -193,6 +203,16 @@ def _write_deployment_execution_request(run_dir: Path, delivery_state: DeliveryS
         codex_resume_thread_id=codex_resume_thread_id(delivery_state, DEPLOYMENT_CODEX_AGENT_ID),
     )
     write_execution_request(run_dir, request)
+
+
+def _run_repo_context(run_id: str) -> dict[str, str] | None:
+    """Connected repo info so the Publisher delivers committed config as a PR."""
+    try:
+        from agentic_company.platform.delivery.delivery_pr import run_repo_context
+
+        return run_repo_context(run_id)
+    except Exception:
+        return None
 
 
 def _deployment_input_artifacts(delivery_state: DeliveryState) -> list[str]:
@@ -279,6 +299,14 @@ def _apply_deployment_result(state: DeploymentAgentGraphState) -> DeploymentAgen
         updated,
         artifact_refs(result.output_artifacts, kind="deployment", owner_agent=result.agent_id),
     )
+    deploy_item = str(updated.get("agent_call_correlation_id") or "")
+    if deployment_status not in {"failed", "blocked"} and deploy_item:
+        try:  # best-effort: PR any deployment config the Publisher committed to the repo
+            from agentic_company.platform.delivery.delivery_pr import publish_work_item_pr
+
+            publish_work_item_pr(str(updated["run_id"]), deploy_item)
+        except Exception:
+            pass
     append_downstream_response(
         updated,
         from_agent=DEPLOYMENT_AGENT_ID,

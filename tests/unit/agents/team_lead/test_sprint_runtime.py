@@ -5,7 +5,10 @@ from agentic_company.agents.head.executor import LangChainHeadExecutor
 from agentic_company.agents.head.tools import HeadToolbox, HeadWorkers, write_head_result
 from agentic_company.agents.team_lead.contracts import TEAM_LEAD_TOOL_CONTRACT_REGISTRY
 from agentic_company.agents.team_lead.executor import LangChainTeamLeadExecutor
-from agentic_company.agents.team_lead.graph import run_team_lead_agent_graph
+from agentic_company.agents.team_lead.graph import (
+    _build_sprint_board,
+    run_team_lead_agent_graph,
+)
 from agentic_company.agents.team_lead.tools import (
     TeamLeadExecutorResult,
     TeamLeadToolbox,
@@ -14,8 +17,8 @@ from agentic_company.agents.team_lead.tools import (
     apply_team_lead_result,
 )
 from agentic_company.console.web.db import ConsoleRepository
-from agentic_company.platform.codex_review import CodexReviewResult
-from agentic_company.platform.runtime_db import (
+from agentic_company.platform.contracts.tool_contracts import ToolExecutionRecord
+from agentic_company.platform.db.runtime_db import (
     get_work_item,
     mark_sprint_done,
     mark_sprint_started,
@@ -26,8 +29,8 @@ from agentic_company.platform.runtime_db import (
     sprint_completion_state,
     sprint_is_final,
 )
-from agentic_company.platform.status_inspector import StatusInspectionResult
-from agentic_company.platform.tool_contracts import ToolExecutionRecord
+from agentic_company.platform.delivery.codex_review import CodexReviewResult
+from agentic_company.platform.status.status_inspector import StatusInspectionResult
 
 
 def test_complete_sprint_records_db_sprint_done_without_finishing_plan_04(tmp_path, monkeypatch):
@@ -66,6 +69,82 @@ def test_team_lead_executor_does_not_block_after_successful_complete_sprint(tmp_
     assert result.delivery_state["status"] == "team_lead_sprint_handoff_ready"
     assert result.delivery_state.get("blockers", []) == []
     assert sprint_completion_state("run", "sprint-01").status == "done"
+
+
+def test_prepare_sprint_board_is_seeded_from_db_work_items(tmp_path, monkeypatch):
+    _repo, _run, _state = _setup_runtime(tmp_path, monkeypatch)
+
+    board = _build_sprint_board("run", "sprint-01")
+
+    ids = [item["work_item_id"] for item in board["work_items"]]
+    assert "US-1" in ids
+    assert board["next_work_item_id"] == "US-1"
+    assert board["completion_state"]["total_items"] == len(ids)
+    assert board["completion_state"]["pending_items"] >= 1
+    # backward-compat alias preserved for the sprint-plan artifact shape
+    assert board["features"] == board["work_items"]
+
+
+def test_team_lead_retries_once_when_first_turn_makes_no_tool_call(tmp_path, monkeypatch):
+    _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
+    _mark_work_item_done("US-1")  # the forced retry's complete_sprint can succeed
+    runtime = _NoToolThenForcedRuntime()
+    executor = LangChainTeamLeadExecutor(runtime=runtime)
+
+    result = executor.run(
+        delivery_state=state,
+        sprint={
+            "sprint_id": "sprint-01",
+            "work_items": [{"work_item_id": "US-1", "status": "todo"}],
+        },
+        workers=_team_lead_workers(),
+        max_steps=5,
+    )
+
+    assert runtime.calls == 2  # first empty turn, then exactly one forced retry
+    assert result.delivery_state["status"] == "team_lead_sprint_handoff_ready"
+    assert result.delivery_state.get("blockers", []) == []
+
+
+def test_team_lead_blocks_when_forced_retry_still_makes_no_tool_call(tmp_path, monkeypatch):
+    _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
+    runtime = _NeverToolRuntime()
+    executor = LangChainTeamLeadExecutor(runtime=runtime)
+
+    result = executor.run(
+        delivery_state=state,
+        sprint={
+            "sprint_id": "sprint-01",
+            "work_items": [{"work_item_id": "US-1", "status": "todo"}],
+        },
+        workers=_team_lead_workers(),
+        max_steps=5,
+    )
+
+    assert runtime.calls == 2  # one forcing retry, then give up and block
+    assert any(
+        "completed without calling any tool" in blocker
+        for blocker in result.delivery_state.get("blockers", [])
+    )
+
+
+def test_team_lead_does_not_retry_when_sprint_has_no_pending_work(tmp_path, monkeypatch):
+    _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
+    runtime = _NeverToolRuntime()
+    executor = LangChainTeamLeadExecutor(runtime=runtime)
+
+    result = executor.run(
+        delivery_state=state,
+        sprint={"sprint_id": "sprint-01"},  # bare board -> no pending signal
+        workers=_team_lead_workers(),
+        max_steps=5,
+    )
+
+    assert runtime.calls == 1  # no forcing retry without pending work
+    assert any(
+        "completed without calling any tool" in blocker
+        for blocker in result.delivery_state.get("blockers", [])
+    )
 
 
 def test_complete_sprint_clears_resolved_stale_blockers(tmp_path, monkeypatch):
@@ -249,6 +328,43 @@ def test_team_lead_codex_review_uses_selected_codex_model(tmp_path, monkeypatch)
     )
 
     assert reviewer.last_request.model == "gpt-5.4"
+
+
+def test_codex_review_does_not_crash_when_its_summary_artifact_is_missing(tmp_path, monkeypatch):
+    # Regression for run project-20260615-112342: a Codex review that finished without
+    # writing summary.md must NOT crash the Team Lead executor with "Artifact refs must
+    # be registered in DB before use". The tool's own output_artifacts are tolerant now.
+    _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
+
+    class _PhantomReviewer:
+        def run(self, request):
+            return CodexReviewResult(
+                status="reviewed",
+                content="review text",
+                artifact_refs=[],
+                summary_artifact="team-lead/codex-review/phantom/summary.md",  # never written
+                prompt_artifact="team-lead/codex-review/phantom/prompt.md",
+                log_artifact="team-lead/codex-review/phantom/execution.log",
+                raw_events_artifact="team-lead/codex-review/phantom/events.jsonl",
+                execution_id="phantom",
+                codex_thread_id="t",
+            )
+
+    toolbox = TeamLeadToolbox(
+        delivery_state=state,
+        sprint={"sprint_id": "sprint-01"},
+        workers=_team_lead_workers(),
+        max_steps=5,
+        history=[],
+        codex_reviewer=_PhantomReviewer(),
+    )
+
+    payload = json.loads(
+        toolbox.codex_review(work_item_id="US-1", purpose="Review.", reason="Review.")
+    )
+
+    assert payload["tool_name"] == "codex_review"  # returned a normal response, no crash
+    assert len(toolbox.history or []) == 1
 
 
 def test_head_result_recomputes_blockers_from_db_not_stale_state(tmp_path, monkeypatch):
@@ -652,6 +768,33 @@ class _StopThenRaiseRuntime:
             encoding="utf-8",
         )
         raise RuntimeError("provider quota")
+
+
+class _NoToolThenForcedRuntime:
+    """No tool call on the first turn; complete_sprint only after the forcing retry."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def invoke(self, request):
+        self.calls += 1
+        if "0_critical_directive" not in request.user_prompt:
+            return None  # first turn: the soft "no tool call" miss
+        for tool in request.tools:
+            if tool.__name__ == "complete_sprint":
+                return tool("PLAN-04", "Sprint handoff accepted.", "")
+        raise AssertionError("complete_sprint tool was not available")
+
+
+class _NeverToolRuntime:
+    """Never calls a tool, even after the forcing retry."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def invoke(self, request):
+        self.calls += 1
+        return None
 
 
 class _NoopTeamLeadExecutor:

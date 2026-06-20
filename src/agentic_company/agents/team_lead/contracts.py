@@ -5,13 +5,13 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
-from agentic_company.platform.agent_runtime import agent_env_value
-from agentic_company.platform.state import DeliveryState
-from agentic_company.platform.tool_contracts import (
+from agentic_company.platform.agent.agent_runtime import agent_env_value
+from agentic_company.platform.contracts.tool_contracts import (
     CODEX_EXEC_TOOL_CONTRACT,
     ToolContract,
     ToolContractRegistry,
 )
+from agentic_company.platform.db.state import DeliveryState
 
 TeamLeadToolName = Literal[
     "run_fullstack",
@@ -233,13 +233,13 @@ TEAM_LEAD_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         failure_modes=("review_failed", "artifact_unavailable", "tool_limit_reached"),
         retry_policy="Retry only when artifact refs or question were incomplete.",
         idempotency="Read-only with new review artifacts written per execution.",
-        dashboard_status="review",
+        dashboard_status="in_progress",
         examples=(
             {
                 "work_item_id": "PLAN-04",
                 "purpose": "Review handoff readiness.",
                 "question": "Does the report match the completed sprint evidence?",
-                "artifact_refs": "handoff/sprints/sprint-01/release-report.html",
+                "artifact_refs": "handoff/sprints/sprint-01/release-report.md",
             },
         ),
     ),
@@ -258,7 +258,7 @@ TEAM_LEAD_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         failure_modes=("inspection_failed", "artifact_unavailable", "tool_limit_reached"),
         retry_policy="Safe to retry after new worker, QA, deployment, or handoff evidence appears.",
         idempotency="Read-only except for status inspection artifacts.",
-        dashboard_status="review",
+        dashboard_status="in_progress",
         examples=(
             {
                 "work_item_id": "PLAN-04",

@@ -14,36 +14,36 @@ from agentic_company.agents.handoff.contracts import (
     handoff_contract_paths_for_scope,
 )
 from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
-from agentic_company.platform.agent_contracts import (
+from agentic_company.platform.agent.agent_contracts import (
     append_downstream_response,
     artifact_refs,
     extend_artifacts,
     record_specialist_completion,
     record_specialist_start,
 )
-from agentic_company.platform.agent_runtime import (
+from agentic_company.platform.agent.agent_runtime import (
     AGENT_EXECUTOR_GRAPH_NODE_ORDER,
     SpecialistAgentExecutor,
     SpecialistAgentRequest,
     agent_env_value,
     build_agent_executor_graph,
 )
-from agentic_company.platform.artifacts import (
+from agentic_company.platform.artifacts.artifacts import (
     build_execution_request_payload,
     update_execution_request_context,
     write_execution_request,
 )
-from agentic_company.platform.events import write_event
-from agentic_company.platform.models import AgentRunResult
-from agentic_company.platform.runtime_db import (
+from agentic_company.platform.db.models import AgentRunResult
+from agentic_company.platform.db.runtime_db import (
     completed_work_item_ids,
     get_work_item,
     packet_for_work_item,
 )
-from agentic_company.platform.state import (
+from agentic_company.platform.db.state import (
     DeliveryState,
     codex_resume_thread_id,
 )
+from agentic_company.platform.run.events import write_event
 
 HANDOFF_AGENT_ID = "documentation-handoff-agent"
 
@@ -199,7 +199,7 @@ def _write_handoff_execution_request(run_dir: Path, delivery_state: DeliveryStat
         codex_resume_thread_id=codex_resume_thread_id(delivery_state, HANDOFF_CODEX_AGENT_ID),
         handoff_scope=str(delivery_state.get("handoff_scope") or ""),
         handoff_sprint_id=str(delivery_state.get("handoff_sprint_id") or ""),
-        handoff_output_dir=str(Path(contract_paths.html).parent),
+        handoff_output_dir=str(Path(contract_paths.report).parent),
         handoff_expected_outputs=contract_paths.as_list(),
     )
     write_execution_request(run_dir, request)
@@ -251,7 +251,7 @@ def _apply_handoff_result(state: HandoffAgentGraphState) -> HandoffAgentGraphSta
     delivery_state = state["delivery_state"]
     event_log = Path(state["run_dir"])
     primary_artifact = (
-        result.output_artifacts[0] if result.output_artifacts else "release-report.html"
+        result.output_artifacts[0] if result.output_artifacts else "release-report.md"
     )
     write_event(
         event_log,
@@ -285,8 +285,8 @@ def _apply_handoff_result(state: HandoffAgentGraphState) -> HandoffAgentGraphSta
             if isinstance(path, str) and path
         ]
         updated["final_project_report"] = next(
-            (path for path in final_artifacts if path.endswith("/release-report.html")),
-            "handoff/project/final/release-report.html",
+            (path for path in final_artifacts if path.endswith("/release-report.md")),
+            "handoff/project/final/release-report.md",
         )
         updated["final_project_artifacts"] = final_artifacts or list(result.output_artifacts)
     return {**state, "delivery_state": updated}

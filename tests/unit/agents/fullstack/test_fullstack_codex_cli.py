@@ -3,7 +3,7 @@ from pathlib import Path
 
 from agentic_company.agents.fullstack.codex_cli import CodexCliRunner
 from agentic_company.console.web.db import ConsoleRepository
-from agentic_company.platform.artifacts import write_execution_request
+from agentic_company.platform.artifacts.artifacts import write_execution_request
 
 
 def test_fullstack_runner_does_not_return_generated_project_sources_as_evidence(

@@ -14,7 +14,7 @@ from agentic_company.agents.head.agent import HeadAgent
 from agentic_company.agents.project_manager.agent import ProjectManagerAgent
 from agentic_company.agents.quality.agent import QualityAgent
 from agentic_company.agents.team_lead.agent import TeamLeadAgent
-from agentic_company.platform.state import DeliveryState
+from agentic_company.platform.db.state import DeliveryState
 
 DeliveryNode = Callable[[DeliveryState], DeliveryState]
 

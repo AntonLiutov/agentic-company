@@ -9,7 +9,7 @@ from agentic_company.agents.head.graph import HeadExecutor, run_head_agent_graph
 from agentic_company.agents.head.tools import HeadWorkers
 from agentic_company.agents.project_manager.agent import ProjectManagerAgent
 from agentic_company.agents.team_lead.agent import TeamLeadAgent
-from agentic_company.platform.agent_contracts import (
+from agentic_company.platform.agent.agent_contracts import (
     CODEX_REVIEW_TOOLS,
     COMMON_AGENT_TOOLS,
     COORDINATOR_AGENT_TOOLS,
@@ -19,7 +19,7 @@ from agentic_company.platform.agent_contracts import (
     BaseDeliveryAgent,
     unique_tools,
 )
-from agentic_company.platform.state import DeliveryState
+from agentic_company.platform.db.state import DeliveryState
 
 HEAD_ALLOWED_RECIPIENTS: tuple[str, ...] = (
     "business-analyst-agent",

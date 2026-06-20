@@ -6,17 +6,17 @@ from agentic_company.agents.head.executor import langchain_tools as head_langcha
 from agentic_company.agents.team_lead.contracts import TEAM_LEAD_TOOL_CONTRACT_REGISTRY
 from agentic_company.agents.team_lead.executor import langchain_tools as team_lead_langchain_tools
 from agentic_company.console.web.db import ConsoleRepository
-from agentic_company.platform.agent_runtime import (
+from agentic_company.platform.agent.agent_runtime import (
     LangChainAgentRuntimeError,
     LangChainSpecialistAgentExecutor,
     SpecialistAgentRequest,
 )
-from agentic_company.platform.models import AgentRunResult
-from agentic_company.platform.runtime_db import materialize_planning_items
-from agentic_company.platform.tool_contracts import (
+from agentic_company.platform.contracts.tool_contracts import (
     CODEX_EXEC_TOOL_CONTRACT,
     WorkItemExecutionPacket,
 )
+from agentic_company.platform.db.models import AgentRunResult
+from agentic_company.platform.db.runtime_db import materialize_planning_items
 
 
 def test_head_tool_contract_parameters_match_callable_signatures():

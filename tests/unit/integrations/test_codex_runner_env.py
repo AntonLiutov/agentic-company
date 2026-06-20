@@ -16,7 +16,7 @@ from agentic_company.integrations.codex.runner import (
     codex_service_tier_from_env,
     stream_codex_exec_to_log,
 )
-from agentic_company.platform.run_trace import load_run_events
+from agentic_company.platform.run.run_trace import load_run_events
 
 
 def test_codex_subprocess_env_exposes_azure_and_docker_plugins(monkeypatch, tmp_path: Path):

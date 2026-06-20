@@ -3,7 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from agentic_company.console.web.db import ConsoleRepository
-from agentic_company.platform.runtime_db import (
+from agentic_company.platform.contracts.tool_contracts import (
+    ArtifactRegistrationRequest,
+    ToolExecutionRecord,
+)
+from agentic_company.platform.db.runtime_db import (
     artifact_links_for_paths,
     build_run_reconcile_snapshot,
     reconcile_run,
@@ -13,13 +17,9 @@ from agentic_company.platform.runtime_db import (
     request_run_control_intent,
     run_stop_requested,
 )
-from agentic_company.platform.status_snapshot import (
+from agentic_company.platform.status.status_snapshot import (
     build_delivery_status_snapshot,
     build_sprint_status_snapshot,
-)
-from agentic_company.platform.tool_contracts import (
-    ArtifactRegistrationRequest,
-    ToolExecutionRecord,
 )
 
 
@@ -53,7 +53,7 @@ def test_run_stop_requested_prefers_durable_cancel_before_runtime_cache(tmp_path
         raise AssertionError("runtime cache should not be checked before DB cancel")
 
     monkeypatch.setattr(
-        "agentic_company.platform.runtime_cache.runtime_cache_from_env", fail_if_called
+        "agentic_company.platform.db.runtime_cache.runtime_cache_from_env", fail_if_called
     )
 
     assert run_stop_requested("phase1-run", run_dir) is True

@@ -22,8 +22,8 @@ from agentic_company.agents.project_manager.graph import (
     _apply_result,
 )
 from agentic_company.console.web.db import ConsoleRepository
-from agentic_company.platform.models import AgentRunResult
-from agentic_company.platform.state import initial_delivery_state
+from agentic_company.platform.db.models import AgentRunResult
+from agentic_company.platform.db.state import initial_delivery_state
 
 
 def test_project_management_prompt_scopes_codex_to_planning_artifacts(tmp_path, monkeypatch):

@@ -1,84 +1,63 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block title %}Settings &middot; Agentic Delivery Lab{% endblock %}
 {% block page_title %}Settings{% endblock %}
 {% block content %}
+  <style>
+    .conn-list { display: flex; flex-direction: column; }
+    .conn-row { display: flex; align-items: center; gap: 14px; padding: 11px 2px; border-bottom: 1px solid var(--border); }
+    .conn-row:last-child { border-bottom: 0; }
+    .conn-name { width: 92px; flex: none; font-weight: 650; display: flex; align-items: center; gap: 5px; }
+    .conn-status { flex: 1; min-width: 0; color: var(--muted); font-size: 0.84rem; display: flex; align-items: center; gap: 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .conn-action { display: flex; align-items: center; gap: 8px; margin: 0; flex: none; }
+    .conn-form { display: flex; align-items: center; gap: 8px; margin: 0; flex: 1; }
+    .conn-form input { flex: 1; min-width: 0; }
+    .ok-dot { width: 7px; height: 7px; border-radius: 999px; background: #3fb950; flex: none; }
+    .info-i { cursor: help; color: var(--muted); font-size: 0.66rem; font-weight: 600; border: 1px solid var(--border); border-radius: 999px; width: 0.92rem; height: 0.92rem; display: inline-flex; align-items: center; justify-content: center; }
+    .gh-btn { display: inline-flex; align-items: center; background: #24292f; color: #fff; font-weight: 600; font-size: 13px; padding: 7px 14px; border-radius: 7px; text-decoration: none; white-space: nowrap; }
+    @media (max-width: 640px) { .conn-row { flex-wrap: wrap; } .conn-name { width: auto; } }
+  </style>
   {% if key_error %}
-  <p class="error">Could not save the key: set a strong <code>APP_SECRET_KEY</code> (16+ characters) on the server, then try again. Keys are never stored in plaintext.</p>
+  <p class="error">Could not save the key: set a strong <code>APP_SECRET_KEY</code> (16+ chars) on the server, then retry.</p>
   {% endif %}
-  <section class="grid two">
-    <section class="panel">
-      <h2>OpenAI</h2>
-      {% if credential %}
-        <p class="success">Saved key: {{ credential.masked_value }}</p>
-        {% if credential.storage_mode == "local_demo" %}
-          <p class="hint">Saved for this workspace. The full key is never shown.</p>
-        {% endif %}
-      {% else %}
-        <p class="hint">Add a key before starting private projects.</p>
-      {% endif %}
-      <form class="settings-key-form" method="post" action="/settings/openai">
-        <label>OpenAI API key<input name="api_key" type="password" autocomplete="off" placeholder="sk-..."></label>
-        <button class="primary" type="submit">Save</button>
-      </form>
-      {% if credential %}
-        <form class="settings-delete-form" method="post" action="/settings/openai/delete">
-          <button class="danger" type="submit">Delete key</button>
-        </form>
-      {% endif %}
-    </section>
-    <section class="panel">
-      <h2>Google Gemini</h2>
-      {% if gemini_credential %}
-        <p class="success">Saved key: {{ gemini_credential.masked_value }}</p>
-        {% if gemini_credential.storage_mode == "local_demo" %}
-          <p class="hint">Saved for this workspace. The full key is never shown.</p>
-        {% endif %}
-      {% else %}
-        <p class="hint">
-          {% if platform_gemini_configured %}
-            Platform Gemini is ready. Add your own key only if you want to override it.
-          {% else %}
-            Add a Gemini API key to use Google models for planning.
-          {% endif %}
-        </p>
-      {% endif %}
-      <form class="settings-key-form" method="post" action="/settings/gemini">
-        <label>Gemini API key<input name="api_key" type="password" autocomplete="off" placeholder="AIza..."></label>
-        <button class="primary" type="submit">Save</button>
-      </form>
-      {% if gemini_credential %}
-        <form class="settings-delete-form" method="post" action="/settings/gemini/delete">
-          <button class="danger" type="submit">Delete key</button>
-        </form>
-      {% endif %}
-    </section>
-  </section>
-  <section class="grid two">
-    <div class="panel">
-      <h2>Defaults</h2>
-      <div class="settings-list">
-        <p><strong>Planning</strong><span>OpenAI gpt-4.1 or Gemini 3.1 Flash-Lite</span></p>
-        <p><strong>Building</strong><span>{{ codex_models[0] }} / Medium</span></p>
-        <p><strong>Speed</strong><span>Standard</span></p>
-      </div>
-    </div>
-    <div class="panel">
-      <h2>Sponsors</h2>
-      <div class="sponsor-row">
-        <span class="sponsor-chip"><img class="sponsor-icon" src="/static/sponsors/gemini.svg" alt="">Built with Gemini API</span>
-      </div>
-      <p class="hint">Gemini can power agent planning, reasoning, and request formatting.</p>
-    </div>
-  </section>
+
   <section class="panel">
-    <h2>Readiness</h2>
-    <div class="status-strip">
-      {% for check in checks %}
-        <div class="status-dot-row" title="{{ check.detail }}">
-          <span class="status-dot {{ 'ok' if check.ok == 'true' else 'bad' }}"></span>
-          <span>{{ check.name }}</span>
-        </div>
-      {% endfor %}
+    <h2>Connections</h2>
+    <div class="conn-list">
+      <div class="conn-row">
+        <span class="conn-name">OpenAI</span>
+        {% if credential %}
+        <span class="conn-status"><span class="ok-dot"></span>{{ credential.masked_value }}</span>
+        <form class="conn-action" method="post" action="/settings/openai/delete"><button class="danger" type="submit">Delete</button></form>
+        {% else %}
+        <form class="conn-form" method="post" action="/settings/openai">
+          <input name="api_key" type="password" autocomplete="off" placeholder="Paste OpenAI key (sk-…)">
+          <button class="primary" type="submit">Save</button>
+        </form>
+        {% endif %}
+      </div>
+      <div class="conn-row">
+        <span class="conn-name">Gemini</span>
+        {% if gemini_credential %}
+        <span class="conn-status"><span class="ok-dot"></span>{{ gemini_credential.masked_value }}</span>
+        <form class="conn-action" method="post" action="/settings/gemini/delete"><button class="danger" type="submit">Delete</button></form>
+        {% else %}
+        <form class="conn-form" method="post" action="/settings/gemini">
+          <input name="api_key" type="password" autocomplete="off" placeholder="Paste Gemini key (AIza…){{ ' — platform key active' if platform_gemini_configured else '' }}">
+          <button class="primary" type="submit">Save</button>
+        </form>
+        {% endif %}
+      </div>
+      <div class="conn-row">
+        <span class="conn-name">GitHub <span class="info-i" title="Deliver each project as a real GitHub repo with PRs and a Projects board, under your own account.">i</span></span>
+        <span class="conn-status">{% if github_connected %}<span class="ok-dot"></span>@{{ github_login }}{% elif not github_configured %}Not configured{% else %}Not connected{% endif %}</span>
+        <span class="conn-action">
+          {% if github_connected %}
+          <form method="post" action="/auth/github/disconnect" style="margin:0;"><button class="danger" type="submit">Disconnect</button></form>
+          {% elif github_configured %}
+          <a class="gh-btn" href="/auth/github/login?next=/settings">Login with GitHub</a>
+          {% endif %}
+        </span>
+      </div>
     </div>
   </section>
 {% endblock %}

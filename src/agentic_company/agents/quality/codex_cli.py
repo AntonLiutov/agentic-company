@@ -17,16 +17,16 @@ from agentic_company.integrations.codex import (
     stream_codex_exec_to_log,
     write_structured_codex_artifacts,
 )
-from agentic_company.platform.artifacts import load_execution_request, read_text_artifact
-from agentic_company.platform.events import write_event
-from agentic_company.platform.executions import (
+from agentic_company.platform.artifacts.artifacts import load_execution_request, read_text_artifact
+from agentic_company.platform.db.models import AgentRunResult, ExecutionRequest
+from agentic_company.platform.mirror.messages import render_incoming_messages_for_prompt
+from agentic_company.platform.run.events import write_event
+from agentic_company.platform.run.executions import (
     build_agent_execution_id,
     build_codex_execution_id,
     execution_artifact_dir,
     extract_codex_thread_id,
 )
-from agentic_company.platform.messages import render_incoming_messages_for_prompt
-from agentic_company.platform.models import AgentRunResult, ExecutionRequest
 
 LOGGER = logging.getLogger(__name__)
 
@@ -345,6 +345,7 @@ def build_quality_codex_prompt(
     completed = ", ".join(request.completed_work_item_ids) or "none"
     input_artifacts = "\n".join(f"- {artifact}" for artifact in request.input_artifacts)
     expected_outputs = "\n".join(f"- {artifact}" for artifact in request.expected_outputs)
+    instructions = "\n".join(f"- {instruction}" for instruction in request.instructions)
     upstream_messages = render_incoming_messages_for_prompt(run_dir, to_agent="qa-agent")
     report_path = run_dir / f"08-qa-report-{work_item_id}.md"
     results_path = run_dir / "qa" / f"results-{work_item_id}.json"
@@ -388,6 +389,9 @@ Input artifacts:
 Expected implementation outputs from planning:
 {expected_outputs or "- None"}
 
+Execution instructions:
+{instructions or "- None"}
+
 Work item:
 - ID: {work_item_id}
 - Title: {work_item.get("title")}
@@ -410,6 +414,12 @@ Your job:
   coordinator paraphrase. If coordinator text conflicts with the canonical work
   item or artifacts, report the contract mismatch and validate the canonical
   acceptance criteria.
+- Validate ONLY this work item's acceptance criteria. Capabilities the plan
+  scopes to a LATER work item are out of scope here: do not require them, and do
+  NOT count them as this item's passing evidence even if they happen to be
+  present — they are proven when that item runs, and the whole-product contract
+  is validated only at the final / deployment QA smoke. Crediting a future item's
+  feature here blurs the sprint boundary and is a QA contract violation.
 - Treat `{run_dir}` as the delivery run workspace and
   `{request.target_project_dir}` as the generated product project.
 - Design the QA approach yourself from the work item contract, artifacts, and
@@ -454,14 +464,24 @@ Non-exhaustive QA toolbox:
   equivalent real browser automation path whenever possible. Source inspection
   alone is not enough for UI behavior, layout, forms, navigation, or button
   flows.
+- Playwright + Chromium are ALREADY pre-provisioned on this host:
+  `PLAYWRIGHT_BROWSERS_PATH` and `NODE_PATH` are already set in your environment
+  and point at the repo-local QA runtime. Do NOT run `npm install`,
+  `npm install @playwright/test`, or `npx playwright install` — the browser is
+  already downloaded and re-downloading reliably times out. Just `require("playwright")`
+  from a small Node script and launch Chromium headless. On Windows the PowerShell
+  execution policy blocks `npm.ps1`/`npx.ps1`, so call the `.cmd` shims
+  (`npm.cmd` / `npx.cmd`) when you must call npm at all. Follow the
+  `browser-smoke-qa` skill for the canonical script and the mandatory
+  `--disable-gpu`/`--disable-dev-shm-usage` launch flags.
 - For Streamlit apps, Streamlit AppTest can be useful for component/runtime
   behavior, but browser evidence is still preferred when visual or interaction
   behavior matters.
-- You may install or fetch test-only tools when they are needed for stronger QA
-  evidence, for example ephemeral browser automation, accessibility tooling,
-  image/screenshot comparison helpers, HTTP clients, or framework-specific test
-  helpers. Prefer ephemeral tool installation through the command runner over
-  adding test-only packages to the generated product's `pyproject.toml`.
+- You may install or fetch additional test-only tools (accessibility tooling,
+  image/screenshot comparison helpers, HTTP clients, framework-specific test
+  helpers) when a work item genuinely needs them, through the command runner
+  rather than the generated product's `pyproject.toml`. This does NOT apply to
+  Playwright/Chromium, which are pre-provisioned — never reinstall those.
 - If installing a useful QA tool fails because of environment, network, browser,
   or platform constraints, report that as a QA evidence limitation and choose
   the next-best evidence path. Do not mark a work item as fully proven if the

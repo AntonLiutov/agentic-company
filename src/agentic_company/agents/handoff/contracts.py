@@ -16,10 +16,10 @@ VALID_HANDOFF_SCOPES = {SPRINT_HANDOFF_SCOPE, FINAL_PROJECT_REPORT_SCOPE}
 class HandoffContractPaths:
     """Canonical handoff artifact paths for one handoff scope."""
 
-    html: str
+    report: str
 
     def as_list(self) -> list[str]:
-        return [self.html]
+        return [self.report]
 
 
 def handoff_contract_paths_for_scope(
@@ -34,13 +34,13 @@ def handoff_contract_paths_for_scope(
         if not normalized_sprint_id:
             raise ValueError("sprint_id is required for sprint_handoff.")
         return HandoffContractPaths(
-            html=f"handoff/sprints/{normalized_sprint_id}/release-report.html",
+            report=f"handoff/sprints/{normalized_sprint_id}/release-report.md",
         )
     if handoff_scope == FINAL_PROJECT_REPORT_SCOPE:
         if sprint_id.strip():
             raise ValueError("sprint_id must be empty for final_project_report.")
         return HandoffContractPaths(
-            html="handoff/project/final/release-report.html",
+            report="handoff/project/final/release-report.md",
         )
     raise ValueError(
         f"handoff_scope must be one of: {SPRINT_HANDOFF_SCOPE}, {FINAL_PROJECT_REPORT_SCOPE}."

@@ -6,7 +6,7 @@ from agentic_company.integrations.codex.worker import (
     CodexWorkerAdapter,
     WorkerBackedAgentRunner,
 )
-from agentic_company.platform.models import AgentRunResult
+from agentic_company.platform.db.models import AgentRunResult
 from agentic_company.ports.worker import WorkRequest
 
 

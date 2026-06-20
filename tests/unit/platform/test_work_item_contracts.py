@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from agentic_company.platform.work_item_contracts import (
+from agentic_company.platform.contracts.work_item_contracts import (
     pm_sprints_from_run_dir,
     pm_work_items_from_run_dir,
 )

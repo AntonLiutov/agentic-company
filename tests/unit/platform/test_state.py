@@ -1,4 +1,4 @@
-from agentic_company.platform.state import initial_delivery_state, mark_node_completed
+from agentic_company.platform.db.state import initial_delivery_state, mark_node_completed
 
 
 def test_mark_node_completed_is_idempotent_for_retries(tmp_path) -> None:

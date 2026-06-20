@@ -14,20 +14,20 @@ from agentic_company.integrations.codex import (
     stream_codex_exec_to_log,
     write_structured_codex_artifacts,
 )
-from agentic_company.platform.artifacts import (
+from agentic_company.platform.artifacts.artifacts import (
     load_execution_request,
     read_text_artifact,
 )
-from agentic_company.platform.events import write_event
-from agentic_company.platform.executions import (
+from agentic_company.platform.db.models import AgentRunResult, ExecutionRequest
+from agentic_company.platform.logging import configure_logging
+from agentic_company.platform.mirror.messages import render_incoming_messages_for_prompt
+from agentic_company.platform.run.events import write_event
+from agentic_company.platform.run.executions import (
     build_agent_execution_id,
     build_codex_execution_id,
     execution_artifact_dir,
     extract_codex_thread_id,
 )
-from agentic_company.platform.logging import configure_logging
-from agentic_company.platform.messages import render_incoming_messages_for_prompt
-from agentic_company.platform.models import AgentRunResult, ExecutionRequest
 
 LOGGER = logging.getLogger(__name__)
 REQUEST_CONTEXT_PREVIEW_CHARS = 2500
@@ -295,6 +295,8 @@ def build_codex_prompt(request: ExecutionRequest, run_dir: Path) -> str:
     constraints = "\n".join(f"- {constraint}" for constraint in request.constraints)
     feature_context = _render_feature_context(request)
     upstream_messages = render_incoming_messages_for_prompt(run_dir, to_agent=request.agent_id)
+    # Skills now reach the worker via the central skill index prepended in
+    # stream_codex_exec_to_log (progressive disclosure) — no per-agent paste here.
 
     return f"""You are the Fullstack Agent for agentic-company.
 

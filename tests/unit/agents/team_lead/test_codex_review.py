@@ -1,7 +1,7 @@
 import subprocess
 
 from agentic_company.console.web.db import ConsoleRepository
-from agentic_company.platform.codex_review import (
+from agentic_company.platform.delivery.codex_review import (
     CodexReviewRequest,
     CodexReviewRunner,
     build_codex_review_prompt,

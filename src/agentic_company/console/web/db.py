@@ -22,13 +22,14 @@ from agentic_company.console.web.auth import (
 )
 from agentic_company.console.web.migrations import upgrade_database
 from agentic_company.console.web.sql_backend import DatabaseSettings, connect_database
-from agentic_company.platform.artifact_registry import (
+from agentic_company.platform.artifacts.artifact_registry import (
     ArtifactRecord,
     artifact_id_for,
     artifact_record_from_mapping,
     register_artifact,
 )
-from agentic_company.platform.run_trace import (
+from agentic_company.platform.contracts.work_item_contracts import HEAD_PLANNING_ITEMS
+from agentic_company.platform.run.run_trace import (
     ModelCallEvent,
     RunEvent,
     ToolCallEvent,
@@ -37,13 +38,12 @@ from agentic_company.platform.run_trace import (
     sanitize_trace_data,
     tool_call_event_from_mapping,
 )
-from agentic_company.platform.status import (
+from agentic_company.platform.status.status import (
     InvalidStatusTransition,
     WorkItemStatus,
     classify_work_item_status,
     transition,
 )
-from agentic_company.platform.work_item_contracts import HEAD_PLANNING_ITEMS
 
 SESSION_DAYS = 14
 CONSOLE_SCHEMA_VERSION = "2026-06-13.1"
@@ -180,6 +180,24 @@ class ExternalWorkRef:
     sync_status: str
     last_sync_error: str
     last_synced_at: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class WorkSystemConnection:
+    id: int
+    project_id: int | None
+    run_id: int | None
+    system: str
+    name: str
+    base_url: str
+    repository: str
+    default_branch: str
+    token_ref: str
+    risk_mode: str
+    status: str
+    metadata: dict[str, Any]
     created_at: str
     updated_at: str
 
@@ -391,6 +409,27 @@ class ConsoleRepository:
                   )
                 """,
                 (project_id, user_id),
+            ).fetchone()
+        return _project(row) if row else None
+
+    def get_project(self, project_id: int) -> Project | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT p.*,
+                       r.id AS latest_run_id,
+                       r.status AS latest_run_status,
+                       r.generated_app_url AS generated_app_url
+                FROM projects p
+                LEFT JOIN runs r ON r.id = (
+                    SELECT id FROM runs
+                    WHERE project_id = p.id
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                )
+                WHERE p.id = ?
+                """,
+                (project_id,),
             ).fetchone()
         return _project(row) if row else None
 
@@ -930,6 +969,47 @@ class ConsoleRepository:
                 ),
             )
         return int(cursor.lastrowid)
+
+    def get_active_work_system_connection(
+        self,
+        *,
+        project_id: int | None = None,
+        run_id: int | None = None,
+        system: str = "github",
+    ) -> WorkSystemConnection | None:
+        """Return the most relevant active connection for a run/project.
+
+        A run-scoped connection wins over a project-scoped one (an explicit
+        per-run override); ties break on the most recent. Returns None when none
+        is active, so the caller falls back to the internal board.
+        """
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM work_system_connections
+                WHERE status = 'active' AND system = ?
+                  AND (run_id = ? OR (project_id = ? AND run_id IS NULL))
+                ORDER BY (run_id IS NOT NULL) DESC, updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (system, run_id, project_id),
+            ).fetchone()
+        return _work_system_connection(row) if row else None
+
+    def update_work_system_connection_metadata(
+        self, connection_id: int, metadata: dict[str, Any]
+    ) -> None:
+        """Persist resolved/provisioned board ids back onto the connection."""
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE work_system_connections
+                SET metadata = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (json.dumps(metadata or {}, sort_keys=True), utc_now(), connection_id),
+            )
 
     def upsert_external_work_ref(
         self,
@@ -2171,6 +2251,25 @@ def _external_work_ref(row: Any) -> ExternalWorkRef:
         sync_status=str(row["sync_status"] or ""),
         last_sync_error=str(row["last_sync_error"] or ""),
         last_synced_at=str(row["last_synced_at"] or ""),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def _work_system_connection(row: Any) -> WorkSystemConnection:
+    return WorkSystemConnection(
+        id=int(row["id"]),
+        project_id=int(row["project_id"]) if row["project_id"] is not None else None,
+        run_id=int(row["run_id"]) if row["run_id"] is not None else None,
+        system=str(row["system"]),
+        name=str(row["name"] or ""),
+        base_url=str(row["base_url"] or ""),
+        repository=str(row["repository"] or ""),
+        default_branch=str(row["default_branch"] or ""),
+        token_ref=str(row["token_ref"] or ""),
+        risk_mode=str(row["risk_mode"] or ""),
+        status=str(row["status"] or ""),
+        metadata=_json_column(row["metadata"], default={}),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )

@@ -16,7 +16,7 @@ from agentic_company.integrations.codex.cli import (
 )
 from agentic_company.integrations.codex.events import append_raw_codex_event
 from agentic_company.integrations.commands import StreamedCommand, stream_command
-from agentic_company.platform.run_trace import record_raw_log_event, record_run_event
+from agentic_company.platform.run.run_trace import record_raw_log_event, record_run_event
 
 CODEX_SANDBOX_ENV = "AGENTIC_CODEX_SANDBOX"
 CODEX_INHERIT_ENV_ENV = "AGENTIC_CODEX_INHERIT_ENV"
@@ -175,6 +175,96 @@ def build_codex_exec_command(
     return command
 
 
+_NATIVE_SKILLS_READY: set[str] = set()
+
+
+def _ensure_native_skills(command: Sequence[str]) -> None:
+    """Provision the skill catalog into Codex's NATIVE ``.agents/skills`` discovery path.
+
+    This replaces the old hand-injected skill index: instead of pasting a skill list
+    into every prompt, we drop the catalog where Codex itself auto-discovers it and
+    triggers each skill by its ``description`` (progressive disclosure) — exactly as the
+    Codex skills docs prescribe. The worker runs with cwd = ``<run>/generated-project``,
+    and Codex scans ``$CWD/../.agents/skills``; we provision into that cwd-parent so the
+    skills sit outside the deliverable working tree (never leak into the project PR).
+    Done once per run workspace. Guarded: never breaks an exec.
+    """
+
+    try:
+        target = _target_project_dir_from_command(command)
+        if target is None:
+            return
+        target_path = Path(target)
+        roots = _native_skill_roots_for_target(target_path)
+        key = "|".join(str(root) for root in roots)
+        if key in _NATIVE_SKILLS_READY:
+            return
+        from agentic_company.platform.skills import provision_native_skills
+
+        for root in roots:
+            provision_native_skills(root)
+        _exclude_adl_scaffolding_from_git(target_path)
+        _NATIVE_SKILLS_READY.add(key)
+    except Exception:  # skill provisioning must never break a Codex run
+        return
+
+
+def _native_skill_roots_for_target(target: Path) -> tuple[Path, ...]:
+    """Return Codex skill scan roots for a worker cwd.
+
+    Codex scans ``$CWD/.agents/skills`` FIRST, then ``$CWD/../.agents/skills``. ADL
+    workers run with cwd = run_dir for most stages and cwd = generated-project for
+    others, so we must ALWAYS provision the cwd itself (the 1st, always-in-sandbox
+    path) — provisioning only the parent silently missed every cwd = run_dir worker
+    (the Builder among them), which is why it fell back to a bundled skill. When the
+    cwd is the generated-project git tree, also seed the parent (run_dir); the
+    ``.git/info/exclude`` entry keeps the provisioned skills out of the project PR.
+    """
+
+    roots = [target]
+    if (target / ".git").exists():
+        roots.append(target.parent)
+    unique: list[Path] = []
+    for root in roots:
+        if root not in unique:
+            unique.append(root)
+    return tuple(unique)
+
+
+# ADL writes run scaffolding into the worker cwd: provisioned skills (`.agents/`), QA
+# browser evidence + check scripts (`qa/`), the codex execution summary, and debug logs.
+# NONE of it belongs in the deliverable PR — exclude it from the generated-project git
+# so a worker's `git add -A` can never sweep ADL scaffolding into a commit. The files
+# still exist on disk (QA can write/cite its screenshots); they are only kept untracked.
+_ADL_SCAFFOLDING_EXCLUDES = (
+    "/.agents/",
+    "/qa/",
+    "/execution-summary.md",
+    "/07-execution-summary.md",
+    "/debug.log",
+)
+
+
+def _exclude_adl_scaffolding_from_git(target: Path) -> None:
+    """Keep ADL run scaffolding out of generated-project PRs (best-effort)."""
+
+    git_dir = target / ".git"
+    if not git_dir.exists():
+        return
+    exclude = git_dir / "info" / "exclude"
+    try:
+        existing = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+        present = set(existing.splitlines())
+        missing = [m for m in _ADL_SCAFFOLDING_EXCLUDES if m not in present]
+        if not missing:
+            return
+        prefix = "" if not existing or existing.endswith("\n") else "\n"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        exclude.write_text(existing + prefix + "\n".join(missing) + "\n", encoding="utf-8")
+    except OSError:
+        return
+
+
 def stream_codex_exec_to_log(
     command: Sequence[str],
     prompt: str,
@@ -191,6 +281,7 @@ def stream_codex_exec_to_log(
 ) -> subprocess.CompletedProcess[str]:
     """Run Codex while streaming command output and raw JSON events to artifacts."""
 
+    _ensure_native_skills(command)
     raw_events_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     raw_events_path.write_text("", encoding="utf-8")
@@ -263,7 +354,7 @@ def stream_codex_exec_to_log(
 
         def effective_stop_requested() -> bool:
             try:
-                from agentic_company.platform.runtime_db import run_stop_requested
+                from agentic_company.platform.db.runtime_db import run_stop_requested
 
                 return run_stop_requested(str(trace_run_id), stop_run_dir)
             except Exception:

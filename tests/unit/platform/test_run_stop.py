@@ -6,7 +6,7 @@ from pathlib import Path
 
 from redis.exceptions import ConnectionError as RedisConnectionError
 
-from agentic_company.platform.runtime_db import run_stop_requested
+from agentic_company.platform.db.runtime_db import run_stop_requested
 
 
 def test_run_stop_requested_false_without_signal(tmp_path: Path):
@@ -25,7 +25,7 @@ def test_run_stop_requested_treats_runtime_cache_errors_as_no_signal(tmp_path: P
             raise RedisConnectionError("redis unavailable")
 
     monkeypatch.setattr(
-        "agentic_company.platform.runtime_cache.runtime_cache_from_env",
+        "agentic_company.platform.db.runtime_cache.runtime_cache_from_env",
         lambda: FailingCache(),
     )
 
@@ -39,7 +39,7 @@ def test_run_stop_requested_treats_durable_db_errors_as_no_signal(
     def raise_db_error(_run_id: str) -> bool:
         raise RuntimeError("postgres unavailable")
 
-    monkeypatch.setattr("agentic_company.platform.runtime_db.stop_requested", raise_db_error)
+    monkeypatch.setattr("agentic_company.platform.db.runtime_db.stop_requested", raise_db_error)
     monkeypatch.delenv("AGENTIC_REDIS_URL", raising=False)
     monkeypatch.delenv("REDIS_URL", raising=False)
 

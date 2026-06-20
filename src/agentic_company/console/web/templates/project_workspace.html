@@ -64,27 +64,11 @@
   {% if not run %}
     <section class="panel"><p class="empty">No delivery has started yet.</p></section>
   {% elif tab == "overview" %}
-    <section class="grid metrics" data-live-fragment="metrics">
-      <article class="metric"><span>Stage</span><strong>{{ overview.stage|status_label }}</strong></article>
-      <article class="metric"><span>Work items</span><strong>{{ overview.completed_feature_count }}/{{ overview.total_feature_count }}</strong></article>
-      <article class="metric"><span>Quality</span><strong>{{ (overview.qa_status or "pending")|status_label }}</strong></article>
-      <article class="metric"><span>Publishing</span><strong>{{ (overview.deployment_status or "pending")|status_label }}</strong></article>
-      <article class="metric"><span>Report</span><strong>{{ (overview.handoff_status or "pending")|status_label }}</strong></article>
-    </section>
-    <section class="panel" data-live-fragment="delivery-journey">
-      <h2>Delivery Journey</h2>
-      {% if overview_blockers %}
+    {% if overview_blockers %}
+      <section class="panel" data-live-fragment="overview-blockers">
         <div class="alert">Needs attention: {{ overview_blockers|join("; ") }}</div>
-      {% endif %}
-        <p>{{ overview.topology_summary or "The delivery summary will appear as the team prepares planning, build, quality, publishing, and release reports." }}</p>
-      {% if overview.deployment_targets %}
-        <div class="button-row">
-          {% for target in overview.deployment_targets %}
-            <a class="button" href="{{ target.url }}" target="_blank">{{ target.label }}</a>
-          {% endfor %}
-        </div>
-      {% endif %}
-    </section>
+      </section>
+    {% endif %}
     <section class="panel" data-live-fragment="work-plan">
       <h2>Work Plan</h2>
       {% for group in work_plan_groups %}

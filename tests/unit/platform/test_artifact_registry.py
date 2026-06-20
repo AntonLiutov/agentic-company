@@ -1,17 +1,17 @@
 from pathlib import Path
 
 from agentic_company.console.web.db import ConsoleRepository
-from agentic_company.platform.artifact_registry import (
+from agentic_company.platform.artifacts.artifact_registry import (
     artifact_id_for,
     artifact_record_from_mapping,
     register_artifact,
 )
-from agentic_company.platform.runtime_db import (
+from agentic_company.platform.contracts.tool_contracts import ArtifactRegistrationRequest
+from agentic_company.platform.db.runtime_db import (
     artifact_links_for_paths,
     materialize_planning_items,
     record_artifact_link,
 )
-from agentic_company.platform.tool_contracts import ArtifactRegistrationRequest
 
 
 def test_artifact_id_is_stable():

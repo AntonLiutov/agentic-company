@@ -39,6 +39,10 @@ def isolate_unit_database_env(
     monkeypatch.setenv("AGENTIC_DATABASE_URL", postgres_test_database_url)
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("APP_SECRET_KEY", "test-app-secret-key-0123456789ab")
+    # Unit tests must not spin up the async board-mirror pool (hundreds of cases
+    # in one process) or do any real board I/O; the mirror is exercised directly
+    # in its own tests and validated live.
+    monkeypatch.setenv("AGENTIC_DISABLE_MIRROR", "1")
 
     import psycopg
 

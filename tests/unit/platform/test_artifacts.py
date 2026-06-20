@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from agentic_company.console.web.db import ConsoleRepository
-from agentic_company.platform.artifacts import (
+from agentic_company.platform.artifacts.artifacts import (
     build_execution_request_payload,
     canonical_output_artifact_refs,
     discover_implementation_artifacts,
@@ -167,11 +167,11 @@ def test_update_execution_request_context_updates_db_contract(monkeypatch, tmp_p
     writes = []
 
     monkeypatch.setattr(
-        "agentic_company.platform.runtime_db.latest_execution_request",
+        "agentic_company.platform.db.runtime_db.latest_execution_request",
         lambda run_id: dict(payload),
     )
     monkeypatch.setattr(
-        "agentic_company.platform.runtime_db.record_execution_request",
+        "agentic_company.platform.db.runtime_db.record_execution_request",
         lambda run_id, updated: writes.append((run_id, dict(updated))),
     )
 

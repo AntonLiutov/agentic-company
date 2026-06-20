@@ -1,7 +1,7 @@
 import sys
 from types import SimpleNamespace
 
-from agentic_company.platform.runtime_cache import NoopRuntimeCache, runtime_cache_from_env
+from agentic_company.platform.db.runtime_cache import NoopRuntimeCache, runtime_cache_from_env
 
 
 def test_runtime_cache_defaults_to_noop_without_redis_url(monkeypatch):

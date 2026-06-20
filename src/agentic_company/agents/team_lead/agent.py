@@ -9,7 +9,7 @@ from agentic_company.agents.quality.agent import QualityAgent
 from agentic_company.agents.team_lead.contracts import TEAM_LEAD_TOOLS
 from agentic_company.agents.team_lead.graph import TeamLeadExecutor, run_team_lead_agent_graph
 from agentic_company.agents.team_lead.tools import TeamLeadWorkers
-from agentic_company.platform.agent_contracts import (
+from agentic_company.platform.agent.agent_contracts import (
     CODEX_REVIEW_TOOLS,
     COMMON_AGENT_TOOLS,
     COORDINATOR_AGENT_TOOLS,
@@ -19,7 +19,7 @@ from agentic_company.platform.agent_contracts import (
     BaseDeliveryAgent,
     unique_tools,
 )
-from agentic_company.platform.state import DeliveryState
+from agentic_company.platform.db.state import DeliveryState
 
 TEAM_LEAD_ALLOWED_RECIPIENTS: tuple[str, ...] = (
     "head-agent",

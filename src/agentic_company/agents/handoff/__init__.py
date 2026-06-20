@@ -3,7 +3,7 @@
 from agentic_company.agents.handoff.agent import HandoffAgent
 from agentic_company.agents.handoff.codex_cli import (
     HANDOFF_CODEX_AGENT_ID,
-    HANDOFF_REPORT_HTML,
+    HANDOFF_REPORT_MD,
     HandoffCodexRunner,
     build_handoff_codex_prompt,
     read_handoff_contract,
@@ -17,7 +17,7 @@ from agentic_company.agents.handoff.graph import (
 
 __all__ = [
     "HANDOFF_CODEX_AGENT_ID",
-    "HANDOFF_REPORT_HTML",
+    "HANDOFF_REPORT_MD",
     "HANDOFF_AGENT_GRAPH_NODE_ORDER",
     "HandoffCodexRunner",
     "HandoffAgent",

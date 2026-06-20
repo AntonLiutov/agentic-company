@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Protocol
 
 from agentic_company.integrations.codex import codex_usage_from_artifacts
-from agentic_company.platform.models import AgentRunResult
-from agentic_company.platform.status import WorkItemStatus, classify_work_item_status
+from agentic_company.platform.db.models import AgentRunResult
+from agentic_company.platform.status.status import WorkItemStatus, classify_work_item_status
 from agentic_company.ports.worker import UsageTotals, WorkerPort, WorkRequest, WorkResult
 
 

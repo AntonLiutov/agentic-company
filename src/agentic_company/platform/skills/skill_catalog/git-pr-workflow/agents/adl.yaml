@@ -1,0 +1,49 @@
+schema_version: 1
+skill_id: git-pr-workflow
+version: "1.0"
+status: active
+trust_level: system
+selection:
+  applies_to_agents: [fullstack-agent, deployment-agent, qa-agent]
+  default_for_agents: [fullstack-agent, deployment-agent, qa-agent]
+  stages: [fullstack, deployment, qa, quality_review, post_deploy_qa, repair]
+  trigger_keywords: [pull request, PR, branch, commit, push, merge, gh pr, git, review the PR]
+  negative_triggers: [no repository, local-only delivery, planning, release report]
+contracts:
+  required_tools: [codex_exec]
+  allowed_tools: [codex_exec]
+  consumes_artifacts: [execution_summary, qa_report, deployment_summary]
+  produces_artifacts:
+    - artifact_type: execution_summary
+      visibility: developer
+      required: false
+      dashboard_label: PR link
+      external_reference_type: work_item
+    - artifact_type: tool_result
+      visibility: developer
+      required: false
+      dashboard_label: Merge result
+      external_reference_type: work_item
+dashboard:
+  status: in_progress
+  work_item_stage: fullstack
+  external_systems_supported: [internal, github, jira, azure_devops, linear]
+  comment_template: pr-update
+  labels: [agentic-delivery, pr]
+governance:
+  risk_level: high
+  requires_human_approval: false
+  max_repair_attempts: 2
+  checkpoint_before: false
+  checkpoint_after: true
+validation:
+  eval_prompts:
+    - Push an implemented work item as a branch and open a pull request.
+    - Review an existing PR and merge it on a pass or comment defects on a fail.
+  success_signals:
+    - branch follows the adl/<work-item-id> convention
+    - no secrets are committed
+    - QA merges only on a pass, comments on a fail
+examples:
+  - input: Implemented work item with a connected repository and base branch
+    output: Pushed adl/<id> and opened or updated the pull request, reported the URL
