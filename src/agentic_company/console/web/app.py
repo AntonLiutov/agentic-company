@@ -310,13 +310,12 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             )
         repo = get_repo(request)
         api_key = user_openai_key(repo, user)
-        if not api_key:
+        if agent_provider == "openai" and not api_key:
             return render_new_project(
                 request,
                 user,
                 error=(
-                    "Add your OpenAI key in Settings before starting. "
-                    "It powers your private projects."
+                    "Add your OpenAI key in Settings before starting OpenAI-backed planning."
                 ),
                 form_values=form_values,
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -371,7 +370,6 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         )
         prepare_run_environment(
             run_dir,
-            api_key=api_key,
             gemini_api_key=gemini_api_key,
             agent_provider=agent_provider,
             agent_model=agent_model,
@@ -379,7 +377,6 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             codex_model=codex_model,
             codex_reasoning=codex_reasoning,
             service_tier=service_tier,
-            github_token=gh_token if repository.strip() else "",
         )
         run = repo.create_run(
             project_id=project.id,
@@ -425,10 +422,10 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         request_text = repo.project_request_text(project.id, user.id)
         if not request_text.strip():
             raise HTTPException(status_code=400)
-        api_key = user_openai_key(repo, user)
-        if not api_key:
-            return redirect("/settings")
         settings = restart_run_settings(repo, project, user)
+        api_key = user_openai_key(repo, user)
+        if settings["agent_provider"] == "openai" and not api_key:
+            return redirect("/settings")
         gemini_api_key = user_or_platform_gemini_key(repo, user)
         if settings["agent_provider"] == "google_gemini" and not gemini_api_key:
             return redirect("/settings")
@@ -439,7 +436,6 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         gh_conn = repo.get_active_work_system_connection(project_id=project.id, system="github")
         prepare_run_environment(
             run_dir,
-            api_key=api_key,
             gemini_api_key=gemini_api_key,
             agent_provider=settings["agent_provider"],
             agent_model=settings["agent_model"],
@@ -447,11 +443,6 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             codex_model=settings["codex_model"],
             codex_reasoning=settings["codex_reasoning"],
             service_tier=settings["service_tier"],
-            github_token=(
-                _github_token(repo, user)
-                if gh_conn is not None and gh_conn.repository.strip()
-                else ""
-            ),
         )
         run = repo.create_run(
             project_id=project.id,
@@ -777,7 +768,13 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         artifact_title = record.label
         artifact_path = record.relative_path
         if raw and payload["kind"] == "html":
-            return HTMLResponse(html_report_document(str(payload["content"])))
+            return HTMLResponse(
+                html_report_document(str(payload["content"])),
+                headers={
+                    "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
         return render(
             request,
             "artifact_view.html",
@@ -1471,7 +1468,6 @@ def formatter_gemini_key(repo: ConsoleRepository, user: User) -> str:
 def prepare_run_environment(
     run_dir: Path,
     *,
-    api_key: str,
     agent_model: str,
     agent_reasoning: str,
     codex_model: str,
@@ -1479,14 +1475,11 @@ def prepare_run_environment(
     service_tier: str,
     gemini_api_key: str = "",
     agent_provider: str = "google_gemini",
-    github_token: str = "",
 ) -> Path:
     agent_provider = normalize_agent_provider(agent_provider)
     agent_model = normalize_agent_model(agent_provider, agent_model)
     codex_model = normalize_codex_model(codex_model)
     values = {
-        "OPENAI_API_KEY": api_key,
-        "CODEX_API_KEY": api_key,
         "AGENT_LLM_PROVIDER": agent_provider,
         "AGENT_LLM_MODEL": agent_model,
         "COORDINATOR_AGENT_REASONING_EFFORT": agent_reasoning,
@@ -1502,15 +1495,6 @@ def prepare_run_environment(
         "AGENTIC_CODEX_REASONING_EFFORT": codex_reasoning,
         "AGENTIC_CODEX_SERVICE_TIER": service_tier,
     }
-    if values["AGENT_LLM_PROVIDER"] == "google_gemini" and gemini_api_key.strip():
-        values["GOOGLE_API_KEY"] = gemini_api_key.strip()
-    if github_token.strip():
-        # The connected user's GitHub OAuth token, so the Codex worker delivers
-        # (git push / gh pr / merge) under THAT user's account on any host —
-        # including a fresh VM with no host gh auth. It lives only in the run-local
-        # delivery env (never the generated-project deliverable).
-        values["GH_TOKEN"] = github_token.strip()
-        values["GITHUB_TOKEN"] = github_token.strip()
     return write_target_env(run_dir, values)
 
 

@@ -47,8 +47,9 @@ class CodexCliRunner:
     """
 
     codex_binary: str | None = None
-    # Implementation installs dependencies and runs builds/tests that need network.
-    sandbox: str = "danger-full-access"
+    # Implementation installs dependencies and runs builds/tests, but it should
+    # not receive full host access in a multi-user runtime.
+    sandbox: str = "workspace-write"
     timeout_seconds: int = 1800
     summary_filename: str = "07-execution-summary.md"
     prompt_filename: str = "codex/prompt.md"

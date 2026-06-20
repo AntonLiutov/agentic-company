@@ -210,8 +210,8 @@ def test_create_project_starts_run_with_monkeypatched_runtime(tmp_path, monkeypa
     run_dir = run_root / "console-test"
     env_text = (run_dir / "delivery" / "agent-runtime.env").read_text(encoding="utf-8")
     assert not (run_dir / "generated-project" / ".env").exists()
-    assert "OPENAI_API_KEY=sk-test-project" in env_text
-    assert "CODEX_API_KEY=sk-test-project" in env_text
+    assert "OPENAI_API_KEY=sk-test-project" not in env_text
+    assert "CODEX_API_KEY=sk-test-project" not in env_text
     assert "AGENT_LLM_PROVIDER=openai" in env_text
     assert "AGENT_CODEX_MODEL=gpt-5.5" in env_text
     assert "AGENTIC_CODEX_SERVICE_TIER=standard" in env_text
@@ -696,9 +696,9 @@ def test_create_project_can_use_gemini_for_agent_executor(tmp_path, monkeypatch)
     assert not (run_dir / "generated-project" / ".env").exists()
     assert "AGENT_LLM_PROVIDER=google_gemini" in env_text
     assert "AGENT_LLM_MODEL=gemini-3.1-flash-lite" in env_text
-    assert "GOOGLE_API_KEY=AIza-project" in env_text
-    assert "CODEX_API_KEY=sk-codex-project" in env_text
-    assert "OPENAI_API_KEY=sk-codex-project" in env_text
+    assert "GOOGLE_API_KEY=AIza-project" not in env_text
+    assert "CODEX_API_KEY=sk-codex-project" not in env_text
+    assert "OPENAI_API_KEY=sk-codex-project" not in env_text
 
 
 def test_create_project_can_use_platform_gemini_key(tmp_path, monkeypatch):
@@ -749,7 +749,7 @@ def test_create_project_can_use_platform_gemini_key(tmp_path, monkeypatch):
     env_text = (run_dir / "delivery" / "agent-runtime.env").read_text(encoding="utf-8")
     assert not (run_dir / "generated-project" / ".env").exists()
     assert "AGENT_LLM_PROVIDER=google_gemini" in env_text
-    assert "GOOGLE_API_KEY=AIza-platform" in env_text
+    assert "GOOGLE_API_KEY=AIza-platform" not in env_text
 
 
 def test_format_request_uses_gemini_key_not_openai_key(tmp_path, monkeypatch):
@@ -1718,6 +1718,7 @@ def test_html_artifact_view_opens_report_links_outside_preview(tmp_path):
     assert "Open report" in response.text
     assert raw_response.status_code == 200
     assert '<base target="_blank">' in raw_response.text
+    assert "sandbox" in raw_response.headers["content-security-policy"]
 
 
 def test_artifact_view_renders_mermaid_reports(tmp_path):

@@ -159,7 +159,7 @@ def test_codex_exec_environment_requires_codex_api_key(monkeypatch, tmp_path: Pa
         raise AssertionError("Expected CODEX_API_KEY requirement to fail fast.")
 
 
-def test_codex_exec_environment_reads_run_local_env(monkeypatch, tmp_path: Path):
+def test_codex_exec_environment_ignores_secret_run_local_env(monkeypatch, tmp_path: Path):
     run_dir = tmp_path / "run"
     target_dir = run_dir / "generated-project"
     target_dir.mkdir(parents=True)
@@ -169,9 +169,26 @@ def test_codex_exec_environment_reads_run_local_env(monkeypatch, tmp_path: Path)
     monkeypatch.delenv("CODEX_API_KEY", raising=False)
     monkeypatch.delenv("AGENTIC_CODEX_BINARY_MODE", raising=False)
 
+    try:
+        build_codex_exec_environment(target_dir)
+    except RuntimeError as exc:
+        assert "CODEX_API_KEY is required" in str(exc)
+    else:
+        raise AssertionError("Expected run-local CODEX_API_KEY to be ignored.")
+
+
+def test_codex_exec_environment_accepts_user_chatgpt_codex_home(monkeypatch, tmp_path: Path):
+    target_dir = tmp_path / "generated-project"
+    codex_home = tmp_path / "codex-home"
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "user_chatgpt")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("CODEX_API_KEY", "sk-should-not-survive")
+    monkeypatch.delenv("AGENTIC_CODEX_BINARY_MODE", raising=False)
+
     env = build_codex_exec_environment(target_dir)
 
-    assert env["CODEX_API_KEY"] == "sk-run-local"
+    assert env["CODEX_HOME"] == str(codex_home)
+    assert "CODEX_API_KEY" not in env
 
 
 def test_codex_exec_environment_sets_tool_caches_when_api_key_exists(monkeypatch, tmp_path: Path):
@@ -554,7 +571,7 @@ def test_codex_subprocess_env_drops_unrelated_host_secrets(monkeypatch, tmp_path
     assert "AWS_SECRET_ACCESS_KEY" not in env
     assert "RANDOM_COMPANY_TOKEN" not in env
     assert "AGENTIC_DATABASE_URL" not in env
-    # Allowlisted platform + essential variables survive.
+    # API-key fallback and worker-facing platform config survive.
     assert env["CODEX_API_KEY"] == "keep"
     assert env["AGENTIC_CODEX_SERVICE_TIER"] == "standard"
     assert "PATH" in env or "Path" in env

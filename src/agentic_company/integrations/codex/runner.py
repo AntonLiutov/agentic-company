@@ -26,8 +26,12 @@ CODEX_NPM_CACHE_ENV = "AGENTIC_CODEX_NPM_CACHE"
 CODEX_REASONING_EFFORT_ENV = "AGENTIC_CODEX_REASONING_EFFORT"
 CODEX_SERVICE_TIER_ENV = "AGENTIC_CODEX_SERVICE_TIER"
 CODEX_API_KEY_ENV = "CODEX_API_KEY"
+CODEX_AUTH_MODE_ENV = "AGENTIC_CODEX_AUTH_MODE"
 CODEX_ENV_PASSTHROUGH_ENV = "AGENTIC_CODEX_ENV_PASSTHROUGH"
 CODEX_WORKSPACE_NETWORK_ENV = "AGENTIC_CODEX_WORKSPACE_NETWORK"
+CODEX_HOME_ENV = "CODEX_HOME"
+CODEX_AUTH_MODE_API_KEY = "api_key"
+CODEX_AUTH_MODE_USER_CHATGPT = "user_chatgpt"
 
 # Host environment variables inherited by Codex specialist subprocesses. Anything
 # outside this allowlist is dropped so unrelated host secrets never reach the
@@ -84,14 +88,15 @@ _CODEX_ENV_ALLOWED_NAMES = frozenset(
         "FTP_PROXY",
         # Platform runtime cache root the worker writes its caches under.
         "AGENTIC_RUNTIME_CACHE_DIR",
+        "CODEX_API_KEY",
+        "CODEX_BINARY",
+        "CODEX_HOME",
     )
 )
 _CODEX_ENV_ALLOWED_PREFIXES = (
-    "CODEX_",
-    # Only the worker-facing AGENTIC_CODEX_* config, not platform internals such
-    # as AGENTIC_DATABASE_URL, which the Codex worker has no business reading.
+    # Only worker-facing AGENTIC_CODEX_* config, not platform internals such as
+    # AGENTIC_DATABASE_URL, which the Codex worker has no business reading.
     "AGENTIC_CODEX_",
-    "OPENAI_",
     "AZURE_",
     "DOCKER_",
     "UV_",
@@ -588,8 +593,8 @@ def codex_exec_config_args_from_env() -> list[str]:
     if service_tier == "fast":
         config_args.extend(["--config", 'service_tier="fast"'])
 
-    inherit_env = os.getenv(CODEX_INHERIT_ENV_ENV, "1").strip().lower()
-    if inherit_env in {"0", "false", "no", "off"}:
+    inherit_env = os.getenv(CODEX_INHERIT_ENV_ENV, "0").strip().lower()
+    if inherit_env not in {"1", "true", "yes", "on"}:
         return config_args
     return [
         *config_args,
@@ -623,8 +628,15 @@ def build_codex_exec_environment(target_project_dir: Path) -> dict[str, str]:
 
     env = _codex_subprocess_env()
     _merge_run_local_env(env, target_project_dir)
+    auth_mode = codex_auth_mode_from_env(env)
     if _uses_extension_binary_mode(env):
         env.pop(CODEX_API_KEY_ENV, None)
+    elif auth_mode == CODEX_AUTH_MODE_USER_CHATGPT:
+        env.pop(CODEX_API_KEY_ENV, None)
+        if not env.get(CODEX_HOME_ENV, "").strip():
+            raise RuntimeError(
+                f"{CODEX_HOME_ENV} is required when {CODEX_AUTH_MODE_ENV}=user_chatgpt."
+            )
     elif not env.get(CODEX_API_KEY_ENV, "").strip():
         raise RuntimeError(
             f"{CODEX_API_KEY_ENV} is required for npm Codex CLI execution. "
@@ -653,6 +665,21 @@ def build_codex_exec_environment(target_project_dir: Path) -> dict[str, str]:
     )
     _anchor_qa_browser_paths(env)
     return env
+
+
+def codex_auth_mode_from_env(env: dict[str, str] | None = None) -> str:
+    """Return the configured Codex authentication mode."""
+
+    source = env if env is not None else os.environ
+    configured = source.get(CODEX_AUTH_MODE_ENV, CODEX_AUTH_MODE_API_KEY).strip().lower()
+    if not configured:
+        return CODEX_AUTH_MODE_API_KEY
+    if configured not in {CODEX_AUTH_MODE_API_KEY, CODEX_AUTH_MODE_USER_CHATGPT}:
+        raise ValueError(
+            f"{CODEX_AUTH_MODE_ENV} must be one of: "
+            f"{CODEX_AUTH_MODE_API_KEY}, {CODEX_AUTH_MODE_USER_CHATGPT}"
+        )
+    return configured
 
 
 def _anchor_repo_relative(value: str) -> str:
@@ -696,7 +723,25 @@ def _merge_run_local_env(env: dict[str, str], target_project_dir: Path) -> None:
         if not env_path.exists():
             continue
         for key, value in _read_env_file(env_path).items():
+            if _is_secret_runtime_env_key(key):
+                continue
             env[key] = value
+
+
+def _is_secret_runtime_env_key(key: str) -> bool:
+    upper = key.strip().upper()
+    if upper in {
+        "CODEX_API_KEY",
+        "OPENAI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "CODEX_ACCESS_TOKEN",
+        "CODEX_REFRESH_TOKEN",
+    }:
+        return True
+    return upper.endswith("_TOKEN") or upper.endswith("_SECRET") or upper.endswith("_PASSWORD")
 
 
 def _uses_extension_binary_mode(env: dict[str, str]) -> bool:
