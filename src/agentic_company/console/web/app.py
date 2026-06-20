@@ -79,7 +79,7 @@ from agentic_company.platform.agent.runtime_modes import (
     mode_policy,
     start_gate_required,
 )
-from agentic_company.platform.agent.team_spec import TeamPreset
+from agentic_company.platform.agent.team_spec import TeamPreset, estimate_team_preset
 from agentic_company.platform.db.runtime_cache import redis_error_types, runtime_cache_from_env
 from agentic_company.platform.db.runtime_db import (
     reconcile_run,
@@ -1586,9 +1586,10 @@ def new_project_form_values(
     project_owner: str = "",
     run_mode: str = "",
     risk_mode: str = "assisted",
-    team_preset: str = "standard",
+    team_preset: str = "",
 ) -> dict[str, str]:
     agent_provider = normalize_agent_provider(agent_provider)
+    resolved_run_mode = normalize_run_mode(run_mode or mode)
     return {
         "name": name,
         "request_text": request_text,
@@ -1602,10 +1603,22 @@ def new_project_form_values(
         "board_adapter": normalize_board_adapter(board_adapter),
         "repository": repository.strip(),
         "project_owner": project_owner.strip(),
-        "run_mode": normalize_run_mode(run_mode or mode),
+        "run_mode": resolved_run_mode,
         "risk_mode": normalize_risk_mode(risk_mode),
-        "team_preset": normalize_team_preset(team_preset),
+        # Advisory estimator: when the operator hasn't chosen a team, pre-select the
+        # one the run's complexity/mode suggest (they can still override in the form).
+        "team_preset": normalize_team_preset(team_preset)
+        if team_preset.strip()
+        else _estimated_team_preset(complexity, resolved_run_mode),
     }
+
+
+def _estimated_team_preset(complexity: str, run_mode: str) -> str:
+    try:
+        requires_deploy = mode_policy(run_mode).requires_deployment
+    except (KeyError, ValueError):
+        requires_deploy = False
+    return estimate_team_preset(complexity=complexity, requires_deployment=requires_deploy).value
 
 
 def normalize_board_adapter(value: str) -> str:

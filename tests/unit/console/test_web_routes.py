@@ -404,6 +404,19 @@ def test_reject_gate_stops_the_run(tmp_path, monkeypatch):
     assert repo.get_run_approval(pending[0].id).status == "rejected"
 
 
+def test_new_project_pre_selects_the_estimated_team():
+    from agentic_company.console.web.app import new_project_form_values
+
+    # advisory estimator pre-fills the team dropdown from complexity/mode; operator overrides.
+    assert new_project_form_values(complexity="simple", mode="simple_prototype")["team_preset"] == "small"
+    assert new_project_form_values(complexity="complex", mode="full_product")["team_preset"] == "large"
+    # an explicit choice still wins over the estimate.
+    assert (
+        new_project_form_values(complexity="simple", team_preset="standard")["team_preset"]
+        == "standard"
+    )
+
+
 def test_create_project_requires_codex_connection_in_user_chatgpt_mode(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "user_chatgpt")
     repo = ConsoleRepository()
