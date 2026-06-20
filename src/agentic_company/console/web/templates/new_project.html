@@ -2,13 +2,18 @@
 {% block title %}New Project &middot; Agentic Delivery Lab{% endblock %}
 {% block page_title %}New Project{% endblock %}
 {% block content %}
+  <style>
+    .seg-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    .seg-toggle .seg { background: transparent; border: 0; border-radius: 0; min-height: auto; padding: 4px 10px; font-size: 0.72rem; color: var(--muted); cursor: pointer; }
+    .seg-toggle .seg + .seg { border-left: 1px solid var(--border); }
+    .seg-toggle .seg.active { background: var(--blue); color: #fff; font-weight: 600; }
+  </style>
   <form class="panel run-form" method="post" action="/projects">
     <div class="panel-heading">
       <div>
-        <p class="eyebrow">New project</p>
         <h2>Describe what the agent team should build.</h2>
       </div>
-      <button class="primary" type="submit" {% if not credential %}disabled title="Add your OpenAI key in Settings first."{% endif %}>Start Project</button>
+      <button class="primary" type="submit" data-start-btn data-key-ok="{{ 'true' if credential else 'false' }}" {% if not credential %}disabled title="Add your OpenAI key in Settings first."{% endif %}>Start Project</button>
     </div>
     {% if error %}
       <div class="alert compact-alert">{{ error }}</div>
@@ -21,9 +26,8 @@
       <details class="form-section form-section-wide" open>
         <summary>
           <span>Project</span>
-          <small>Name, type, and scope</small>
+          <small data-project-summary>{{ form_values.name or "Untitled" }}</small>
         </summary>
-        <p class="section-hint">Name the idea and set the delivery shape.</p>
         <div class="form-grid form-grid-three">
           <label>Project name<input name="name" placeholder="Team Task Tracker" value="{{ form_values.name }}" required></label>
           <label>Project type
@@ -87,13 +91,6 @@
           <span>Build settings</span>
           <small data-build-summary>{{ form_values.codex_model }} · {{ form_values.codex_reasoning|title }} · {{ form_values.service_tier|title }}</small>
         </summary>
-        <p class="section-hint">Codex uses your OpenAI key to build and publish.</p>
-        <p
-          class="section-hint provider-readiness cost-guidance compact-chip"
-          title="OpenAI usage depends on project size, model choice, speed, retries, and deployment work. For demos, keep requests small and monitor usage."
-        >
-          <span class="status-dot cost-dot"></span> Cost guidance
-        </p>
         <div class="form-grid form-grid-three">
           <label>Build model
             <select name="codex_model">
@@ -120,22 +117,49 @@
       </details>
       <details class="form-section">
         <summary>
-          <span>Delivery board</span>
-          <small>{{ "GitHub Projects" if form_values.board_adapter == "github" else "Internal board" }}</small>
+          <span>Delivery</span>
+          <small data-deliver-summary>Local</small>
         </summary>
-        <p class="section-hint">Mirror work items onto a kanban board. Internal keeps everything in ADL; GitHub creates a fresh Project board for this project and mirrors issues, status columns, sprints and PRs onto it.</p>
-        <div class="form-grid form-grid-two">
-          <label>Board
-            <select name="board_adapter">
-              <option value="internal" {{ "selected" if form_values.board_adapter != "github" else "" }}>Internal (default)</option>
-              <option value="github" {{ "selected" if form_values.board_adapter == "github" else "" }}>GitHub Projects</option>
-            </select>
-          </label>
-          <label>Repository <small>owner/repo</small>
-            <input name="repository" placeholder="AntonLiutov/my-app" value="{{ form_values.repository }}">
-          </label>
+        <div class="seg-toggle" role="tablist">
+          <button type="button" class="seg active" data-deliver-mode="local">Local</button>
+          <button type="button" class="seg" data-deliver-mode="github">GitHub</button>
         </div>
-        <p class="section-hint">A new board is created automatically for this project. The owner defaults to the repository owner.</p>
+        <input type="hidden" name="deliver_mode" value="local" data-deliver-input>
+        <div data-deliver-panel="github" data-logged-in="{{ 'true' if github_connected else 'false' }}" hidden style="margin-top:12px;">
+          {% if github_connected %}
+          <div class="seg-toggle" style="margin-bottom:10px;">
+            <button type="button" class="seg active" data-repo-mode="existing">Existing</button>
+            <button type="button" class="seg" data-repo-mode="new">New</button>
+          </div>
+          <input type="hidden" name="repo_mode" value="existing" data-repo-input>
+          <div data-repo-panel="existing">
+            <select name="repository" data-repo-existing>
+              <option value="">Choose a repo…</option>
+              {% for r in github_repos %}
+              <option value="{{ r.full_name }}">{{ r.full_name }}{{ " 🔒" if r.private else "" }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div data-repo-panel="new" hidden>
+            <input name="new_repo_name" placeholder="repo name" data-repo-new>
+            <div class="seg-toggle" style="margin-top:9px;">
+              <button type="button" class="seg active" data-vis-mode="private">Private</button>
+              <button type="button" class="seg" data-vis-mode="public">Public</button>
+            </div>
+            <input type="hidden" name="new_repo_private" value="1" data-vis-input>
+          </div>
+          <p class="section-hint" style="margin-top:8px;">@{{ github_login }} · <a href="/settings" style="color:var(--blue);text-decoration:underline;">manage</a></p>
+          {% elif github_configured %}
+          <a href="/auth/github/login?next=/projects/new" style="display:inline-flex;align-items:center;gap:8px;background:#24292f;color:#fff;font-weight:600;font-size:14px;padding:9px 16px;border-radius:8px;text-decoration:none;">
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="#fff" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+            Login with GitHub
+          </a>
+          {% else %}
+          <label>Repository <small>owner/repo</small>
+            <input name="repository" placeholder="owner/repo" value="{{ form_values.repository }}">
+          </label>
+          {% endif %}
+        </div>
       </details>
     </div>
     <label class="full">Product request
@@ -145,7 +169,6 @@
     <div class="button-row">
       <button class="secondary" type="button" data-format-target="request-text">Format with AI</button>
       <button class="secondary hidden" type="button" data-edit-target="request-text">Edit request</button>
-      <span class="sponsor-chip"><img class="sponsor-icon" src="/static/sponsors/gemini.svg" alt="">Built with Gemini API</span>
     </div>
     <div id="format-preview" class="preview-panel hidden"></div>
   </form>

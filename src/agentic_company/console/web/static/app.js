@@ -491,7 +491,70 @@ function escapeHtml(value) {
   }[match]));
 }
 
+function setupRepoDelivery() {
+  const delivSegs = document.querySelectorAll("[data-deliver-mode]");
+  const delivInput = document.querySelector("[data-deliver-input]");
+  if (!delivSegs.length || !delivInput) return;
+  const githubPanel = document.querySelector('[data-deliver-panel="github"]');
+  const summary = document.querySelector("[data-deliver-summary]");
+  const loggedIn = Boolean(githubPanel && githubPanel.dataset.loggedIn === "true");
+  const repoSegs = document.querySelectorAll("[data-repo-mode]");
+  const repoInput = document.querySelector("[data-repo-input]");
+  const panelExisting = document.querySelector('[data-repo-panel="existing"]');
+  const panelNew = document.querySelector('[data-repo-panel="new"]');
+  const existingSel = document.querySelector("[data-repo-existing]");
+  const newInput = document.querySelector("[data-repo-new]");
+  const startBtn = document.querySelector("[data-start-btn]");
+
+  function validate() {
+    if (!startBtn) return;
+    const keyOk = startBtn.dataset.keyOk === "true";
+    let repoOk = true;
+    if (delivInput.value === "github" && loggedIn && repoInput) {
+      repoOk = repoInput.value === "new"
+        ? Boolean(newInput && newInput.value.trim())
+        : Boolean(existingSel && existingSel.value);
+    }
+    startBtn.disabled = !(keyOk && repoOk);
+  }
+  function setRepoMode(mode) {
+    if (repoInput) repoInput.value = mode;
+    repoSegs.forEach((b) => b.classList.toggle("active", b.dataset.repoMode === mode));
+    if (panelExisting) panelExisting.hidden = mode !== "existing";
+    if (panelNew) panelNew.hidden = mode !== "new";
+    if (mode !== "existing" && existingSel) existingSel.value = "";
+    if (mode !== "new" && newInput) newInput.value = "";
+    validate();
+  }
+  function setDeliverMode(mode) {
+    delivInput.value = mode;
+    delivSegs.forEach((b) => b.classList.toggle("active", b.dataset.deliverMode === mode));
+    if (githubPanel) githubPanel.hidden = mode !== "github";
+    if (summary) summary.textContent = mode === "github" ? "GitHub" : "Local";
+    if (mode !== "github") {
+      if (existingSel) existingSel.value = "";
+      if (newInput) newInput.value = "";
+    }
+    validate();
+  }
+  const visSegs = document.querySelectorAll("[data-vis-mode]");
+  const visInput = document.querySelector("[data-vis-input]");
+  visSegs.forEach((b) =>
+    b.addEventListener("click", () => {
+      if (visInput) visInput.value = b.dataset.visMode === "private" ? "1" : "";
+      visSegs.forEach((x) => x.classList.toggle("active", x === b));
+    })
+  );
+  delivSegs.forEach((b) => b.addEventListener("click", () => setDeliverMode(b.dataset.deliverMode)));
+  repoSegs.forEach((b) => b.addEventListener("click", () => setRepoMode(b.dataset.repoMode)));
+  if (existingSel) existingSel.addEventListener("change", validate);
+  if (newInput) newInput.addEventListener("input", validate);
+  if (repoSegs.length) setRepoMode("existing");
+  setDeliverMode("local");
+}
+
 setupSidebarToggle();
+setupRepoDelivery();
 setupScrollTop();
 setupProviderModelSelectors();
 setupNewProjectSummaries();

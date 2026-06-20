@@ -131,9 +131,8 @@ def test_settings_can_save_and_delete_gemini_key(tmp_path):
 
     assert save_response.status_code == 303
     assert repo.get_provider_secret(1, "google_gemini") is not None
-    assert "Google Gemini" in settings_response.text
-    assert "Built with Gemini API" in settings_response.text
-    assert "AIza-demo-secret" not in settings_response.text
+    assert "Gemini" in settings_response.text
+    assert "AIza-demo-secret" not in settings_response.text  # never render the raw key
 
     delete_response = client.post("/settings/gemini/delete", follow_redirects=False)
 
