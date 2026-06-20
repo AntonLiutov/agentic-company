@@ -641,3 +641,26 @@ def _db_repo(tmp_path: Path, monkeypatch) -> ConsoleRepository:
     repo = ConsoleRepository()
     repo.init_schema()
     return repo
+
+
+def test_codex_execution_lock_reclaims_a_stale_lock(tmp_path: Path):
+    # A live lock blocks a duplicate; a lock left behind by a crashed run (old mtime) is
+    # reclaimed, so a recovery run doesn't wait the whole timeout for a dead lock.
+    import os
+    import time
+
+    from agentic_company.integrations.codex.runner import _try_acquire_codex_execution_lock
+
+    lock = tmp_path / "exec.lock"
+    fd1 = _try_acquire_codex_execution_lock(lock, stale_after_seconds=3600)
+    assert fd1 is not None
+    # a fresh, live lock is NOT reclaimed
+    assert _try_acquire_codex_execution_lock(lock, stale_after_seconds=3600) is None
+    os.close(fd1)
+    # age it past the staleness window -> reclaimable
+    old = time.time() - 7200
+    os.utime(lock, (old, old))
+    fd2 = _try_acquire_codex_execution_lock(lock, stale_after_seconds=3600)
+    assert fd2 is not None
+    os.close(fd2)
+    lock.unlink()

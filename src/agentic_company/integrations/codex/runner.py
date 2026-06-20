@@ -299,7 +299,9 @@ def stream_codex_exec_to_log(
     )
     lock_handle: int | None = None
     if lock_path is not None:
-        lock_handle = _try_acquire_codex_execution_lock(lock_path)
+        lock_handle = _try_acquire_codex_execution_lock(
+            lock_path, stale_after_seconds=timeout_seconds + 600
+        )
         if lock_handle is None:
             _record_duplicate_execution_suppressed(
                 trace_run_dir=trace_run_dir,
@@ -440,11 +442,39 @@ def _codex_execution_lock_path(
     return lock_dir / f"{safe_id}.lock"
 
 
-def _try_acquire_codex_execution_lock(lock_path: Path) -> int | None:
+def _try_acquire_codex_execution_lock(
+    lock_path: Path, *, stale_after_seconds: int = 7200
+) -> int | None:
+    """Acquire the per-execution lock, reclaiming a stale one left by a crashed run.
+
+    The lock is an O_EXCL file stamped with pid+time. A hard kill (OOM/SIGKILL) leaves
+    it behind; without reclaim a recovery run would wait the full timeout for a dead
+    lock. If the existing lock is older than ``stale_after_seconds`` (safely beyond any
+    single codex exec), we delete and re-create it. Returns the fd, or None on real
+    contention."""
     try:
-        return os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
-        return None
+        if not _lock_is_stale(lock_path, stale_after_seconds):
+            return None
+        try:
+            lock_path.unlink()
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except (OSError, FileExistsError):
+            return None  # someone else reclaimed it first — treat as live
+    try:
+        os.write(fd, f"{os.getpid()}\n{time.time()}\n".encode())
+    except OSError:
+        pass
+    return fd
+
+
+def _lock_is_stale(lock_path: Path, stale_after_seconds: int) -> bool:
+    try:
+        age = time.time() - lock_path.stat().st_mtime
+    except OSError:
+        return False
+    return age > max(60, stale_after_seconds)
 
 
 def _wait_for_codex_execution_unlock(lock_path: Path, timeout_seconds: int) -> bool:
