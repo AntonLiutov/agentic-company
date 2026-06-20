@@ -239,6 +239,17 @@ def request_codex_execution_stop(run_dir: Path) -> Path:
     return path
 
 
+def prepare_codex_execution_continue(run_dir: Path) -> None:
+    """Clear durable stop sentinels and make the run startable again."""
+
+    for marker in (run_dir / ".codex-execution.stop", run_dir / ".stop-requested"):
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            continue
+    _record_process_state(run_dir, CODEX_PROCESS, "continued")
+
+
 def agent_runtime_env_path(run_dir: Path) -> Path:
     return run_dir / AGENT_RUNTIME_ENV_RELATIVE_PATH
 

@@ -950,6 +950,57 @@ def test_restart_project_creates_new_run_from_saved_request(tmp_path, monkeypatc
     assert len(repo.runs_for_project(project.id, user.id)) == 2
 
 
+def test_continue_project_reuses_existing_run_dir(tmp_path, monkeypatch):
+    repo = ConsoleRepository()
+    repo.init_schema()
+    user = repo.create_user(
+        email="continue@example.test",
+        username="continue",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Continuable",
+        request_text="Build a tiny app",
+        mode="simple_prototype",
+        complexity="simple",
+    )
+    run_dir = tmp_path / "runs" / "same-run"
+    run_dir.mkdir(parents=True)
+    (run_dir / ".codex-execution.stop").write_text("stop\n", encoding="utf-8")
+    (run_dir / ".stop-requested").write_text("stop\n", encoding="utf-8")
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid=run_dir.name,
+        run_dir=run_dir,
+        status="stopped",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+    repo.set_run_control_intent(run.id, intent="cancel", reason="Stopped by user.")
+    repo.upsert_console_process_state(run.id, process_name="codex_execution", status="failed")
+    started: list[Path] = []
+    monkeypatch.setattr(
+        "agentic_company.console.web.app.start_codex_execution",
+        lambda path: started.append(path) or 1,
+    )
+    app = create_app(repo)
+    client = TestClient(app)
+    client.cookies.set("agentic_console_session", repo.create_session(user.id))
+
+    response = client.post(f"/projects/{project.id}/continue", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert started == [run_dir]
+    assert not (run_dir / ".codex-execution.stop").exists()
+    assert not (run_dir / ".stop-requested").exists()
+    updated = repo.get_run_by_uid(run_dir.name)
+    assert updated is not None
+    assert updated.id == run.id
+    assert updated.status == "running"
+    assert repo.get_console_process_state(run.id, "codex_execution").status == "continued"
+
+
 def test_restart_button_visible_for_blocked_private_run(tmp_path):
     repo = ConsoleRepository()
     repo.init_schema()

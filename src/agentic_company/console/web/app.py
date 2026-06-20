@@ -23,6 +23,7 @@ from agentic_company.console.support import (
     create_console_run,
     read_env_keys,
     repo_root,
+    prepare_codex_execution_continue,
     request_codex_execution_stop,
     start_codex_execution,
     write_target_env,
@@ -477,6 +478,41 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             repo.update_project_status(project.id, "failed_to_start")
             raise
         repo.update_project_status(project.id, "running")
+        return redirect(f"/projects/{project.id}")
+
+    @app.post("/projects/{project_id}/continue")
+    def continue_project(
+        request: Request,
+        project_id: int,
+        user: CurrentUser,
+    ) -> Response:
+        repo = get_repo(request)
+        project = repo.get_project_for_user(project_id, user.id)
+        if not project or project.visibility == "public_demo" or project.owner_user_id != user.id:
+            raise HTTPException(status_code=403)
+        run = repo.latest_run_for_project(project.id, user.id)
+        if run is None:
+            raise HTTPException(status_code=400, detail="Project has no run to continue.")
+        if _run_status_running(run.status) or _run_delivery_done(run.status):
+            return redirect(f"/projects/{project.id}")
+        codex_error = _codex_start_preflight(repo, user, ignore_project_id=project.id)
+        if codex_error:
+            return redirect("/settings")
+        run_dir = Path(run.run_dir)
+        repo.clear_run_control_intent(
+            run.id,
+            reconcile_status="continued",
+            reconcile_reason="Operator continued the same run.",
+        )
+        prepare_codex_execution_continue(run_dir)
+        repo.update_run_status(run.id, "running")
+        repo.update_project_status(project.id, "running")
+        try:
+            start_codex_execution(run_dir)
+        except Exception:
+            repo.update_run_status(run.id, "failed_to_start")
+            repo.update_project_status(project.id, "failed_to_start")
+            raise
         return redirect(f"/projects/{project.id}")
 
     @app.post("/projects/{project_id}/stop")
@@ -1152,6 +1188,7 @@ def render_workspace(
         "run_running": False,
         "run_completed": False,
         "can_restart": False,
+        "can_continue": False,
         "showcase_ready": False,
         "run_timing": {},
     }
@@ -1222,6 +1259,12 @@ def render_workspace(
                     and project.visibility != "public_demo"
                     and not run_running
                 ),
+                "can_continue": (
+                    project.owner_user_id == user.id
+                    and project.visibility != "public_demo"
+                    and not run_running
+                    and not _run_delivery_done(run.status)
+                ),
                 "showcase_ready": _run_showcase_ready(repo, run),
                 "run_timing": run_timing_from_work_items(
                     work_items,
@@ -1253,6 +1296,13 @@ def _run_status_completed(status: str) -> bool:
     if normalized in {"stopped", "complete", "completed", "failed", "blocked"}:
         return True
     return any(token in normalized for token in ("blocked", "failed", "complete"))
+
+
+def _run_delivery_done(status: str) -> bool:
+    normalized = status.strip().lower()
+    return normalized in {"complete", "completed", "done", "delivery_completed"} or (
+        "completed" in normalized and "blocked" not in normalized and "failed" not in normalized
+    )
 
 
 def _active_owner_label(overview: Any) -> str:
