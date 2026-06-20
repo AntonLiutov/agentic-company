@@ -333,6 +333,19 @@ def get_work_item(run_id: str, work_item_id: str) -> RuntimeWorkItem:
     return _work_item_from_row(row, runtime_run_id=run_id)
 
 
+def work_item_exists(run_id: str, work_item_id: str) -> bool:
+    """True when work_item_id is a real DB card (not a sprint/planning scope id)."""
+    if not work_item_id:
+        return False
+    repo, db_run_id = _repo_and_run(run_id)
+    with repo.connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM work_items WHERE run_id = ? AND work_item_id = ?",
+            (db_run_id, work_item_id),
+        ).fetchone()
+    return row is not None
+
+
 def completed_work_item_ids(run_id: str, sprint_id: str = "") -> list[str]:
     repo, db_run_id = _repo_and_run(run_id)
     params: list[Any] = [db_run_id]
@@ -516,8 +529,9 @@ _AGENT_DISPLAY = {
 }
 # Only these artifact suffixes go on the board: human-facing text we can embed
 # inline. .json is excluded (internal/technical); .png is deferred (nothing to
-# show yet, and a comment can't host a binary anyway).
-_BOARD_ARTIFACT_SUFFIXES = (".md", ".csv", ".mmd")
+# show yet, and a comment can't host a binary anyway). .html is the handoff
+# release report — a comment can't render a page, so we extract its readable text.
+_BOARD_ARTIFACT_SUFFIXES = (".md", ".csv", ".mmd", ".html", ".htm")
 _ARTIFACT_EMBED_LIMIT = 8000  # cap per artifact so a comment stays under GitHub's limit
 # Internal Codex trace — NEVER on a public card. prompt.md = instructions leakage;
 # summary.md = the comment text itself; execution.log/events.jsonl = raw trace.
@@ -597,6 +611,9 @@ def _artifact_section(repo: Any, db_run_id: int, run_uid: str, refs: list[str]) 
         if not text:
             blocks.append(f"- `{ref}`")
             continue
+        is_html = low.endswith((".html", ".htm"))
+        if is_html:  # a comment can't render a page; embed its readable text
+            text = _html_to_text(text) or text
         if len(text) > _ARTIFACT_EMBED_LIMIT:
             text = text[:_ARTIFACT_EMBED_LIMIT] + "\n… (truncated)"
         if low.endswith(".mmd"):  # Mermaid renders natively in a comment
@@ -604,9 +621,31 @@ def _artifact_section(repo: Any, db_run_id: int, run_uid: str, refs: list[str]) 
         elif low.endswith(".csv"):  # render as a native GitHub table, not raw text
             inner = _csv_to_markdown_table(text) or f"```\n{text}\n```"
             blocks.append(f"<details><summary>📄 {name}</summary>\n\n{inner}\n\n</details>")
+        elif is_html:
+            blocks.append(f"<details><summary>📄 {name} (rendered)</summary>\n\n{text}\n\n</details>")
         else:  # .md
             blocks.append(f"<details><summary>📄 {name}</summary>\n\n{text}\n\n</details>")
     return "\n\n**Artifacts**\n\n" + "\n\n".join(blocks) if blocks else ""
+
+
+def _html_to_text(html: str) -> str:
+    """Extract readable text from an HTML report for embedding in a card comment."""
+    import html as html_mod
+    import re
+
+    text = html or ""
+    text = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", text)  # drop code/style
+    text = re.sub(r"(?is)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?is)</(p|div|h[1-6]|li|tr|table|ul|ol|section)>", "\n", text)
+    text = re.sub(r"(?is)<li\b[^>]*>", "- ", text)
+    text = re.sub(r"(?is)<[^>]+>", " ", text)  # strip remaining tags
+    text = html_mod.unescape(text)
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
+    out: list[str] = []
+    for line in lines:
+        if line or (out and out[-1]):  # collapse runs of blank lines
+            out.append(line)
+    return "\n".join(out).strip()
 
 
 def _csv_to_markdown_table(text: str, *, max_rows: int = 60) -> str:
@@ -662,6 +701,14 @@ def _submit_response_comment(
     """Schedule an agent's final message (+ its artifacts) as a board comment."""
     if not work_item_id or not (content or "").strip():
         return
+    # Sprint/planning-scoped responses carry a correlation id like "sprint-02" or
+    # "company-delivery" — those are not board cards. Only real DB work items get a
+    # comment; otherwise the mirror would raise "Unknown work_item_id" every time.
+    try:
+        if not work_item_exists(run_uid, work_item_id):
+            return
+    except Exception:  # best-effort: never block delivery on a board lookup
+        return
     from agentic_company.platform.mirror_dispatch import submit_mirror
 
     refs = list(artifact_refs or [])
@@ -710,6 +757,89 @@ def mirror_response_comment_now(
         )
     except Exception as exc:  # best-effort: a comment mirror must not break a run
         LOGGER.warning("Response-comment mirror failed (%s): %s", work_item_id, exc)
+
+
+# Coordinator narration (Head / Team Lead) lands on the Sprint Delivery
+# Coordination card (PLAN-04) so the board carries a per-sprint coordination
+# thread — sprint started / delivered / blocked — alongside the specialist cards.
+COORDINATION_CARD_ID = "PLAN-04"
+
+
+def submit_coordinator_comment(
+    run_uid: str,
+    from_agent: str,
+    *,
+    sprint_id: str,
+    action: str,
+    headline: str,
+    detail: str = "",
+    artifact_refs: list[str] | None = None,
+    work_item_id: str = COORDINATION_CARD_ID,
+) -> None:
+    """Schedule a Head/Team Lead coordination note onto the coordination card.
+
+    Best-effort and idempotent (one note per sprint+action), so a Head repair that
+    re-runs the same sprint never double-posts. No-op when the card does not exist.
+    """
+    if not work_item_id or not (headline or "").strip():
+        return
+    try:
+        if not work_item_exists(run_uid, work_item_id):
+            return
+    except Exception:  # best-effort: never block delivery on a board lookup
+        return
+    from agentic_company.platform.mirror_dispatch import submit_mirror
+
+    refs = list(artifact_refs or [])
+    key = f"{work_item_id}:coord:{sprint_id}:{action}"
+    submit_mirror(
+        (run_uid, work_item_id, "coord", key),
+        lambda: mirror_coordinator_comment_now(
+            run_uid, work_item_id, from_agent, sprint_id, headline, detail, refs, key
+        ),
+    )
+
+
+def mirror_coordinator_comment_now(
+    run_uid: str,
+    work_item_id: str,
+    from_agent: str,
+    sprint_id: str,
+    headline: str,
+    detail: str,
+    artifact_refs: list[str],
+    idempotency_key: str,
+) -> None:
+    """Post a coordinator (Head/Team Lead) sprint note onto the coordination card."""
+    if run_uid in _NO_MIRROR_RUNS:
+        return
+    try:
+        from agentic_company.platform.run_mirror import get_run_mirror
+        from agentic_company.ports.board import BoardComment, BoardItem
+
+        repo, db_run_id = _repo_and_run(run_uid)
+        mirror = get_run_mirror(repo, db_run_id)
+        if mirror is None:
+            _NO_MIRROR_RUNS.add(run_uid)
+            return
+        item = get_work_item(run_uid, work_item_id)
+        mirror.mirror_item(
+            BoardItem(work_item_id=work_item_id, title=item.title, body=_issue_body(item))
+        )
+        role = _AGENT_DISPLAY.get(from_agent, from_agent or "Coordinator")
+        label = _sprint_title(sprint_id)
+        header = f"**{role}**" + (f" · {label}" if label else "")
+        parts = [header, "", _clean_comment_content(headline)]
+        clean_detail = _clean_comment_content(detail)
+        if clean_detail:
+            parts += ["", clean_detail]
+        body = "\n".join(parts)
+        body += _artifact_section(repo, db_run_id, run_uid, artifact_refs)
+        mirror.mirror_comment(
+            BoardComment(work_item_id, body, idempotency_key=idempotency_key)
+        )
+    except Exception as exc:  # best-effort: a coordination note must not break a run
+        LOGGER.warning("Coordinator-comment mirror failed (%s): %s", work_item_id, exc)
 
 
 def _sprint_title(sprint_id: str) -> str:
@@ -1220,8 +1350,17 @@ def record_artifact_link(
     return record
 
 
-def artifact_links_for_paths(run_id: str, paths: list[str]) -> tuple[Any, ...]:
-    """Return DB-backed artifact links for explicit artifact IDs or run-local paths."""
+def artifact_links_for_paths(
+    run_id: str, paths: list[str], *, strict: bool = True
+) -> tuple[Any, ...]:
+    """Return DB-backed artifact links for explicit artifact IDs or run-local paths.
+
+    ``strict=True`` (default) enforces the "explicit refs must be registered" contract
+    for LLM-cited artifact refs. ``strict=False`` is for building a tool's OWN response
+    output_artifacts: a self-produced ref whose file was never written (e.g. a Codex
+    review that finished without a summary.md) is dropped, not raised — otherwise the
+    phantom ref crashes the whole AgentExecutor and blocks the sprint.
+    """
 
     repo, db_run_id = _repo_and_run(run_id)
     run_row = _run_row(repo, run_id)
@@ -1244,7 +1383,7 @@ def artifact_links_for_paths(run_id: str, paths: list[str]) -> tuple[Any, ...]:
             missing.append(path)
         else:
             resolved.append(record)
-    if missing:
+    if missing and strict:
         raise ValueError(
             "Artifact refs must be registered in DB before use: " + ", ".join(sorted(missing))
         )
@@ -1686,6 +1825,15 @@ def _effective_transition_status(
         and owner_agent == "qa-agent"
         and tool_name in {"run_qa", "run_post_deploy_qa"}
     ):
+        return requested
+    if (
+        current == "in_progress"
+        and requested == "done"
+        and tool_name in {"complete_sprint", "run_team_lead", "complete_delivery"}
+    ):
+        # The coordination card (PLAN-04) never passes through review, so the normal
+        # state machine cannot close it. These completion tools only request 'done'
+        # once the final sprint / delivery is genuinely complete, so honor it directly.
         return requested
     if not _transition_allowed(current, requested):
         return current

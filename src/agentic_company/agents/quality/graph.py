@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, NotRequired, Protocol, TypedDict, cast
 
@@ -169,6 +170,40 @@ def _write_quality_execution_request(
     work_item: dict[str, Any],
 ) -> None:
     work_item_id = str(work_item["work_item_id"])
+    instructions = [
+        (
+            "Read the current work item, upstream planning artifacts, "
+            "implementation summary, and QA evidence before testing."
+        ),
+        (
+            "Validate the assigned work item or release target against its "
+            "acceptance criteria and definition of done."
+        ),
+        "Keep QA focused on evidence and do not perform implementation work.",
+        "Return explicit artifact refs, test evidence, defects, and QA status.",
+    ]
+    repo_ctx = _run_repo_context(str(delivery_state["run_id"]))
+    if repo_ctx:
+        pr = _work_item_pr(str(delivery_state["run_id"]), work_item_id)
+        branch = f"adl/{work_item_id.lower()}"
+        pr_ref = (
+            pr.get("url")
+            if pr
+            else f"the PR for branch `{branch}` (find it with `gh pr list --head {branch}`)"
+        )
+        instructions.append(
+            f"A git repository is connected for this run: {repo_ctx['repository']} "
+            f"(base branch `{repo_ctx['base_branch']}`). This work item is delivered as a PULL "
+            f"REQUEST on branch `{branch}` — YOU own reviewing and merging it. Follow the "
+            "git-pr-workflow skill (Reviewer section): ORIENT first — `git remote -v`, "
+            "`git status`, `git branch --show-current` — to confirm the repo and branch and that "
+            f"you are testing what is pushed. Open and review {pr_ref} (`gh pr diff`) against the "
+            "running app, and verify the pushed branch matches the code you tested (never review "
+            "or merge stale or unpushed code). If QA PASSES you MUST merge it: "
+            "`gh pr merge --squash --delete-branch` — merging is a REQUIRED step of a passing QA, "
+            "not optional. If it FAILS, leave ONE general PR comment with the defects "
+            "(`gh pr comment`) and do NOT merge."
+        )
     request = build_execution_request_payload(
         delivery_state,
         agent_id=QUALITY_AGENT_ID,
@@ -182,18 +217,7 @@ def _write_quality_execution_request(
             f"08-qa-report-{work_item_id}.md",
             f"qa/results-{work_item_id}.json",
         ],
-        instructions=[
-            (
-                "Read the current work item, upstream planning artifacts, "
-                "implementation summary, and QA evidence before testing."
-            ),
-            (
-                "Validate the assigned work item or release target against its "
-                "acceptance criteria and definition of done."
-            ),
-            "Keep QA focused on evidence and do not perform implementation work.",
-            "Return explicit artifact refs, test evidence, defects, and QA status.",
-        ],
+        instructions=instructions,
         constraints=[
             (
                 "Do not change product code unless the upstream request explicitly asks "
@@ -266,6 +290,23 @@ def _apply_quality_result(state: QualityAgentGraphState) -> QualityAgentGraphSta
 
     delivery_state = state["delivery_state"]
     status = state.get("status") or _normalize_qa_status(result.status)
+    pr_merge_blocker = ""
+    if work_item_id and status == "passed":
+        merge_result = _merge_work_item_pr_after_qa_pass(
+            str(delivery_state["run_id"]), str(work_item_id)
+        )
+        if not merge_result.ok:
+            status = "failed"
+            pr_merge_blocker = merge_result.message
+            result = replace(
+                result,
+                status="qa_failed",
+                blocking_findings=[*result.blocking_findings, merge_result.message],
+                recommended_next_action=(
+                    "Resolve the pull request merge blocker, then rerun QA for the same "
+                    "work item."
+                ),
+            )
     event_log = Path(state["run_dir"])
     artifact = (
         _primary_report_artifact(str(work_item_id), result.output_artifacts)
@@ -309,7 +350,37 @@ def _apply_quality_result(state: QualityAgentGraphState) -> QualityAgentGraphSta
             updated = _mark_feature_provider_limited(updated, work_item_id, result)
         else:
             updated = _mark_feature_failed(updated, work_item_id)
+        if pr_merge_blocker:
+            updated["status"] = "qa_pr_merge_blocked"
+            updated["blockers"] = [*updated.get("blockers", []), pr_merge_blocker]
     return {**state, "delivery_state": updated}
+
+
+def _work_item_pr(run_id: str, work_item_id: str) -> dict[str, Any] | None:
+    """The PR recorded for this work item, so QA can reference its url, or None."""
+    try:
+        from agentic_company.platform.delivery_pr import get_work_item_pr
+
+        return get_work_item_pr(run_id, work_item_id)
+    except Exception:
+        return None
+
+
+def _run_repo_context(run_id: str) -> dict[str, str] | None:
+    """Connected repo info ({repository, base_branch}) so QA always gets its PR duties."""
+    try:
+        from agentic_company.platform.delivery_pr import run_repo_context
+
+        return run_repo_context(run_id)
+    except Exception:
+        pass
+
+
+def _merge_work_item_pr_after_qa_pass(run_id: str, work_item_id: str):
+    """Merge the recorded PR for a QA-passed work item, when a repo is connected."""
+    from agentic_company.platform.delivery_pr import merge_work_item_pr_after_qa_pass
+
+    return merge_work_item_pr_after_qa_pass(run_id, work_item_id)
 
 
 def _quality_user_prompt(state: DeliveryState, work_item_id: str | None) -> str:

@@ -52,7 +52,8 @@ class LangChainTeamLeadExecutor:
             workers=workers,
             max_steps=max_steps,
         )
-        try:
+
+        def _invoke(force_tool_call: bool) -> None:
             self.runtime.invoke(
                 LangChainAgentRequest(
                     agent_id="team-lead-agent",
@@ -60,6 +61,7 @@ class LangChainTeamLeadExecutor:
                     user_prompt=build_team_lead_executor_prompt(
                         delivery_state=toolbox.delivery_state,
                         sprint=sprint,
+                        force_tool_call=force_tool_call,
                     ),
                     tools=langchain_tools(toolbox),
                     delivery_state=delivery_state,
@@ -73,6 +75,19 @@ class LangChainTeamLeadExecutor:
                     ),
                 )
             )
+
+        try:
+            _invoke(force_tool_call=False)
+            # Defense-in-depth: a single empty model turn must not sink a sprint that
+            # still has pending DB work. Re-invoke once with a forcing directive before
+            # the no-tool-call path escalates to a hard sprint block.
+            if (
+                not toolbox.tool_calls_made()
+                and "team_lead_sprint_handoff_ready"
+                not in str(toolbox.delivery_state.get("status") or "")
+                and _sprint_has_pending_work(sprint)
+            ):
+                _invoke(force_tool_call=True)
         except MissingAgentRuntimeConfig:
             toolbox.block_sprint(
                 reason="OPENAI_API_KEY is required for Team Lead AgentExecutor decisions.",
@@ -106,10 +121,25 @@ class LangChainTeamLeadExecutor:
         return toolbox.result()
 
 
+def _sprint_has_pending_work(sprint: dict[str, Any]) -> bool:
+    """True when the seeded DB board still has todo/blocked/in-progress items."""
+    completion = sprint.get("completion_state") or {}
+    if completion:
+        return (
+            int(completion.get("pending_items", 0)) > 0
+            or int(completion.get("blocked_items", 0)) > 0
+        )
+    return any(
+        str(item.get("status")) in {"todo", "blocked", "in_progress", "review"}
+        for item in sprint.get("work_items", []) or []
+    )
+
+
 def build_team_lead_executor_prompt(
     *,
     delivery_state: DeliveryState,
     sprint: dict[str, Any],
+    force_tool_call: bool = False,
 ) -> str:
     context = {
         "mission": (
@@ -287,6 +317,21 @@ def build_team_lead_executor_prompt(
             "been exhausted.",
         ],
     }
+    if force_tool_call:
+        pending = ", ".join(
+            str(item.get("work_item_id"))
+            for item in sprint.get("work_items", []) or []
+            if str(item.get("status")) in {"todo", "blocked", "in_progress", "review"}
+        )
+        context["0_critical_directive"] = (
+            "Your previous turn produced no tool call. You MUST act by calling a tool now. "
+            "This sprint still has pending DB work items"
+            + (f": {pending}." if pending else ".")
+            + " Call inspect_sprint_status first to read the sprint board, then delegate the "
+            "next pending work item to its owner. Do not reply with prose, and do not assume "
+            "the sprint is complete from prior-sprint gate fields in delivery_state "
+            "(qa_status, deployment_status, public_url may belong to an earlier sprint)."
+        )
     return json.dumps(context, indent=2, sort_keys=True)
 
 

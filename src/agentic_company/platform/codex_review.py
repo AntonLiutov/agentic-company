@@ -131,6 +131,12 @@ class CodexReviewRunner:
         status = "reviewed" if completed.returncode == 0 else "failed"
         if not content:
             content = "Codex review produced no response."
+        # Codex can finish WITHOUT writing summary.md (it falls back to stdout above).
+        # Persist the captured content so the summary artifact is a REAL file — otherwise
+        # the cited summary_artifact ref is a phantom that trips downstream DB-registration
+        # validation and can crash the coordinator executor. Fix at the source.
+        if not summary_path.exists():
+            summary_path.write_text(content, encoding="utf-8")
         codex_thread_id = extract_codex_thread_id(raw_events_path) or request.codex_resume_thread_id
         summary_artifact = summary_path.relative_to(request.run_dir).as_posix()
         log_artifact = log_path.relative_to(request.run_dir).as_posix()

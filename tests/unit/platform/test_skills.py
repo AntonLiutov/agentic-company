@@ -1,5 +1,10 @@
+from pathlib import Path
+
+import pytest
+
 from agentic_company.agents.head.contracts import HEAD_TOOL_CONTRACT_REGISTRY
 from agentic_company.agents.team_lead.contracts import TEAM_LEAD_TOOL_CONTRACT_REGISTRY
+
 from agentic_company.platform.skills import (
     DEFAULT_SKILL_CATALOG,
     KNOWN_ARTIFACT_TYPES,
@@ -7,6 +12,8 @@ from agentic_company.platform.skills import (
     KNOWN_RISK_LEVELS,
     KNOWN_VISIBILITIES,
     SKILL_CATALOG_DIR,
+    applicable_skills_for_agent,
+    provision_native_skills,
     render_skill_instructions,
     select_skills_for_agent,
 )
@@ -26,6 +33,7 @@ def test_skill_catalog_loads_initial_skills_with_unique_ids():
         "release-reporting",
         "repair-loop",
         "screenshot-review",
+        "git-pr-workflow",
     }
 
     assert set(DEFAULT_SKILL_CATALOG.ids()) == expected
@@ -85,8 +93,12 @@ def test_default_skill_selection_by_agent():
     assert _ids("business-analyst-agent", "business_analysis") == ["requirements-analysis"]
     assert _ids("architect-agent", "architecture") == ["architecture-design"]
     assert _ids("project-manager-agent", "project_management") == ["sprint-planning"]
-    assert _ids("fullstack-agent", "fullstack") == ["frontend-build", "web-app-aesthetics"]
-    assert _ids("deployment-agent", "deployment") == ["deployment-check"]
+    assert _ids("fullstack-agent", "fullstack") == [
+        "frontend-build",
+        "git-pr-workflow",
+        "web-app-aesthetics",
+    ]
+    assert _ids("deployment-agent", "deployment") == ["deployment-check", "git-pr-workflow"]
     assert _ids("documentation-handoff-agent", "handoff") == ["release-reporting"]
     assert _ids("team-lead-agent", "team_lead") == ["repair-loop"]
 
@@ -94,6 +106,7 @@ def test_default_skill_selection_by_agent():
 def test_qa_selects_smoke_placeholder_and_screenshot_skills():
     assert _ids("qa-agent", "qa") == [
         "browser-smoke-qa",
+        "git-pr-workflow",
         "no-placeholder-check",
         "screenshot-review",
     ]
@@ -108,6 +121,7 @@ def test_repair_context_adds_repair_loop_for_specialist():
 
     assert [item.skill_id for item in selection.selections] == [
         "frontend-build",
+        "git-pr-workflow",
         "web-app-aesthetics",
         "repair-loop",
     ]
@@ -126,6 +140,147 @@ def test_render_skill_instructions_contains_selected_skills_only():
     assert "Contract hints:" in rendered
     assert "passed_with_limited_visual_evidence" in rendered
     assert "do not assume the full skill catalog" in rendered
+
+
+def test_provision_native_skills_writes_codex_discoverable_catalog(tmp_path):
+    # Codex auto-discovers skills from `<workspace>/.agents/skills/<id>/SKILL.md` and
+    # triggers them by their `description` (progressive disclosure). We provision the
+    # WHOLE catalog there verbatim — every authored SKILL.md, frontmatter intact.
+    skills_root = provision_native_skills(tmp_path)
+
+    assert skills_root == tmp_path / ".agents" / "skills"
+    for skill in DEFAULT_SKILL_CATALOG.all():
+        native = skills_root / skill.skill_id / "SKILL.md"
+        assert native.is_file(), f"{skill.skill_id} not provisioned for Codex discovery"
+        text = native.read_text(encoding="utf-8")
+        # Codex-native frontmatter: name + description are what it reads first.
+        frontmatter = text.split("---", 2)[1]
+        assert "name:" in frontmatter and "description:" in frontmatter
+        # It is the authored file verbatim (full playbook body present), NOT a sidecar.
+        assert text == Path(skill.source_path).read_text(encoding="utf-8")
+    # the ADL sidecar (adl.yaml) is internal — it must NOT be shipped into Codex's path
+    assert not list(skills_root.rglob("adl.yaml"))
+
+
+def test_provision_native_skills_is_idempotent_and_refreshes(tmp_path):
+    first = provision_native_skills(tmp_path)
+    qa = first / "browser-smoke-qa" / "SKILL.md"
+    qa.write_text("STALE", encoding="utf-8")  # simulate a stale copy
+
+    provision_native_skills(tmp_path)  # re-provision refreshes verbatim, never raises
+
+    assert qa.read_text(encoding="utf-8") != "STALE"
+
+
+def test_each_agent_resolves_to_its_own_scoped_skills():
+    # Per-role applicability is the contract Codex's description-triggering enforces at
+    # runtime: the builder gets the styling skill, never a QA-only one.
+    fullstack = [s.skill_id for s in applicable_skills_for_agent("fullstack-agent")]
+    assert "web-app-aesthetics" in fullstack and "frontend-build" in fullstack
+    assert "browser-smoke-qa" not in fullstack  # a QA-only skill never leaks in
+
+    # an agent with no applicable skills resolves to nothing (no noise)
+    assert applicable_skills_for_agent("nonexistent-agent") == ()
+
+
+def test_codex_worker_agent_ids_resolve_to_their_planner_skills():
+    # Codex workers run under *-codex-agent ids that differ from the planner ids
+    # skills target (qa-codex-agent vs qa-agent). Applicability MUST still resolve, or
+    # QA/Deployment/Handoff workers silently get zero skills — the exact bug the
+    # phase-2 analysis caught (the smoke harness used planner ids and missed it).
+    from agentic_company.agents.deployment.codex_cli import DEPLOYMENT_CODEX_AGENT_ID
+    from agentic_company.agents.handoff.codex_cli import HANDOFF_CODEX_AGENT_ID
+    from agentic_company.agents.quality.codex_cli import QUALITY_CODEX_AGENT_ID
+
+    qa = [s.skill_id for s in applicable_skills_for_agent(QUALITY_CODEX_AGENT_ID)]
+    assert "git-pr-workflow" in qa and "browser-smoke-qa" in qa
+
+    dep = [s.skill_id for s in applicable_skills_for_agent(DEPLOYMENT_CODEX_AGENT_ID)]
+    assert "git-pr-workflow" in dep and "deployment-check" in dep
+
+    hand = [s.skill_id for s in applicable_skills_for_agent(HANDOFF_CODEX_AGENT_ID)]
+    assert "release-reporting" in hand
+
+
+def _runtime_specialist_skill_map():
+    """The EXACT trace_agent_id each specialist Codex worker passes to the runner,
+    mapped to a skill it MUST carry. This is the contract the whole skill-delivery
+    redesign rests on — if any of these resolves to zero skills, that agent silently
+    loses its playbook (the bug that stopped QA from merging)."""
+    from agentic_company.agents.architecture.codex_cli import ARCHITECT_AGENT_ID
+    from agentic_company.agents.business_analysis.codex_cli import BUSINESS_ANALYST_AGENT_ID
+    from agentic_company.agents.deployment.codex_cli import DEPLOYMENT_CODEX_AGENT_ID
+    from agentic_company.agents.handoff.codex_cli import HANDOFF_CODEX_AGENT_ID
+    from agentic_company.agents.project_manager.codex_cli import PROJECT_MANAGER_AGENT_ID
+    from agentic_company.agents.quality.codex_cli import QUALITY_CODEX_AGENT_ID
+
+    return {
+        BUSINESS_ANALYST_AGENT_ID: "requirements-analysis",
+        ARCHITECT_AGENT_ID: "architecture-design",
+        PROJECT_MANAGER_AGENT_ID: "sprint-planning",
+        "fullstack-agent": "frontend-build",  # fullstack passes request.agent_id
+        QUALITY_CODEX_AGENT_ID: "browser-smoke-qa",
+        DEPLOYMENT_CODEX_AGENT_ID: "deployment-check",
+        HANDOFF_CODEX_AGENT_ID: "release-reporting",
+    }
+
+
+@pytest.mark.parametrize("runtime_id,must_have", list(_runtime_specialist_skill_map().items()))
+def test_every_specialist_codex_worker_loads_its_skills(runtime_id, must_have):
+    skills = [s.skill_id for s in applicable_skills_for_agent(runtime_id)]
+    assert must_have in skills, f"{runtime_id} is MISSING {must_have}; got {skills}"
+
+
+def test_all_pr_producing_agents_carry_git_pr_workflow_at_runtime():
+    # The agents that branch/commit/open/merge PRs must ALL carry git-pr-workflow under
+    # their RUNTIME id — otherwise they cannot do any git/PR work (e.g. QA cannot merge).
+    from agentic_company.agents.deployment.codex_cli import DEPLOYMENT_CODEX_AGENT_ID
+    from agentic_company.agents.quality.codex_cli import QUALITY_CODEX_AGENT_ID
+
+    for rid in ("fullstack-agent", QUALITY_CODEX_AGENT_ID, DEPLOYMENT_CODEX_AGENT_ID):
+        skills = [s.skill_id for s in applicable_skills_for_agent(rid)]
+        assert "git-pr-workflow" in skills, f"{rid} cannot do PR/git work; got {skills}"
+
+
+def test_qa_runtime_worker_can_review_and_merge():
+    # Direct regression for "QA не смерджил": the QA worker (runtime id) carries BOTH the
+    # browser QA skill AND the PR workflow, and that workflow instructs merge-on-pass.
+    from agentic_company.agents.quality.codex_cli import QUALITY_CODEX_AGENT_ID
+
+    skills = [s.skill_id for s in applicable_skills_for_agent(QUALITY_CODEX_AGENT_ID)]
+    assert "git-pr-workflow" in skills and "browser-smoke-qa" in skills
+    body = DEFAULT_SKILL_CATALOG.get("git-pr-workflow").body
+    assert "gh pr merge" in body  # the merge command QA must run on a pass
+
+
+def test_both_coordinators_select_the_repair_loop_skill():
+    # Head and Team Lead are LangChain agents (skills via select_skills_for_agent paste).
+    for agent_id, stage in (("head-agent", "head"), ("team-lead-agent", "team_lead")):
+        ids = [s.skill_id for s in select_skills_for_agent(agent_id=agent_id, stage=stage).selections]
+        assert "repair-loop" in ids, f"{agent_id} missing repair-loop; got {ids}"
+
+
+def test_runner_provisions_native_skills_into_codex_cwd_parent(tmp_path):
+    # The runner's single chokepoint must drop the catalog where Codex auto-discovers it:
+    # the worker's cwd is <run>/generated-project, so Codex scans $CWD/../.agents/skills.
+    from agentic_company.integrations.codex import runner
+
+    runner._NATIVE_SKILLS_READY.clear()
+    target = tmp_path / "generated-project"
+    target.mkdir()
+    command = ["codex", "exec", "--cd", str(target), "-"]
+
+    runner._ensure_native_skills(command)
+
+    skills_root = tmp_path / ".agents" / "skills"
+    assert (skills_root / "git-pr-workflow" / "SKILL.md").is_file()
+    assert (skills_root / "browser-smoke-qa" / "SKILL.md").is_file()
+
+    # idempotent: a second call short-circuits via the per-workspace guard (no re-copy)
+    (skills_root / "git-pr-workflow" / "SKILL.md").write_text("X", encoding="utf-8")
+    runner._ensure_native_skills(command)
+    assert (skills_root / "git-pr-workflow" / "SKILL.md").read_text(encoding="utf-8") == "X"
+    runner._NATIVE_SKILLS_READY.clear()
 
 
 def test_selected_skill_trace_data_includes_source_and_contract_hash():

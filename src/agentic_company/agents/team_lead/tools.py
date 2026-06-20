@@ -49,6 +49,7 @@ from agentic_company.platform.runtime_db import (
     run_stop_requested,
     sprint_completion_state,
     sprint_is_final,
+    submit_coordinator_comment,
 )
 from agentic_company.platform.state import (
     DeliveryState,
@@ -76,6 +77,11 @@ from agentic_company.platform.tool_contracts import (
 TEAM_LEAD_AGENT_ID = "team-lead-agent"
 TEAM_LEAD_CODEX_REVIEW_AGENT_ID = "team-lead-codex-review"
 TEAM_LEAD_STATUS_INSPECTOR_AGENT_ID = "team-lead-status-inspector"
+# The Team Lead's own coordination card. Sprint-coordination tools (inspect /
+# handoff / complete / block) are ALWAYS recorded here, never on the feature the
+# LLM happens to pass — otherwise the Delivery Lead's logs land on a "foreign" task
+# and run_handoff trips "cannot start F1; already done".
+TEAM_LEAD_COORDINATION_WORK_ITEM_ID = "PLAN-04"
 TeamLeadWorker = Callable[[DeliveryState], DeliveryState]
 
 
@@ -220,6 +226,10 @@ class TeamLeadToolbox:
         item_id = _clean_work_item_id(work_item_id)
         if error := self._contract_error("run_handoff", item_id, reason, message):
             return error
+        # A handoff is the Team Lead's coordination deliverable (a sprint/project
+        # report), not feature work — always run it on the coordination card so a
+        # feature id (e.g. F1, already done) can't misroute it or trip "cannot start".
+        item_id = TEAM_LEAD_COORDINATION_WORK_ITEM_ID
         try:
             contract_paths = handoff_contract_paths_for_scope(handoff_scope, sprint_id=sprint_id)
         except ValueError as exc:
@@ -239,7 +249,7 @@ class TeamLeadToolbox:
         updated = {**self.delivery_state}
         updated["handoff_scope"] = handoff_scope
         updated["handoff_sprint_id"] = sprint_id
-        updated["handoff_output_dir"] = str(Path(contract_paths.html).parent)
+        updated["handoff_output_dir"] = str(Path(contract_paths.report).parent)
         updated["handoff_expected_outputs"] = contract_paths.as_list()
         self.delivery_state = cast(DeliveryState, updated)
         return self._run_worker(
@@ -403,6 +413,10 @@ class TeamLeadToolbox:
             )
         if limit_response := self._limit_response("inspect_sprint_status", item_id, message):
             return limit_response
+        # Sprint status inspection is coordination work — always attribute it to the
+        # coordination card, not whatever feature id the LLM passed (it now sees the
+        # seeded board and tends to pass the next feature, e.g. F1).
+        item_id = TEAM_LEAD_COORDINATION_WORK_ITEM_ID
         started = time.perf_counter()
         item = get_work_item(str(self.delivery_state["run_id"]), item_id)
         refs = _unique_paths(
@@ -506,6 +520,28 @@ class TeamLeadToolbox:
             },
         )
 
+    def _post_coordinator_note(
+        self,
+        *,
+        action: str,
+        headline: str,
+        detail: str = "",
+        artifact_refs: list[str] | None = None,
+    ) -> None:
+        """Mirror a Delivery Lead sprint note onto the coordination card (PLAN-04)."""
+        try:
+            submit_coordinator_comment(
+                str(self.delivery_state["run_id"]),
+                TEAM_LEAD_AGENT_ID,
+                sprint_id=self.sprint_id,
+                action=action,
+                headline=headline,
+                detail=detail,
+                artifact_refs=list(artifact_refs or []),
+            )
+        except Exception:  # best-effort: a board note must never break the sprint
+            pass
+
     def complete_sprint(
         self,
         work_item_id: str,
@@ -524,6 +560,8 @@ class TeamLeadToolbox:
                 f"complete_sprint sprint_id must be {self.sprint_id}.",
                 message or reason,
             )
+        # Completing the sprint closes the coordination card, never a feature.
+        item_id = TEAM_LEAD_COORDINATION_WORK_ITEM_ID
         try:
             explicit_refs = _validated_artifact_refs(
                 str(self.delivery_state["run_id"]),
@@ -574,15 +612,29 @@ class TeamLeadToolbox:
             reason or "Sprint completed.",
         )
         self._record("complete_sprint", item_id, reason, message)
+        completion_refs = _unique_paths(
+            [
+                *_team_lead_completion_artifact_refs(self.delivery_state, self.sprint_id),
+                *explicit_refs,
+            ]
+        )
+        delivery_lines = []
+        if deploy := str(self.delivery_state.get("deployment_status") or ""):
+            delivery_lines.append(f"**Delivery:** {deploy}")
+        if url := str(self.delivery_state.get("public_url") or ""):
+            delivery_lines.append(f"**Live URL:** {url}")
+        self._post_coordinator_note(
+            action="complete",
+            headline="✅ Sprint delivered — all work items passed QA.",
+            detail="\n\n".join(
+                part for part in [message or reason, "\n".join(delivery_lines)] if part
+            ),
+            artifact_refs=completion_refs,
+        )
         return self._tool_response(
             "complete_sprint",
             "Sprint completed.",
-            artifact_refs=_unique_paths(
-                [
-                    *_team_lead_completion_artifact_refs(self.delivery_state, self.sprint_id),
-                    *explicit_refs,
-                ]
-            ),
+            artifact_refs=completion_refs,
             work_item_id=item_id,
             input_summary={
                 "work_item_id": item_id,
@@ -604,6 +656,8 @@ class TeamLeadToolbox:
         item_id = _clean_work_item_id(work_item_id)
         if error := self._contract_error("block_sprint", item_id, reason, message):
             return error
+        # Blocking the sprint is coordination state on the coordination card, not a feature.
+        item_id = TEAM_LEAD_COORDINATION_WORK_ITEM_ID
         try:
             explicit_refs = _validated_artifact_refs(
                 str(self.delivery_state["run_id"]),
@@ -632,6 +686,12 @@ class TeamLeadToolbox:
         mark_sprint_blocked(str(self.delivery_state["run_id"]), self.sprint_id)
         self._transition(item_id, "block_sprint", TEAM_LEAD_AGENT_ID, "blocked", reason)
         self._record("block_sprint", item_id, reason, message, result_status="blocked")
+        self._post_coordinator_note(
+            action="block",
+            headline=f"⛔ Sprint blocked — {reason}",
+            detail=message,
+            artifact_refs=explicit_refs,
+        )
         return self._tool_response(
             "block_sprint",
             f"Sprint blocked: {reason}",
@@ -1447,7 +1507,9 @@ def _response_artifact_refs(
 
 
 def _tool_artifact_refs(state: DeliveryState, paths: list[str]) -> tuple[Any, ...]:
-    return artifact_links_for_paths(str(state["run_id"]), _unique_paths(paths))
+    # A tool's own output_artifacts: drop any self-produced ref whose file was never
+    # written (strict=False) so a phantom ref never crashes the Team Lead executor.
+    return artifact_links_for_paths(str(state["run_id"]), _unique_paths(paths), strict=False)
 
 
 def _tool_call_id(state: DeliveryState, tool_name: str, step: int) -> str:

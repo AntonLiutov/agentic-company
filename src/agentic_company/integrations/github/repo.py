@@ -6,6 +6,7 @@ git runs in the run's ``target_dir``; gh (clone/create/pr) is addressed by
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import subprocess
@@ -125,10 +126,22 @@ class GitHubRepoAdapter:
         )
 
     def create_branch(self, target_dir: Path, branch: str, *, base: str = "") -> None:
+        # Idempotent: on a repair re-run the work item's branch already exists, so
+        # switch to it and keep its history. Never reset it to base — that would drop
+        # the prior fix and the PR would merge stale code.
+        if self._branch_exists(target_dir, branch):
+            self._git.run(["checkout", branch], cwd=target_dir)
+            return
         args = ["checkout", "-b", branch]
         if base:
             args.append(base)
         self._git.run(args, cwd=target_dir)
+
+    def _branch_exists(self, target_dir: Path, branch: str) -> bool:
+        try:
+            return bool(self._git.run(["branch", "--list", branch], cwd=target_dir).strip())
+        except Exception:
+            return False
 
     def commit_push(self, target_dir: Path, message: str, *, branch: str = "") -> None:
         self._write_secrets_gitignore(target_dir)
@@ -181,6 +194,29 @@ class GitHubRepoAdapter:
         url = self._gh.run(args, cwd=target_dir).strip()
         number = url.rsplit("/", 1)[-1] if url else ""
         return PullRequest(number=number, url=url, branch=head)
+
+    def find_pr(self, target_dir: Path, head: str) -> PullRequest | None:
+        """The open PR for a branch, if one already exists (e.g. the agent opened it)."""
+        if not head:
+            return None
+        try:
+            out = self._gh.run(
+                ["pr", "list", "--head", head, "--json", "url,number", "--limit", "1"],
+                cwd=target_dir,
+            ).strip()
+        except Exception:
+            return None
+        if not out:
+            return None
+        try:
+            items = json.loads(out)
+        except Exception:
+            return None
+        if not items:
+            return None
+        item = items[0]
+        url = str(item.get("url") or "")
+        return PullRequest(number=str(item.get("number") or ""), url=url, branch=head) if url else None
 
     def comment_pr(self, pr: str, body: str) -> None:
         """Leave a review comment on a PR (gh infers the repo from the URL)."""

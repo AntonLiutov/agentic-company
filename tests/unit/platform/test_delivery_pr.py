@@ -7,6 +7,9 @@ class _Item:
 
 
 class _Adapter:
+    """The git interface. The platform now only uses find_pr (detect); the agent owns
+    branch/commit/push/merge via the git-pr-workflow skill."""
+
     capabilities = RepoCapabilities(
         branch=True, pull_request=True, merge=True, review_comment=True
     )
@@ -27,6 +30,18 @@ class _Adapter:
         self.calls.append(("open_pr", title, head))
         return PullRequest(number="7", url="https://github.com/o/app/pull/7", branch=head)
 
+    def merge_pr(self, pr):
+        self.calls.append(("merge_pr", pr))
+
+    def comment_pr(self, pr, body):
+        self.calls.append(("comment_pr", pr, body))
+
+    agent_pr = None  # set to a PullRequest to simulate an agent-opened PR
+
+    def find_pr(self, target, head):
+        self.calls.append(("find_pr", head))
+        return self.agent_pr
+
 
 def _patch(monkeypatch, *, built, item=None):
     monkeypatch.setattr(
@@ -38,6 +53,11 @@ def _patch(monkeypatch, *, built, item=None):
     monkeypatch.setattr(
         "agentic_company.platform.runtime_db.get_work_item", lambda uid, wid: item or _Item()
     )
+
+
+def _patch_pr_store(monkeypatch, tmp_path):
+    """Point the PR store at a temp run workspace (no DB needed)."""
+    monkeypatch.setattr(dp, "_run_dir", lambda uid: tmp_path)
 
 
 def test_should_publish_pr_only_for_code_producers():
@@ -52,11 +72,15 @@ def test_publish_is_noop_without_repo_host(monkeypatch):
     assert dp.publish_work_item_pr("run", "F1") == ""
 
 
-def test_publish_opens_pr_and_mirrors_on_support_repo(tmp_path, monkeypatch):
-    (tmp_path / ".git").mkdir()  # repo already cloned at run start
+def test_publish_mirrors_the_pr_the_agent_opened(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
     adapter = _Adapter()
+    adapter.agent_pr = PullRequest(
+        number="9", url="https://github.com/o/app/pull/9", branch="adl/f1"
+    )
     spec = RepoSpec(mode="support", target_dir=tmp_path, repository="o/app", base_branch="main")
     _patch(monkeypatch, built=(adapter, spec))
+    _patch_pr_store(monkeypatch, tmp_path)
     mirrored = []
     monkeypatch.setattr(
         "agentic_company.platform.runtime_db._submit_pr_mirror",
@@ -65,20 +89,83 @@ def test_publish_opens_pr_and_mirrors_on_support_repo(tmp_path, monkeypatch):
 
     url = dp.publish_work_item_pr("run", "F1")
 
-    assert url == "https://github.com/o/app/pull/7"
-    assert ("branch", "adl/f1", "main") in adapter.calls
-    assert ("commit_push", "adl/f1") in adapter.calls
-    assert any(c[0] == "open_pr" for c in adapter.calls)
-    assert mirrored == [("F1", "https://github.com/o/app/pull/7", "7")]
-    assert not any(c[0] == "ensure_repo" for c in adapter.calls)  # already cloned
+    assert url == "https://github.com/o/app/pull/9"  # the PR the agent opened
+    # the platform NEVER touches git itself anymore
+    assert not any(c[0] in {"open_pr", "commit_push", "branch"} for c in adapter.calls)
+    assert mirrored == [("F1", "https://github.com/o/app/pull/9", "9")]  # it IS mirrored
+    assert dp.get_work_item_pr("run", "F1")["url"] == "https://github.com/o/app/pull/9"
 
 
-def test_publish_skips_support_repo_that_was_not_cloned(tmp_path, monkeypatch):
-    adapter = _Adapter()  # no .git -> not cloned at start
-    spec = RepoSpec(mode="support", target_dir=tmp_path, repository="o/app")
+def test_publish_is_noop_when_agent_opened_no_pr(tmp_path, monkeypatch):
+    adapter = _Adapter()  # find_pr returns None (agent opened nothing)
+    spec = RepoSpec(mode="support", target_dir=tmp_path, repository="o/app", base_branch="main")
     _patch(monkeypatch, built=(adapter, spec))
+    _patch_pr_store(monkeypatch, tmp_path)
+
     assert dp.publish_work_item_pr("run", "F1") == ""
-    assert adapter.calls == []  # nothing attempted -> graceful skip
+    assert not any(c[0] in {"open_pr", "commit_push", "branch"} for c in adapter.calls)
+
+
+def test_record_and_get_work_item_pr_round_trip(tmp_path, monkeypatch):
+    _patch_pr_store(monkeypatch, tmp_path)
+
+    assert dp.get_work_item_pr("run", "F1") is None
+    dp.record_work_item_pr("run", "F1", "https://github.com/o/app/pull/7", "7", "adl/f1")
+
+    pr = dp.get_work_item_pr("run", "F1")
+    assert pr["url"] == "https://github.com/o/app/pull/7"
+    assert pr["branch"] == "adl/f1"
+    assert pr["merged"] is False
+    assert (tmp_path / "delivery" / "work-item-prs.json").exists()
+
+
+def test_mark_work_item_pr_merged(tmp_path, monkeypatch):
+    _patch_pr_store(monkeypatch, tmp_path)
+    dp.record_work_item_pr("run", "F1", "https://github.com/o/app/pull/7", "7", "adl/f1")
+
+    dp.mark_work_item_pr_merged("run", "F1")
+
+    assert dp.get_work_item_pr("run", "F1")["merged"] is True
+    dp.mark_work_item_pr_merged("run", "F2")  # no PR for F2 -> no-op, no raise
+
+
+def test_merge_work_item_pr_after_qa_pass_merges_and_marks_recorded(tmp_path, monkeypatch):
+    adapter = _Adapter()
+    spec = RepoSpec(mode="support", target_dir=tmp_path, repository="o/app", base_branch="main")
+    _patch(monkeypatch, built=(adapter, spec))
+    _patch_pr_store(monkeypatch, tmp_path)
+    dp.record_work_item_pr("run", "F1", "https://github.com/o/app/pull/7", "7", "adl/f1")
+
+    result = dp.merge_work_item_pr_after_qa_pass("run", "F1")
+
+    assert result.ok is True
+    assert result.status == "merged"
+    assert ("merge_pr", "https://github.com/o/app/pull/7") in adapter.calls
+    assert dp.get_work_item_pr("run", "F1")["merged"] is True
+
+
+def test_merge_work_item_pr_after_qa_pass_fails_when_repo_has_no_pr(tmp_path, monkeypatch):
+    adapter = _Adapter()
+    spec = RepoSpec(mode="support", target_dir=tmp_path, repository="o/app", base_branch="main")
+    _patch(monkeypatch, built=(adapter, spec))
+    _patch_pr_store(monkeypatch, tmp_path)
+
+    result = dp.merge_work_item_pr_after_qa_pass("run", "F1")
+
+    assert result.ok is False
+    assert result.status == "missing_pr"
+    assert not any(call[0] == "merge_pr" for call in adapter.calls)
+
+
+def test_run_repo_context_returns_repo_and_base(monkeypatch):
+    spec = RepoSpec(mode="support", target_dir=None, repository="o/app", base_branch="main")
+    _patch(monkeypatch, built=(_Adapter(), spec))
+    assert dp.run_repo_context("run") == {"repository": "o/app", "base_branch": "main"}
+
+
+def test_run_repo_context_is_none_without_repo_host(monkeypatch):
+    _patch(monkeypatch, built=None)
+    assert dp.run_repo_context("run") is None
 
 
 def test_ensure_run_repo_clones_support_once(tmp_path, monkeypatch):

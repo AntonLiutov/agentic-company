@@ -175,6 +175,37 @@ def build_codex_exec_command(
     return command
 
 
+_NATIVE_SKILLS_READY: set[str] = set()
+
+
+def _ensure_native_skills(command: Sequence[str]) -> None:
+    """Provision the skill catalog into Codex's NATIVE ``.agents/skills`` discovery path.
+
+    This replaces the old hand-injected skill index: instead of pasting a skill list
+    into every prompt, we drop the catalog where Codex itself auto-discovers it and
+    triggers each skill by its ``description`` (progressive disclosure) — exactly as the
+    Codex skills docs prescribe. The worker runs with cwd = ``<run>/generated-project``,
+    and Codex scans ``$CWD/../.agents/skills``; we provision into that cwd-parent so the
+    skills sit outside the deliverable working tree (never leak into the project PR).
+    Done once per run workspace. Guarded: never breaks an exec.
+    """
+
+    try:
+        target = _target_project_dir_from_command(command)
+        if target is None:
+            return
+        workspace = Path(target).parent  # Codex's $CWD/../.agents/skills scan root
+        key = str(workspace)
+        if key in _NATIVE_SKILLS_READY:
+            return
+        from agentic_company.platform.skills import provision_native_skills
+
+        provision_native_skills(workspace)
+        _NATIVE_SKILLS_READY.add(key)
+    except Exception:  # skill provisioning must never break a Codex run
+        return
+
+
 def stream_codex_exec_to_log(
     command: Sequence[str],
     prompt: str,
@@ -191,6 +222,7 @@ def stream_codex_exec_to_log(
 ) -> subprocess.CompletedProcess[str]:
     """Run Codex while streaming command output and raw JSON events to artifacts."""
 
+    _ensure_native_skills(command)
     raw_events_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     raw_events_path.write_text("", encoding="utf-8")

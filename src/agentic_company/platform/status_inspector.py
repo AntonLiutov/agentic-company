@@ -160,6 +160,14 @@ class StatusInspectorRunner:
         status = str(
             payload.get("status") or ("inspected" if completed.returncode == 0 else "failed")
         )
+        # Same source-fix as the Codex reviewer: Codex may not write summary.md, so
+        # persist a real one from the structured payload — the cited summary_artifact
+        # must never be a phantom that trips downstream DB-registration validation.
+        if not summary_path.exists():
+            summary_path.write_text(
+                str(payload.get("status_summary") or "Status inspection complete."),
+                encoding="utf-8",
+            )
         codex_thread_id = extract_codex_thread_id(raw_events_path) or request.codex_resume_thread_id
         result_artifact = result_path.relative_to(request.run_dir).as_posix()
         context_artifact = context_path.relative_to(request.run_dir).as_posix()

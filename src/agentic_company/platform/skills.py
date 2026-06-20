@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -402,6 +403,72 @@ def selected_skill_trace_data(
     if isinstance(selections, SkillSelectionResult):
         return selections.to_trace_data()
     return [selection.to_dict() for selection in selections]
+
+
+# Codex worker agent ids differ from the planner ids that skills declare in
+# ``applies_to_agents``: the QA worker runs as ``qa-codex-agent`` but skills target
+# ``qa-agent``, etc. Normalize so the injected skill index actually resolves for the
+# worker — otherwise QA/Deployment/Handoff Codex workers silently get ZERO skills.
+_SKILL_AGENT_ALIASES = {
+    "qa-codex-agent": "qa-agent",
+    "deployment-codex-agent": "deployment-agent",
+    "handoff-codex-agent": "documentation-handoff-agent",
+}
+
+
+def canonical_skill_agent_id(agent_id: str) -> str:
+    """Map a Codex worker agent id to the planner id skills are declared against."""
+    return _SKILL_AGENT_ALIASES.get(agent_id, agent_id)
+
+
+def applicable_skills_for_agent(
+    agent_id: str,
+    *,
+    catalog: SkillCatalog | None = None,
+) -> tuple[SkillDescriptor, ...]:
+    """Every active skill an agent MAY load (by ``applies_to_agents``)."""
+
+    active = catalog or DEFAULT_SKILL_CATALOG
+    canonical = canonical_skill_agent_id(agent_id)
+    return tuple(
+        skill for skill in active.all() if canonical in skill.applies_to_agents
+    )
+
+
+def provision_native_skills(
+    workspace_dir: Path | str,
+    *,
+    catalog: SkillCatalog | None = None,
+) -> Path:
+    """Provision the skill catalog into Codex's NATIVE discovery path.
+
+    Codex auto-discovers skills from ``<dir>/.agents/skills/<id>/SKILL.md`` and triggers
+    them by their ``description`` (progressive disclosure: only name + description sit in
+    context until the model selects one). The worker runs with cwd =
+    ``<workspace>/generated-project``, so Codex scans ``$CWD/../.agents/skills`` =
+    ``<workspace>/.agents/skills`` — outside the deliverable working tree, so nothing
+    leaks into the project's git/PR. We copy each authored ``SKILL.md`` there verbatim
+    (it is already Codex-native: ``name`` + ``description`` frontmatter + body) — no ADL
+    sidecar, no hand-injected prompt index. Returns the skills root.
+
+    Idempotent and guarded: re-running refreshes the files; a copy failure for one skill
+    never blocks the others or the run.
+    """
+
+    active = catalog or DEFAULT_SKILL_CATALOG
+    skills_root = Path(workspace_dir) / ".agents" / "skills"
+    skills_root.mkdir(parents=True, exist_ok=True)
+    for skill in active.all():
+        src = Path(skill.source_path)
+        if not src.is_file():
+            continue
+        dest_dir = skills_root / skill.skill_id
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dest_dir / "SKILL.md")
+        except Exception:  # one skill failing must never block the rest or the run
+            continue
+    return skills_root
 
 
 SKILL_CATALOG_DIR = Path(__file__).with_name("skill_catalog")

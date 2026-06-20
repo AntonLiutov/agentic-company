@@ -104,11 +104,62 @@ def render_team_lead_agent_graph_mermaid() -> str:
     )
 
 
+def _build_sprint_board(run_id: str, sprint_id: str) -> dict[str, Any]:
+    """Seed the Team Lead with the real DB sprint board.
+
+    The Team Lead prompt instructs "treat DB work_items as the sprint board", but
+    historically the inline sprint carried an empty ``features`` list, so the only
+    way to learn that a work item was pending was to *choose* to call
+    ``inspect_sprint_status`` first. When a later sprint started while the carried
+    delivery_state still showed the previous sprint's passing gates, the model
+    could read "nothing to do" and exit with no tool call — which the executor
+    then escalates into a hard sprint block. Embedding the canonical board makes
+    the first action unambiguous (and never relies on a single model turn).
+    """
+
+    board: dict[str, Any] = {"sprint_id": sprint_id, "id": sprint_id}
+    try:  # best-effort: a board read must never break sprint execution
+        from agentic_company.platform.runtime_db import (
+            list_sprint_work_items,
+            sprint_completion_state,
+        )
+
+        items = list_sprint_work_items(run_id, sprint_id)
+        state = sprint_completion_state(run_id, sprint_id)
+    except Exception:  # pragma: no cover - defensive; fall back to an empty board
+        board["work_items"] = []
+        board["features"] = []
+        return board
+
+    work_items = [
+        {
+            "work_item_id": item.work_item_id,
+            "title": item.title,
+            "status": item.status,
+            "suggested_owner_agent": item.owner_agent,
+            "delivery_order": item.delivery_order,
+            "sprint_id": item.sprint_id,
+        }
+        for item in items
+    ]
+    board["is_final"] = state.is_final
+    board["next_work_item_id"] = state.next_work_item_id
+    board["completion_state"] = {
+        "total_items": state.total_items,
+        "pending_items": state.pending_items,
+        "blocked_items": state.blocked_items,
+        "done_items": state.done_items,
+    }
+    board["work_items"] = work_items
+    board["features"] = work_items  # backward-compat alias for the sprint dict shape
+    return board
+
+
 def _prepare_sprint(max_steps: int):
     def run(state: TeamLeadGraphState) -> TeamLeadGraphState:
         delivery_state = state["delivery_state"]
         sprint_id = str(delivery_state.get("team_lead_sprint_id") or "sprint-01")
-        sprint = {"sprint_id": sprint_id, "id": sprint_id, "features": []}
+        sprint = _build_sprint_board(str(delivery_state["run_id"]), sprint_id)
         updated = {**delivery_state}
         updated["stage"] = "team_lead"
         updated["status"] = CoordinatorOutcome.SPRINT_STARTED.value

@@ -37,6 +37,7 @@ from agentic_company.platform.runtime_db import (
     run_stop_requested,
     sprint_completion_state,
     sprint_ids,
+    submit_coordinator_comment,
 )
 from agentic_company.platform.state import (
     DeliveryState,
@@ -234,6 +235,17 @@ class HeadToolbox:
                 f"Team Lead was not started because sprint {sprint_id} is blocked.",
                 input_summary={"sprint_id": sprint_id, "sprint_state": sprint_state.to_dict()},
             )
+        try:  # best-effort: a Coordinator sprint-start note on the coordination card
+            submit_coordinator_comment(
+                str(self.delivery_state["run_id"]),
+                HEAD_AGENT_ID,
+                sprint_id=sprint_id,
+                action="start",
+                headline="▶️ Starting sprint.",
+                detail=reason or message,
+            )
+        except Exception:
+            pass
         return self._run_worker(
             tool="run_team_lead",
             node_name="team_lead",
@@ -906,9 +918,12 @@ class HeadToolbox:
             raise RuntimeError("Head tool response requires explicit current tool name.")
         failure_mode = failure_mode_from_status(status, self.delivery_state.get("blockers", []))
         dashboard_status = dashboard_status_from_runtime_status(status)
+        # Tool-response output_artifacts: drop self-produced refs whose file was never
+        # written (strict=False) so a phantom ref never crashes the Head executor.
         artifact_links = artifact_links_for_paths(
             str(self.delivery_state["run_id"]),
             output_artifacts,
+            strict=False,
         )
         structured = ToolCallResult(
             tool_name=tool_name,

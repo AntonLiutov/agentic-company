@@ -62,7 +62,7 @@ class GitHubBoardAdapter:
                 "--repo",
                 self._repo,
                 "--title",
-                f"[{item.work_item_id}] {item.title}",
+                item.title or item.work_item_id,
                 "--body",
                 item.body or "_Tracked by Agentic Delivery Lab._",
             ]

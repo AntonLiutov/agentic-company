@@ -41,6 +41,11 @@ def _effective(current, requested, *, tool_name, owner_agent, raw=None):
         ("review", "in_progress", "complete_sprint", "team-lead-agent", "in_progress"),
         # The final sprint closes the coordination card legally (review -> done).
         ("review", "done", "complete_sprint", "team-lead-agent", "done"),
+        # The coordination card (PLAN-04) lives in_progress and never passes through
+        # review, so the completion tools must close it straight from in_progress.
+        ("in_progress", "done", "complete_sprint", "team-lead-agent", "done"),
+        ("in_progress", "done", "run_team_lead", "head-agent", "done"),
+        ("in_progress", "done", "complete_delivery", "head-agent", "done"),
         # Inspections never move a done card.
         ("done", "in_progress", "inspect_sprint_status", "team-lead-agent", "done"),
         # An illegal reopen of a terminal card is clamped, not persisted.

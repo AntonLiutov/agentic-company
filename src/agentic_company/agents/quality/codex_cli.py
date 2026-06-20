@@ -460,14 +460,24 @@ Non-exhaustive QA toolbox:
   equivalent real browser automation path whenever possible. Source inspection
   alone is not enough for UI behavior, layout, forms, navigation, or button
   flows.
+- Playwright + Chromium are ALREADY pre-provisioned on this host:
+  `PLAYWRIGHT_BROWSERS_PATH` and `NODE_PATH` are already set in your environment
+  and point at the repo-local QA runtime. Do NOT run `npm install`,
+  `npm install @playwright/test`, or `npx playwright install` — the browser is
+  already downloaded and re-downloading reliably times out. Just `require("playwright")`
+  from a small Node script and launch Chromium headless. On Windows the PowerShell
+  execution policy blocks `npm.ps1`/`npx.ps1`, so call the `.cmd` shims
+  (`npm.cmd` / `npx.cmd`) when you must call npm at all. Follow the
+  `browser-smoke-qa` skill for the canonical script and the mandatory
+  `--disable-gpu`/`--disable-dev-shm-usage` launch flags.
 - For Streamlit apps, Streamlit AppTest can be useful for component/runtime
   behavior, but browser evidence is still preferred when visual or interaction
   behavior matters.
-- You may install or fetch test-only tools when they are needed for stronger QA
-  evidence, for example ephemeral browser automation, accessibility tooling,
-  image/screenshot comparison helpers, HTTP clients, or framework-specific test
-  helpers. Prefer ephemeral tool installation through the command runner over
-  adding test-only packages to the generated product's `pyproject.toml`.
+- You may install or fetch additional test-only tools (accessibility tooling,
+  image/screenshot comparison helpers, HTTP clients, framework-specific test
+  helpers) when a work item genuinely needs them, through the command runner
+  rather than the generated product's `pyproject.toml`. This does NOT apply to
+  Playwright/Chromium, which are pre-provisioned — never reinstall those.
 - If installing a useful QA tool fails because of environment, network, browser,
   or platform constraints, report that as a QA evidence limitation and choose
   the next-best evidence path. Do not mark a work item as fully proven if the

@@ -270,6 +270,23 @@ def _write_feature_execution_request(
             "of relying on derived filenames."
         ),
     ]
+    repo_ctx = _run_repo_context(str(delivery_state["run_id"]))
+    if repo_ctx:
+        pr = _work_item_pr(str(delivery_state["run_id"]), work_item_id)
+        existing_note = (
+            f" A pull request already tracks this item: {pr.get('url')} — your push updates "
+            "that same PR; do not open a second one and do not merge."
+            if pr
+            else ""
+        )
+        instructions.append(
+            f"A git repository is connected for this run: {repo_ctx['repository']} "
+            f"(base branch `{repo_ctx['base_branch']}`). After you finish this work item, DELIVER "
+            "IT AS A PULL REQUEST using the git-pr-workflow skill: orient first (check your current "
+            f"branch and recent commits), put your work on branch `adl/{work_item_id.lower()}`, "
+            "commit (never secrets), push, and open the PR. Never commit to the base branch "
+            "directly; QA reviews and merges the PR." + existing_note
+        )
     request = build_execution_request_payload(
         delivery_state,
         agent_id="fullstack-agent",
@@ -301,6 +318,26 @@ def _write_feature_execution_request(
         codex_resume_thread_id=codex_resume_thread_id(delivery_state, "fullstack-agent"),
     )
     write_execution_request(run_dir, request)
+
+
+def _work_item_pr(run_id: str, work_item_id: str) -> dict[str, Any] | None:
+    """The PR tracking this work item, so the Builder knows its changes update it."""
+    try:
+        from agentic_company.platform.delivery_pr import get_work_item_pr
+
+        return get_work_item_pr(run_id, work_item_id)
+    except Exception:
+        return None
+
+
+def _run_repo_context(run_id: str) -> dict[str, str] | None:
+    """Connected repo info ({repository, base_branch}) so the Builder delivers a PR."""
+    try:
+        from agentic_company.platform.delivery_pr import run_repo_context
+
+        return run_repo_context(run_id)
+    except Exception:
+        return None
 
 
 def _current_agent_call_artifacts(run_dir: Path, state: DeliveryState) -> list[str]:

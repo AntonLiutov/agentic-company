@@ -310,6 +310,60 @@ def test_artifact_section_embeds_content_and_excludes_trace(monkeypatch):
     assert "summary.md" not in section  # codex trace excluded
 
 
+def test_artifact_section_renders_html_report_as_readable_text(monkeypatch):
+    class _Repo:
+        def get_artifact_content(self, db_run_id, aid):
+            return {
+                "content_text": (
+                    "<html><head><style>.x{}</style></head><body>"
+                    "<h1>Release Report</h1><p>Sprint 1 shipped.</p>"
+                    "<ul><li>Add task</li></ul>"
+                    "<script>track()</script></body></html>"
+                )
+            }
+
+    monkeypatch.setattr(
+        "agentic_company.platform.artifact_registry.artifact_id_for",
+        lambda run, path: path,
+    )
+    section = rdb._artifact_section(
+        _Repo(), 1, "run", ["handoff/sprints/sprint-01/release-report.html"]
+    )
+    assert "Release Report" in section  # heading text surfaced
+    assert "Sprint 1 shipped." in section
+    assert "- Add task" in section  # list item rendered as a bullet
+    assert "(rendered)" in section  # labeled as extracted text, not raw markup
+    assert "<script>" not in section and "track()" not in section  # script dropped
+    assert "<style>" not in section
+
+
+def test_coordinator_comment_posts_sprint_note_on_coordination_card(monkeypatch):
+    rdb._NO_MIRROR_RUNS.discard("run")
+    board = _CommentBoard()
+    monkeypatch.setattr(rdb, "_repo_and_run", lambda uid: (object(), 1))
+    monkeypatch.setattr(run_mirror_mod, "get_run_mirror", lambda repo, dbid, **k: WorkMirror(board))
+    monkeypatch.setattr(rdb, "get_work_item", lambda uid, wid: _RichItem())
+
+    rdb.mirror_coordinator_comment_now(
+        "run",
+        "PLAN-04",
+        "team-lead-agent",
+        "sprint-01",
+        "✅ Sprint delivered — all work items passed QA.",
+        "**Live URL:** https://app.example",
+        [],
+        "PLAN-04:coord:sprint-01:complete",
+    )
+
+    assert len(board.comments) == 1
+    body = board.comments[0].body
+    assert body.startswith("**Delivery Lead** · Sprint 1")  # role + sprint label
+    assert "Sprint delivered" in body
+    assert "https://app.example" in body
+    assert board.comments[0].idempotency_key == "PLAN-04:coord:sprint-01:complete"
+    assert len(board.items) == 1  # the coordination card is ensured before commenting
+
+
 def test_csv_to_markdown_table_handles_quotes_and_pipes():
     table = rdb._csv_to_markdown_table('a,b\n"x,y",p|q')
     assert "| a | b |" in table

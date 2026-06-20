@@ -239,7 +239,7 @@ TEAM_LEAD_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
                 "work_item_id": "PLAN-04",
                 "purpose": "Review handoff readiness.",
                 "question": "Does the report match the completed sprint evidence?",
-                "artifact_refs": "handoff/sprints/sprint-01/release-report.html",
+                "artifact_refs": "handoff/sprints/sprint-01/release-report.md",
             },
         ),
     ),
