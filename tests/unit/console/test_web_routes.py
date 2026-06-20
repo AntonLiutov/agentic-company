@@ -218,6 +218,57 @@ def test_create_project_starts_run_with_monkeypatched_runtime(tmp_path, monkeypa
     assert repo.list_projects_for_user(1)[0].name == "Task Tracker"
 
 
+def test_create_project_persists_control_modes(tmp_path, monkeypatch):
+    repo = ConsoleRepository()
+    app = create_app(repo)
+    client = TestClient(app)
+    client.post(
+        "/register",
+        data={
+            "email": "control@example.test",
+            "username": "control",
+            "password": "password-1",
+        },
+    )
+    repo.save_provider_secret(1, "google_gemini", "AIza-project")
+    run_root = tmp_path / "runs"
+
+    def fake_create_console_run(username, requirements_text):
+        run_dir = run_root / "control-run"
+        run_dir.mkdir(parents=True)
+        (run_dir / "00-requirements.md").write_text(requirements_text, encoding="utf-8")
+        return run_dir
+
+    monkeypatch.setattr(
+        "agentic_company.console.web.app.create_web_console_run",
+        fake_create_console_run,
+    )
+    monkeypatch.setattr("agentic_company.console.web.app.start_codex_execution", lambda run_dir: 1)
+
+    response = client.post(
+        "/projects",
+        data={
+            "name": "Controlled Run",
+            "request_text": "Build a task tracker",
+            "mode": "simple_prototype",
+            "complexity": "simple",
+            "agent_provider": "google_gemini",
+            "agent_model": "gemini-3.1-flash-lite",
+            "run_mode": "medium",
+            "risk_mode": "safe",
+            "team_preset": "small",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    run = repo.latest_run_for_project(repo.list_projects_for_user(1)[0].id, 1)
+    assert run is not None
+    assert run.run_mode == "medium"
+    assert run.risk_mode == "safe"
+    assert run.team_preset == "small"
+
+
 def test_create_project_requires_codex_connection_in_user_chatgpt_mode(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "user_chatgpt")
     repo = ConsoleRepository()

@@ -80,6 +80,8 @@ from agentic_company.platform.db.runtime_db import (
     record_run_lifecycle,
     request_run_control_intent,
 )
+from agentic_company.platform.agent.runtime_modes import RiskMode, RunMode, mode_policy
+from agentic_company.platform.agent.team_spec import TeamPreset
 from agentic_company.platform.logging import configure_logging
 from agentic_company.platform.run.run_finalizer import RunStatus
 from agentic_company.platform.run.run_trace import trace_summary
@@ -288,10 +290,16 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         project_owner: Annotated[str, Form()] = "",
         new_repo_name: Annotated[str, Form()] = "",
         new_repo_private: Annotated[str, Form()] = "",
+        run_mode: Annotated[str, Form()] = "",
+        risk_mode: Annotated[str, Form()] = "assisted",
+        team_preset: Annotated[str, Form()] = "standard",
     ) -> Response:
         agent_provider = normalize_agent_provider(agent_provider)
         agent_model = normalize_agent_model(agent_provider, agent_model)
         codex_model = normalize_codex_model(codex_model)
+        run_mode = normalize_run_mode(run_mode or mode)
+        risk_mode = normalize_risk_mode(risk_mode)
+        team_preset = normalize_team_preset(team_preset)
         board_adapter = normalize_board_adapter(board_adapter)
         form_values = new_project_form_values(
             name=name,
@@ -306,6 +314,9 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             board_adapter=board_adapter,
             repository=repository,
             project_owner=project_owner,
+            run_mode=run_mode,
+            risk_mode=risk_mode,
+            team_preset=team_preset,
         )
         if not name.strip() or not request_text.strip():
             return render_new_project(
@@ -401,6 +412,9 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             status="running",
             mode=mode,
             reasoning=reasoning,
+            run_mode=run_mode,
+            risk_mode=risk_mode,
+            team_preset=team_preset,
         )
         try:
             start_codex_execution(run_dir)
@@ -470,6 +484,9 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             status="running",
             mode=project.mode,
             reasoning=settings["agent_reasoning"],
+            run_mode=settings["run_mode"],
+            risk_mode=settings["risk_mode"],
+            team_preset=settings["team_preset"],
         )
         try:
             start_codex_execution(run_dir)
@@ -1410,6 +1427,9 @@ def render_new_project(
         codex_models=CODEX_MODEL_OPTIONS,
         reasoning_options=REASONING_OPTIONS,
         service_tiers=CODEX_SERVICE_TIERS,
+        run_modes=[mode.value for mode in RunMode],
+        risk_modes=[mode.value for mode in RiskMode],
+        team_presets=[preset.value for preset in TeamPreset],
         status_code=status_code,
     )
 
@@ -1428,6 +1448,9 @@ def new_project_form_values(
     board_adapter: str = "internal",
     repository: str = "",
     project_owner: str = "",
+    run_mode: str = "",
+    risk_mode: str = "assisted",
+    team_preset: str = "standard",
 ) -> dict[str, str]:
     agent_provider = normalize_agent_provider(agent_provider)
     return {
@@ -1443,11 +1466,37 @@ def new_project_form_values(
         "board_adapter": normalize_board_adapter(board_adapter),
         "repository": repository.strip(),
         "project_owner": project_owner.strip(),
+        "run_mode": normalize_run_mode(run_mode or mode),
+        "risk_mode": normalize_risk_mode(risk_mode),
+        "team_preset": normalize_team_preset(team_preset),
     }
 
 
 def normalize_board_adapter(value: str) -> str:
     return value if value in {"internal", "github"} else "internal"
+
+
+def normalize_run_mode(value: str) -> str:
+    try:
+        return mode_policy(value or "medium").run_mode.value
+    except ValueError:
+        return RunMode.MEDIUM.value
+
+
+def normalize_risk_mode(value: str) -> str:
+    normalized = str(value or RiskMode.ASSISTED.value).strip().lower()
+    try:
+        return RiskMode(normalized).value
+    except ValueError:
+        return RiskMode.ASSISTED.value
+
+
+def normalize_team_preset(value: str) -> str:
+    normalized = str(value or TeamPreset.STANDARD.value).strip().lower()
+    try:
+        return TeamPreset(normalized).value
+    except ValueError:
+        return TeamPreset.STANDARD.value
 
 
 def _maybe_create_board_connection(
@@ -1671,6 +1720,10 @@ def restart_run_settings(repo: ConsoleRepository, project: Project, user: User) 
         "codex_model": normalize_codex_model(codex_model),
         "codex_reasoning": latest_env.get("AGENTIC_CODEX_REASONING_EFFORT", "medium"),
         "service_tier": latest_env.get("AGENTIC_CODEX_SERVICE_TIER", "standard"),
+        "run_mode": (latest_run.run_mode if latest_run else "") or normalize_run_mode(project.mode),
+        "risk_mode": (latest_run.risk_mode if latest_run else "") or RiskMode.ASSISTED.value,
+        "team_preset": (latest_run.team_preset if latest_run else "")
+        or TeamPreset.STANDARD.value,
     }
 
 

@@ -88,6 +88,35 @@
       </details>
       <details class="form-section">
         <summary>
+          <span>Control</span>
+          <small>{{ form_values.run_mode|title }} · {{ form_values.risk_mode|title }} · {{ form_values.team_preset|title }}</small>
+        </summary>
+        <div class="form-grid form-grid-three">
+          <label>Run mode
+            <select name="run_mode">
+              {% for mode in run_modes %}
+                <option value="{{ mode }}" {{ "selected" if mode == form_values.run_mode else "" }}>{{ mode|replace("_", " ")|title }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Risk mode
+            <select name="risk_mode">
+              {% for mode in risk_modes %}
+                <option value="{{ mode }}" {{ "selected" if mode == form_values.risk_mode else "" }}>{{ mode|title }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Team
+            <select name="team_preset">
+              {% for preset in team_presets %}
+                <option value="{{ preset }}" {{ "selected" if preset == form_values.team_preset else "" }}>{{ preset|title }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+      </details>
+      <details class="form-section">
+        <summary>
           <span>Build settings</span>
           <small data-build-summary>{{ form_values.codex_model }} · {{ form_values.codex_reasoning|title }} · {{ form_values.service_tier|title }}</small>
         </summary>

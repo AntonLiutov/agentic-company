@@ -106,6 +106,54 @@ def test_codex_auth_connection_stores_metadata_only(tmp_path):
     assert all("token" not in field.name for field in fields(connection))
 
 
+def test_run_approval_round_trips_decision(tmp_path):
+    repo = ConsoleRepository()
+    repo.init_schema()
+    user = repo.create_user(
+        email="approval@example.test",
+        username="approval",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Approval",
+        request_text="Build",
+        mode="simple_prototype",
+        complexity="simple",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="approval-run",
+        run_dir=tmp_path / "approval-run",
+        status="running",
+        mode="simple_prototype",
+        reasoning="medium",
+        run_mode="medium",
+        risk_mode="safe",
+        team_preset="standard",
+    )
+
+    approval = repo.request_run_approval(
+        run.id,
+        gate_type="deployment",
+        requested_action="deploy",
+        risk_summary="Deployment needs operator approval.",
+        requested_by="team-lead-agent",
+    )
+    repo.decide_run_approval(
+        approval.id,
+        status="approved",
+        decided_by=user.username,
+        decision_reason="Approved for smoke.",
+    )
+
+    decided = repo.get_run_approval(approval.id)
+    assert decided is not None
+    assert decided.status == "approved"
+    assert decided.decided_by == user.username
+    assert repo.get_run(run.id).risk_mode == "safe"
+
+
 def test_artifact_metadata_upsert_and_filter(tmp_path):
     repo = ConsoleRepository()
     repo.init_schema()

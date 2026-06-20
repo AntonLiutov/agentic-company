@@ -89,6 +89,11 @@ class Run:
     generated_app_url: str
     created_at: str
     updated_at: str
+    run_mode: str = ""
+    risk_mode: str = "assisted"
+    team_preset: str = "standard"
+    pause_reason: str = ""
+    paused_at: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +114,22 @@ class CodexAuthConnection:
     last_checked_at: str
     last_refresh_at: str
     last_error: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class RunApproval:
+    id: int
+    run_id: int
+    gate_type: str
+    requested_action: str
+    risk_summary: str
+    status: str
+    requested_by: str
+    decided_by: str
+    decision_reason: str
+    created_at: str
+    decided_at: str
     updated_at: str
 
 
@@ -536,6 +557,9 @@ class ConsoleRepository:
         status: str,
         mode: str,
         reasoning: str,
+        run_mode: str = "",
+        risk_mode: str = "assisted",
+        team_preset: str = "standard",
     ) -> Run:
         now = utc_now()
         with self.connect() as conn:
@@ -543,9 +567,9 @@ class ConsoleRepository:
                 """
                 INSERT INTO runs (
                     project_id, run_uid, run_dir, target_project_dir, status, mode, reasoning,
-                    created_at, updated_at
+                    run_mode, risk_mode, team_preset, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_id,
@@ -555,6 +579,9 @@ class ConsoleRepository:
                     status,
                     mode,
                     reasoning,
+                    run_mode,
+                    risk_mode,
+                    team_preset,
                     now,
                     now,
                 ),
@@ -2113,6 +2140,79 @@ class ConsoleRepository:
         with self.connect() as conn:
             conn.execute("DELETE FROM user_codex_auth WHERE user_id = ?", (user_id,))
 
+    def request_run_approval(
+        self,
+        run_id: int,
+        *,
+        gate_type: str,
+        requested_action: str,
+        risk_summary: str,
+        requested_by: str = "",
+    ) -> RunApproval:
+        now = utc_now()
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO run_approvals (
+                    run_id, gate_type, requested_action, risk_summary, status,
+                    requested_by, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
+                """,
+                (run_id, gate_type, requested_action, risk_summary, requested_by, now, now),
+            )
+            approval_id = int(cursor.lastrowid)
+        approval = self.get_run_approval(approval_id)
+        if approval is None:  # pragma: no cover - defensive
+            raise RuntimeError("Saved run approval could not be loaded")
+        return approval
+
+    def get_run_approval(self, approval_id: int) -> RunApproval | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM run_approvals WHERE id = ?",
+                (approval_id,),
+            ).fetchone()
+        return _run_approval(row) if row else None
+
+    def list_run_approvals(self, run_id: int, *, status: str = "") -> list[RunApproval]:
+        clauses = ["run_id = ?"]
+        params: list[Any] = [run_id]
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM run_approvals WHERE {' AND '.join(clauses)} ORDER BY created_at, id",
+                tuple(params),
+            ).fetchall()
+        return [_run_approval(row) for row in rows]
+
+    def decide_run_approval(
+        self,
+        approval_id: int,
+        *,
+        status: str,
+        decided_by: str,
+        decision_reason: str = "",
+    ) -> None:
+        if status not in {"approved", "rejected"}:
+            raise ValueError("Approval decision status must be approved or rejected.")
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE run_approvals
+                SET status = ?,
+                    decided_by = ?,
+                    decision_reason = ?,
+                    decided_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (status, decided_by, decision_reason, now, now, approval_id),
+            )
+
     def seed_public_demo_from_env(self) -> None:
         run_dir = os.getenv("PUBLIC_DEMO_RUN_DIR", "").strip()
         if not run_dir:
@@ -2229,6 +2329,11 @@ def _run(row: Any) -> Run:
         generated_app_url=str(row["generated_app_url"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
+        run_mode=str(row["run_mode"] if "run_mode" in row.keys() else ""),
+        risk_mode=str(row["risk_mode"] if "risk_mode" in row.keys() else "assisted"),
+        team_preset=str(row["team_preset"] if "team_preset" in row.keys() else "standard"),
+        pause_reason=str(row["pause_reason"] if "pause_reason" in row.keys() else ""),
+        paused_at=str(row["paused_at"] if "paused_at" in row.keys() else ""),
     )
 
 
@@ -2251,6 +2356,23 @@ def _codex_auth_connection(row: Any) -> CodexAuthConnection:
         last_checked_at=str(row["last_checked_at"]),
         last_refresh_at=str(row["last_refresh_at"]),
         last_error=str(row["last_error"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def _run_approval(row: Any) -> RunApproval:
+    return RunApproval(
+        id=int(row["id"]),
+        run_id=int(row["run_id"]),
+        gate_type=str(row["gate_type"]),
+        requested_action=str(row["requested_action"]),
+        risk_summary=str(row["risk_summary"]),
+        status=str(row["status"]),
+        requested_by=str(row["requested_by"]),
+        decided_by=str(row["decided_by"]),
+        decision_reason=str(row["decision_reason"]),
+        created_at=str(row["created_at"]),
+        decided_at=str(row["decided_at"]),
         updated_at=str(row["updated_at"]),
     )
 
