@@ -31,6 +31,9 @@ class RunStatus(StrEnum):
     FAILED_TO_START = "failed_to_start"
     PAUSED_PROVIDER_LIMIT = "paused_provider_limit"
     PAUSED_CODEX_AUTH = "paused_codex_auth"
+    # Resumable: a run held at a human approval gate. Deliberately NOT terminal —
+    # the operator's Approve resumes it, Reject stops it.
+    AWAITING_APPROVAL = "awaiting_approval"
 
 
 # Statuses past which a run's outcome is settled; the first one written wins.

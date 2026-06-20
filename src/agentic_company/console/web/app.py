@@ -73,7 +73,12 @@ from agentic_company.integrations.codex.runner import (
     CODEX_AUTH_MODE_USER_CHATGPT,
     codex_auth_mode_from_env,
 )
-from agentic_company.platform.agent.runtime_modes import RiskMode, RunMode, mode_policy
+from agentic_company.platform.agent.runtime_modes import (
+    RiskMode,
+    RunMode,
+    mode_policy,
+    start_gate_required,
+)
 from agentic_company.platform.agent.team_spec import TeamPreset
 from agentic_company.platform.db.runtime_cache import redis_error_types, runtime_cache_from_env
 from agentic_company.platform.db.runtime_db import (
@@ -414,13 +419,14 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             risk_mode=risk_mode,
             team_preset=team_preset,
         )
-        try:
-            start_codex_execution(run_dir)
-        except Exception:
-            repo.update_run_status(run.id, "failed_to_start")
-            repo.update_project_status(project.id, "failed_to_start")
-            raise
-        repo.update_project_status(project.id, "running")
+        _gate_or_start_run(
+            repo,
+            project_id=project.id,
+            run=run,
+            run_dir=run_dir,
+            run_mode=run_mode,
+            risk_mode=risk_mode,
+        )
         return redirect(f"/projects/{project.id}")
 
     @app.get("/projects/{project_id}", response_class=HTMLResponse)
@@ -485,13 +491,14 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             risk_mode=settings["risk_mode"],
             team_preset=settings["team_preset"],
         )
-        try:
-            start_codex_execution(run_dir)
-        except Exception:
-            repo.update_run_status(run.id, "failed_to_start")
-            repo.update_project_status(project.id, "failed_to_start")
-            raise
-        repo.update_project_status(project.id, "running")
+        _gate_or_start_run(
+            repo,
+            project_id=project.id,
+            run=run,
+            run_dir=run_dir,
+            run_mode=settings["run_mode"],
+            risk_mode=settings["risk_mode"],
+        )
         return redirect(f"/projects/{project.id}")
 
     @app.post("/projects/{project_id}/continue")
@@ -1319,6 +1326,8 @@ def render_workspace(
                     and project.visibility != "public_demo"
                     and not run_running
                     and not _run_delivery_done(run.status)
+                    # a gated run resumes via Approve/Reject, not Continue
+                    and run.status != "awaiting_approval"
                 ),
                 "pending_approvals": repo.list_run_approvals(run.id, status="pending")
                 if project.owner_user_id == user.id
@@ -1345,6 +1354,41 @@ def _sync_canonical_run_completion(
         repo.update_project_status(project.id, run.status)
 
 
+def _gate_or_start_run(
+    repo: ConsoleRepository,
+    *,
+    project_id: int,
+    run: Run,
+    run_dir: Path,
+    run_mode: str,
+    risk_mode: str,
+) -> None:
+    """Hold the run at an approval gate, or start it.
+
+    When the chosen risk/run mode requires a human gate (``start_gate_required``), the
+    run is parked in ``awaiting_approval`` with a pending approval INSTEAD of starting
+    (and spending on Codex); the operator's Approve/Reject then starts or stops it. This
+    is what makes the run-mode and risk-mode selections behavioural, not cosmetic."""
+    if start_gate_required(run_mode, risk_mode):
+        repo.request_run_approval(
+            run.id,
+            gate_type="run_start",
+            requested_action="start_delivery_run",
+            risk_summary=f"Start a {run_mode} run (risk mode: {risk_mode}).",
+        )
+        repo.update_run_status(run.id, "awaiting_approval")
+        repo.update_project_status(project_id, "awaiting_approval")
+        return
+    try:
+        start_codex_execution(run_dir)
+    except Exception:
+        repo.update_run_status(run.id, "failed_to_start")
+        repo.update_project_status(project_id, "failed_to_start")
+        raise
+    repo.update_run_status(run.id, "running")
+    repo.update_project_status(project_id, "running")
+
+
 def _decide_project_approval(
     request: Request,
     project_id: int,
@@ -1362,6 +1406,30 @@ def _decide_project_approval(
     if run is None or approval is None or approval.run_id != run.id:
         raise HTTPException(status_code=404)
     repo.decide_run_approval(approval_id, status=status, decided_by=user.username)
+    # A decision must MOVE the run, or the gate is theatre. Approve resumes (starts the
+    # held run); Reject stops it. Only act on a run actually parked at the gate.
+    if run.status != "awaiting_approval":
+        return
+    if status == "approved":
+        run_dir = Path(run.run_dir)
+        repo.clear_run_control_intent(
+            run.id, reconcile_status="approved", reconcile_reason="Operator approved the gate."
+        )
+        prepare_codex_execution_continue(run_dir)
+        repo.clear_console_process_stop(run.id, process_name="codex_execution")
+        repo.update_run_status(run.id, "running")
+        repo.update_project_status(project.id, "running")
+        try:
+            start_codex_execution(run_dir)
+        except Exception:
+            repo.update_run_status(run.id, "failed_to_start")
+            repo.update_project_status(project.id, "failed_to_start")
+            raise
+    elif status == "rejected":
+        request_run_control_intent(run.run_uid, "cancel", "Operator rejected the approval gate.")
+        record_run_lifecycle(run.run_uid, RunStatus.STOPPED)
+        repo.update_run_status(run.id, "stopped")
+        repo.update_project_status(project.id, "stopped")
 
 
 def _run_status_running(status: str) -> bool:

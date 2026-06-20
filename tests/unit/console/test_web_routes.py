@@ -314,6 +314,96 @@ def test_workspace_can_approve_pending_gate(tmp_path):
     assert repo.get_run_approval(approval.id).status == "approved"
 
 
+def _gated_run(repo, tmp_path, *, uid):
+    user = repo.create_user(email=f"{uid}@example.test", username=uid, password="password-1")
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Gated",
+        request_text="Build",
+        mode="simple_prototype",
+        complexity="simple",
+    )
+    run_dir = tmp_path / uid
+    run_dir.mkdir(parents=True)
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid=run_dir.name,
+        run_dir=run_dir,
+        status="running",
+        mode="simple_prototype",
+        reasoning="medium",
+        run_mode="simple",
+        risk_mode="safe",
+        team_preset="standard",
+    )
+    return user, project, run, run_dir
+
+
+def test_safe_mode_gates_run_start_and_approve_resumes(tmp_path, monkeypatch):
+    # safe risk mode must HOLD the run at an approval gate instead of starting (spending);
+    # Approve then resumes it. Proves run/risk modes are behavioural, and Approve is real.
+    from agentic_company.console.web.app import _gate_or_start_run
+
+    repo = ConsoleRepository()
+    repo.init_schema()
+    user, project, run, run_dir = _gated_run(repo, tmp_path, uid="gate-approve")
+    started: list[Path] = []
+    monkeypatch.setattr(
+        "agentic_company.console.web.app.start_codex_execution",
+        lambda path: started.append(path) or 1,
+    )
+
+    _gate_or_start_run(
+        repo, project_id=project.id, run=run, run_dir=run_dir, run_mode="simple", risk_mode="safe"
+    )
+
+    assert started == []  # gated, not started
+    assert repo.get_run_by_uid(run_dir.name).status == "awaiting_approval"
+    pending = repo.list_run_approvals(run.id, status="pending")
+    assert len(pending) == 1
+
+    app = create_app(repo)
+    client = TestClient(app)
+    client.cookies.set("agentic_console_session", repo.create_session(user.id))
+    response = client.post(
+        f"/projects/{project.id}/approvals/{pending[0].id}/approve", follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert started == [run_dir]  # Approve resumed -> the run actually started
+    assert repo.get_run_by_uid(run_dir.name).status == "running"
+    assert repo.get_run_approval(pending[0].id).status == "approved"
+
+
+def test_reject_gate_stops_the_run(tmp_path, monkeypatch):
+    from agentic_company.console.web.app import _gate_or_start_run
+
+    repo = ConsoleRepository()
+    repo.init_schema()
+    user, project, run, run_dir = _gated_run(repo, tmp_path, uid="gate-reject")
+    started: list[Path] = []
+    monkeypatch.setattr(
+        "agentic_company.console.web.app.start_codex_execution",
+        lambda path: started.append(path) or 1,
+    )
+    _gate_or_start_run(
+        repo, project_id=project.id, run=run, run_dir=run_dir, run_mode="simple", risk_mode="safe"
+    )
+    pending = repo.list_run_approvals(run.id, status="pending")
+
+    app = create_app(repo)
+    client = TestClient(app)
+    client.cookies.set("agentic_console_session", repo.create_session(user.id))
+    response = client.post(
+        f"/projects/{project.id}/approvals/{pending[0].id}/reject", follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert started == []  # Reject never starts the run
+    assert repo.get_run_by_uid(run_dir.name).status == "stopped"
+    assert repo.get_run_approval(pending[0].id).status == "rejected"
+
+
 def test_create_project_requires_codex_connection_in_user_chatgpt_mode(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "user_chatgpt")
     repo = ConsoleRepository()

@@ -1,4 +1,9 @@
-from agentic_company.platform.agent.runtime_modes import RiskMode, RunMode, mode_policy
+from agentic_company.platform.agent.runtime_modes import (
+    RiskMode,
+    RunMode,
+    mode_policy,
+    start_gate_required,
+)
 
 
 def test_runtime_mode_policy_maps_current_console_modes():
@@ -22,3 +27,17 @@ def test_enterprise_mode_defaults_to_safe_approval_gates():
     assert policy.run_mode is RunMode.ENTERPRISE
     assert policy.requires_approval_gates is True
     assert policy.default_risk_mode is RiskMode.SAFE
+
+
+def test_start_gate_required_is_driven_by_risk_then_mode():
+    # Risk mode is the primary, load-bearing control.
+    assert start_gate_required("simple_prototype", "autonomous") is False  # never gates
+    assert start_gate_required("enterprise", "autonomous") is False  # autonomy wins
+    assert start_gate_required("simple_prototype", "safe") is True  # safe always gates
+    assert start_gate_required("full_product", "safe") is True
+    # assisted defers to the run-mode policy: only enterprise requires a gate.
+    assert start_gate_required("enterprise", "assisted") is True
+    assert start_gate_required("simple_prototype", "assisted") is False
+    assert start_gate_required("internal_tool", "assisted") is False
+    # unknown values fail open (no gate), never wedge a run.
+    assert start_gate_required("nonsense", "weird") is False

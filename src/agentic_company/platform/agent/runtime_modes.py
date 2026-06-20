@@ -110,4 +110,30 @@ def mode_policy(value: str | RunMode) -> ModePolicy:
     return MODE_POLICIES[run_mode]
 
 
-__all__ = ["MODE_POLICIES", "ModePolicy", "RiskMode", "RunMode", "mode_policy"]
+def start_gate_required(value: str | RunMode, risk_value: str | RiskMode) -> bool:
+    """Whether a run must wait for operator approval before it starts (and spends).
+
+    Risk mode is the primary control so the operator's choice is load-bearing, not a
+    stored label: ``autonomous`` never gates, ``safe`` always gates, and ``assisted``
+    defers to the run-mode policy (only ENTERPRISE requires approval gates today).
+    Unknown values fail open (no gate) so a run is never silently wedged."""
+
+    risk = str(risk_value.value if isinstance(risk_value, RiskMode) else risk_value).strip().lower()
+    if risk == RiskMode.AUTONOMOUS:
+        return False
+    if risk == RiskMode.SAFE:
+        return True
+    try:
+        return mode_policy(value).requires_approval_gates
+    except (KeyError, ValueError):
+        return False
+
+
+__all__ = [
+    "MODE_POLICIES",
+    "ModePolicy",
+    "RiskMode",
+    "RunMode",
+    "mode_policy",
+    "start_gate_required",
+]

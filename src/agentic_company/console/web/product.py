@@ -84,6 +84,7 @@ STATUS_LABELS = {
     "done": "Done",
     "failed": "Needs Attention",
     "failed_to_start": "Could Not Start",
+    "awaiting_approval": "Awaiting Approval",
     "paused_codex_auth": "Paused: Codex Login",
     "paused_provider_limit": "Paused: Provider Limit",
     "fullstack": "Build",
