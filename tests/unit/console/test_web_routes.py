@@ -408,13 +408,42 @@ def test_new_project_pre_selects_the_estimated_team():
     from agentic_company.console.web.app import new_project_form_values
 
     # advisory estimator pre-fills the team dropdown from complexity/mode; operator overrides.
-    assert new_project_form_values(complexity="simple", mode="simple_prototype")["team_preset"] == "small"
-    assert new_project_form_values(complexity="complex", mode="full_product")["team_preset"] == "large"
+    assert (
+        new_project_form_values(complexity="simple", mode="simple_prototype")["team_preset"]
+        == "small"
+    )
+    assert (
+        new_project_form_values(complexity="complex", mode="full_product")["team_preset"] == "large"
+    )
     # an explicit choice still wins over the estimate.
     assert (
         new_project_form_values(complexity="simple", team_preset="standard")["team_preset"]
         == "standard"
     )
+
+
+def test_codex_preflight_requires_auth_json_on_disk(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import agentic_company.console.web.app as app_mod
+    from agentic_company.console.web.app import _codex_start_preflight
+    from agentic_company.integrations.codex.runner import CODEX_AUTH_MODE_USER_CHATGPT
+
+    monkeypatch.setattr(app_mod, "codex_auth_mode_from_env", lambda: CODEX_AUTH_MODE_USER_CHATGPT)
+    user = SimpleNamespace(id=7)
+    repo = SimpleNamespace(
+        get_codex_auth_connection=lambda uid: SimpleNamespace(status="connected"),
+        list_projects_for_user=lambda uid: [],
+    )
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    monkeypatch.setattr(app_mod.codex_account_auth, "codex_home_for_user", lambda uid: home)
+
+    # connected DB row but no auth.json on disk -> blocked with a reconnect message
+    assert "Codex login" in _codex_start_preflight(repo, user)
+    # auth.json present -> preflight passes
+    (home / "auth.json").write_text("{}", encoding="utf-8")
+    assert _codex_start_preflight(repo, user) == ""
 
 
 def test_create_project_requires_codex_connection_in_user_chatgpt_mode(tmp_path, monkeypatch):

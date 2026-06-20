@@ -72,18 +72,24 @@ def _redis_check() -> Check:
         return Check("Redis", True, False, "not configured (optional; stop stays DB-authoritative)")
     host, port = _host_port(url, 6379)
     ok = _tcp_reachable(host, port)
-    return Check("Redis", ok, False, f"{host}:{port} {'reachable' if ok else 'unreachable (optional)'}")
+    return Check(
+        "Redis", ok, False, f"{host}:{port} {'reachable' if ok else 'unreachable (optional)'}"
+    )
 
 
 def _gh_check() -> Check:
     ok = bool(shutil.which("gh"))
-    return Check("GitHub CLI", ok, True, "gh found" if ok else "gh not on PATH (GitHub delivery needs it)")
+    return Check(
+        "GitHub CLI", ok, True, "gh found" if ok else "gh not on PATH (GitHub delivery needs it)"
+    )
 
 
 def _codex_auth_check() -> Check:
     mode = os.getenv("AGENTIC_CODEX_AUTH_MODE", "api_key").strip().lower()
     if mode in {"chatgpt_service", "user_chatgpt"}:
-        home = os.getenv("CODEX_HOME", "").strip() or os.getenv("AGENTIC_CODEX_AUTH_ROOT", "").strip()
+        home = (
+            os.getenv("CODEX_HOME", "").strip() or os.getenv("AGENTIC_CODEX_AUTH_ROOT", "").strip()
+        )
         return Check(
             "Codex auth (chatgpt)",
             bool(home),
@@ -106,7 +112,9 @@ def preflight_checks() -> list[Check]:
 
 def gating_failures(checks: list[Check] | None = None) -> list[Check]:
     """Required checks that are failing (block live delivery under ``vm_mvp``)."""
-    return [c for c in (checks if checks is not None else preflight_checks()) if c.required and not c.ok]
+    return [
+        c for c in (checks if checks is not None else preflight_checks()) if c.required and not c.ok
+    ]
 
 
 def main() -> int:
@@ -123,7 +131,10 @@ def main() -> int:
         print("\nAll required checks passed.")
         return 0
     if profile is RuntimeProfile.VM_MVP:
-        print(f"\nFAIL: {len(failures)} required check(s) failed — vm_mvp is NOT ready for live delivery.")
+        print(
+            f"\nFAIL: {len(failures)} required check(s) failed — "
+            "vm_mvp is NOT ready for live delivery."
+        )
         return 1
     print(f"\nWARN: {len(failures)} required check(s) failed (local profile — advisory).")
     return 0

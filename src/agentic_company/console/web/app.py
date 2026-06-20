@@ -1824,6 +1824,10 @@ def _codex_start_preflight(
     connection = repo.get_codex_auth_connection(user.id)
     if connection is None or connection.status != "connected":
         return "Connect your Codex account in Settings before starting a run."
+    # The DB row is metadata; verify the actual auth.json is still on disk so an expired
+    # / deleted login is caught at the gate, not as a mid-run worker failure.
+    if not (codex_account_auth.codex_home_for_user(user.id) / "auth.json").exists():
+        return "Your Codex login is missing or expired. Reconnect your Codex account in Settings."
     active_statuses = {
         "starting",
         "running",
