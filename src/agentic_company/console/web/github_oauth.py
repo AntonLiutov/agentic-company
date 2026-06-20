@@ -20,7 +20,7 @@ from typing import Any
 AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 TOKEN_URL = "https://github.com/login/oauth/access_token"
 API_BASE = "https://api.github.com"
-SCOPE = "repo,delete_repo"  # list/create repos, open+merge PRs, mirror the board, delete
+SCOPE = "repo,project,read:org"  # clone/PR/merge + Projects board (read:org = gh owner-type resolution)
 PROVIDER = "github_oauth"
 LOGIN_PROVIDER = "github_login"  # stores the resolved username (non-secret) for display
 _UA = "ADL-Console"
