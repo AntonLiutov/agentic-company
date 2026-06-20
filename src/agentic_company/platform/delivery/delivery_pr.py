@@ -23,11 +23,11 @@ from typing import Any
 LOGGER = logging.getLogger("agentic_company.delivery_pr")
 
 # Per-run map of work_item_id -> {url, number, branch, merged}. Persisted in the run
-# workspace so later agent workers can learn the PR exists. Git operations stay
-# agent-owned through the git-pr-workflow skill; the platform only mirrors records.
+# workspace so later agent workers can learn the PR exists. GitHub write
+# operations are platform-owned; workers only produce file changes and evidence.
 _PR_STORE_REL = "delivery/work-item-prs.json"
 
-# Only the agents that produce committable code/config open PRs.
+# Only the agents that produce committable code/config need PR publication.
 _PR_OWNER_AGENTS = {"fullstack-agent", "deployment-agent"}
 _REPO_ENSURED: set[str] = set()  # run_uids whose working tree is already prepared
 
@@ -70,7 +70,7 @@ def ensure_run_repo(run_uid: str, *, gh: Any = None, git: Any = None) -> None:
     _REPO_ENSURED.add(run_uid)  # mark either way so we don't retry per item
 
 
-def publish_work_item_pr(
+def _mirror_agent_opened_pr_legacy(
     run_uid: str, work_item_id: str, *, title: str = "", gh: Any = None, git: Any = None
 ) -> str:
     """Mirror the PR the AGENT opened for this work item onto its board card.
@@ -105,6 +105,82 @@ def publish_work_item_pr(
     except Exception as exc:  # best-effort: never break delivery
         LOGGER.warning("PR mirror failed for %s: %s", work_item_id, exc)
         return ""
+
+
+def publish_work_item_pr(
+    run_uid: str, work_item_id: str, *, title: str = "", gh: Any = None, git: Any = None
+) -> str:
+    """Commit worker output and open/update a PR with platform-side credentials."""
+    try:
+        from agentic_company.platform.db.runtime_db import _repo_and_run, get_work_item
+        from agentic_company.platform.delivery.repo_manager import build_run_repo
+
+        recorded = get_work_item_pr(run_uid, work_item_id)
+        if recorded and recorded.get("url"):
+            return str(recorded["url"])
+        repo, db_run_id = _repo_and_run(run_uid)
+        built = build_run_repo(repo, db_run_id, gh=gh, git=git)
+        if built is None:
+            return ""
+        adapter, spec = built
+        target = spec.target_dir
+        if not target.exists():
+            return ""
+        branch = f"adl/{work_item_id.lower()}"
+        find_pr = getattr(adapter, "find_pr", None)
+        if callable(find_pr):
+            existing = find_pr(target, branch)
+            if existing and existing.url:
+                record_work_item_pr(run_uid, work_item_id, existing.url, existing.number, branch)
+                _mirror_pr(run_uid, work_item_id, existing.url, existing.number)
+                return existing.url
+        if not getattr(adapter.capabilities, "branch", False):
+            return ""
+        item_title = title.strip()
+        if not item_title:
+            try:
+                item_title = get_work_item(run_uid, work_item_id).title
+            except Exception:
+                item_title = work_item_id
+        adapter.create_branch(target, branch, base=spec.base_branch or "main")
+        adapter.commit_push(target, _commit_message(work_item_id, item_title), branch=branch)
+        if not getattr(adapter.capabilities, "pull_request", False):
+            return ""
+        pr = adapter.open_pr(
+            target,
+            title=_pr_title(work_item_id, item_title),
+            body=_pr_body(run_uid, work_item_id, item_title),
+            base=spec.base_branch or "main",
+            head=branch,
+        )
+        if pr and pr.url:
+            record_work_item_pr(run_uid, work_item_id, pr.url, pr.number, branch)
+            _mirror_pr(run_uid, work_item_id, pr.url, pr.number)
+            return pr.url
+        return ""
+    except Exception as exc:
+        LOGGER.warning("Platform PR publish failed for %s: %s", work_item_id, exc)
+        return ""
+
+
+def _commit_message(work_item_id: str, title: str) -> str:
+    prefix = "deploy" if work_item_id.upper() == "DEPLOY" else "feat"
+    return f"{prefix}({work_item_id.lower()}): {title}".strip()
+
+
+def _pr_title(work_item_id: str, title: str) -> str:
+    return f"[{work_item_id}] {title}".strip()
+
+
+def _pr_body(run_uid: str, work_item_id: str, title: str) -> str:
+    return (
+        f"Platform-owned PR for work item `{work_item_id}`.\n\n"
+        f"Run: `{run_uid}`\n"
+        f"Title: {title}\n\n"
+        "The Codex worker produced the file changes without GitHub credentials; "
+        "Agentic Delivery Lab committed and opened this PR with the connected "
+        "user's GitHub account."
+    )
 
 
 def run_repo_context(run_uid: str, *, gh: Any = None, git: Any = None) -> dict[str, str] | None:

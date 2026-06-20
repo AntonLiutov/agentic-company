@@ -22,8 +22,8 @@ def test_quality_prompt_includes_execution_instructions(tmp_path, monkeypatch):
         input_artifacts=["00-requirements.md"],
         expected_outputs=["08-qa-report-F1.md", "qa/results-F1.json"],
         instructions=[
-            "A git repository is connected. Follow git-pr-workflow and merge with "
-            "`gh pr merge` on a pass.",
+            "A git repository is connected. Follow git-pr-workflow; report a verdict "
+            "and let the platform merge on a pass.",
         ],
         constraints=[],
         completed_work_item_ids=[],
@@ -43,7 +43,7 @@ def test_quality_prompt_includes_execution_instructions(tmp_path, monkeypatch):
 
     assert "Execution instructions:" in prompt
     assert "git-pr-workflow" in prompt
-    assert "gh pr merge" in prompt
+    assert "let the platform merge" in prompt
 
 
 def test_quality_request_delegates_merge_only_when_pr_is_recorded(tmp_path, monkeypatch):

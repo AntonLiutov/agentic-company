@@ -171,6 +171,12 @@ def _write_deployment_execution_request(run_dir: Path, delivery_state: DeliveryS
             f"git-pr-workflow skill: branch `adl/{work_item_id.lower()}`, commit (never secrets), "
             "push, open the PR. Never commit to the base branch directly."
         )
+        instructions.append(
+            "Phase 3 platform override: do not run `gh`, do not push, and do not "
+            "open or merge pull requests from inside the worker. Write deployment "
+            "config changes and evidence only; the platform publishes branch/PR "
+            "host-side after your Codex execution completes."
+        )
     request = build_execution_request_payload(
         delivery_state,
         agent_id=DEPLOYMENT_AGENT_ID,

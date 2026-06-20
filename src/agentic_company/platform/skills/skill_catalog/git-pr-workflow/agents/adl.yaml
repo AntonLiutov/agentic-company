@@ -7,7 +7,7 @@ selection:
   applies_to_agents: [fullstack-agent, deployment-agent, qa-agent]
   default_for_agents: [fullstack-agent, deployment-agent, qa-agent]
   stages: [fullstack, deployment, qa, quality_review, post_deploy_qa, repair]
-  trigger_keywords: [pull request, PR, branch, commit, push, merge, gh pr, git, review the PR]
+  trigger_keywords: [pull request, PR, branch, commit, platform publish, git, review the PR]
   negative_triggers: [no repository, local-only delivery, planning, release report]
 contracts:
   required_tools: [codex_exec]
@@ -38,12 +38,12 @@ governance:
   checkpoint_after: true
 validation:
   eval_prompts:
-    - Push an implemented work item as a branch and open a pull request.
-    - Review an existing PR and merge it on a pass or comment defects on a fail.
+    - Implement a connected-repository work item and let the platform publish the PR.
+    - Review an existing PR and report a pass/fail verdict for platform merge.
   success_signals:
     - branch follows the adl/<work-item-id> convention
     - no secrets are committed
-    - QA merges only on a pass, comments on a fail
+    - QA returns a verdict and the platform merges only on a pass
 examples:
   - input: Implemented work item with a connected repository and base branch
-    output: Pushed adl/<id> and opened or updated the pull request, reported the URL
+    output: Reported changed files and verification; platform opened or updated the pull request

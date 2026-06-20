@@ -288,6 +288,12 @@ def _write_feature_execution_request(
             "commit (never secrets), push, and open the PR. Never commit to the base branch "
             "directly; QA reviews and merges the PR." + existing_note
         )
+        instructions.append(
+            "Phase 3 platform override: do not run `gh`, do not push, and do not "
+            "open or merge pull requests from inside the worker. Implement file "
+            "changes only; the platform publishes the branch and PR host-side "
+            "after your Codex execution completes."
+        )
     request = build_execution_request_payload(
         delivery_state,
         agent_id="fullstack-agent",

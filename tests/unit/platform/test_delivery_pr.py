@@ -7,8 +7,7 @@ class _Item:
 
 
 class _Adapter:
-    """The git interface. The platform now only uses find_pr (detect); the agent owns
-    branch/commit/push/merge via the git-pr-workflow skill."""
+    """The git interface used by platform-owned PR publishing."""
 
     capabilities = RepoCapabilities(branch=True, pull_request=True, merge=True, review_comment=True)
 
@@ -70,12 +69,9 @@ def test_publish_is_noop_without_repo_host(monkeypatch):
     assert dp.publish_work_item_pr("run", "F1") == ""
 
 
-def test_publish_mirrors_the_pr_the_agent_opened(tmp_path, monkeypatch):
+def test_publish_creates_platform_owned_pr(tmp_path, monkeypatch):
     (tmp_path / ".git").mkdir()
     adapter = _Adapter()
-    adapter.agent_pr = PullRequest(
-        number="9", url="https://github.com/o/app/pull/9", branch="adl/f1"
-    )
     spec = RepoSpec(mode="support", target_dir=tmp_path, repository="o/app", base_branch="main")
     _patch(monkeypatch, built=(adapter, spec))
     _patch_pr_store(monkeypatch, tmp_path)
@@ -87,21 +83,23 @@ def test_publish_mirrors_the_pr_the_agent_opened(tmp_path, monkeypatch):
 
     url = dp.publish_work_item_pr("run", "F1")
 
-    assert url == "https://github.com/o/app/pull/9"  # the PR the agent opened
-    # the platform NEVER touches git itself anymore
-    assert not any(c[0] in {"open_pr", "commit_push", "branch"} for c in adapter.calls)
-    assert mirrored == [("F1", "https://github.com/o/app/pull/9", "9")]  # it IS mirrored
-    assert dp.get_work_item_pr("run", "F1")["url"] == "https://github.com/o/app/pull/9"
+    assert url == "https://github.com/o/app/pull/7"
+    assert ("branch", "adl/f1", "main") in adapter.calls
+    assert ("commit_push", "adl/f1") in adapter.calls
+    assert ("open_pr", "[F1] Core task list workflow", "adl/f1") in adapter.calls
+    assert mirrored == [("F1", "https://github.com/o/app/pull/7", "7")]
+    assert dp.get_work_item_pr("run", "F1")["url"] == "https://github.com/o/app/pull/7"
 
 
-def test_publish_is_noop_when_agent_opened_no_pr(tmp_path, monkeypatch):
-    adapter = _Adapter()  # find_pr returns None (agent opened nothing)
+def test_publish_returns_recorded_pr_without_duplicate_write(tmp_path, monkeypatch):
+    adapter = _Adapter()
     spec = RepoSpec(mode="support", target_dir=tmp_path, repository="o/app", base_branch="main")
     _patch(monkeypatch, built=(adapter, spec))
     _patch_pr_store(monkeypatch, tmp_path)
+    dp.record_work_item_pr("run", "F1", "https://github.com/o/app/pull/7", "7", "adl/f1")
 
-    assert dp.publish_work_item_pr("run", "F1") == ""
-    assert not any(c[0] in {"open_pr", "commit_push", "branch"} for c in adapter.calls)
+    assert dp.publish_work_item_pr("run", "F1") == "https://github.com/o/app/pull/7"
+    assert adapter.calls == []
 
 
 def test_record_and_get_work_item_pr_round_trip(tmp_path, monkeypatch):
