@@ -345,6 +345,7 @@ def build_quality_codex_prompt(
     completed = ", ".join(request.completed_work_item_ids) or "none"
     input_artifacts = "\n".join(f"- {artifact}" for artifact in request.input_artifacts)
     expected_outputs = "\n".join(f"- {artifact}" for artifact in request.expected_outputs)
+    instructions = "\n".join(f"- {instruction}" for instruction in request.instructions)
     upstream_messages = render_incoming_messages_for_prompt(run_dir, to_agent="qa-agent")
     report_path = run_dir / f"08-qa-report-{work_item_id}.md"
     results_path = run_dir / "qa" / f"results-{work_item_id}.json"
@@ -387,6 +388,9 @@ Input artifacts:
 
 Expected implementation outputs from planning:
 {expected_outputs or "- None"}
+
+Execution instructions:
+{instructions or "- None"}
 
 Work item:
 - ID: {work_item_id}

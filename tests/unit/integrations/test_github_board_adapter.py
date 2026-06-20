@@ -176,3 +176,105 @@ def test_gh_runner_raises_when_gh_missing():
     runner = GhRunner(gh_binary="definitely-not-a-real-binary-xyz")
     with pytest.raises(GhError):
         runner.run(["issue", "list"])
+
+
+@dataclass
+class _Proc:
+    returncode: int
+    stdout: str = ""
+    stderr: str = ""
+
+
+def test_gh_runner_retries_transient_github_conflict(monkeypatch):
+    # GitHub answers rapid Projects mutations with "temporary conflict. Please try again."
+    # (the PLAN-04 card-add failure). The runner must back off and retry, not give up.
+    import agentic_company.integrations.github.cli as cli
+
+    calls: list[list[str]] = []
+    conflict = "GraphQL: Your attempt to move this item created a temporary conflict. Please try again."
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        # fail transiently twice, then succeed
+        if len(calls) <= 2:
+            return _Proc(returncode=1, stderr=conflict)
+        return _Proc(returncode=0, stdout="ok\n")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli.time, "sleep", lambda _s: None)  # no real backoff in tests
+
+    runner = GhRunner(max_retries=4)
+    assert runner.run(["project", "item-add", "21"]) == "ok\n"
+    assert len(calls) == 3  # two conflicts + one success
+
+
+def test_gh_runner_authenticates_with_oauth_token(monkeypatch):
+    # With a per-user OAuth token bound, gh runs under GH_TOKEN/GITHUB_TOKEN (the
+    # connected user's account) instead of the host's stored auth — the multi-user path.
+    import agentic_company.integrations.github.cli as cli
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _Proc(returncode=0, stdout="ok\n")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    GhRunner(github_token="gho_user").run(["api", "user"])
+    assert captured["env"]["GH_TOKEN"] == "gho_user"
+    assert captured["env"]["GITHUB_TOKEN"] == "gho_user"
+
+    GhRunner().run(["api", "user"])  # no token -> inherit host env (gh stored auth)
+    assert captured["env"] is None
+
+
+def test_resolve_oauth_github_token_decrypts_connection_credential(monkeypatch):
+    from agentic_company.platform.delivery import repo_manager
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params):
+            assert params == (7, "github_oauth")
+
+            class _R:
+                @staticmethod
+                def fetchone():
+                    return {"encrypted_value": "ENC"}
+
+            return _R()
+
+    class _Repo:
+        def connect(self):
+            return _Conn()
+
+    monkeypatch.setattr(
+        "agentic_company.console.web.auth.decrypt_secret", lambda ciphertext: "gho_decrypted"
+    )
+    conn = type("C", (), {"token_ref": "user:7:github_oauth"})()
+    assert repo_manager.resolve_oauth_github_token(_Repo(), conn) == "gho_decrypted"
+    # a connection without an OAuth token_ref falls back to host gh auth ("")
+    assert repo_manager.resolve_oauth_github_token(_Repo(), type("C", (), {"token_ref": ""})()) == ""
+
+
+def test_gh_runner_does_not_retry_a_real_error(monkeypatch):
+    # A non-transient failure (e.g. bad argument) must fail fast — no pointless retries.
+    import agentic_company.integrations.github.cli as cli
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return _Proc(returncode=1, stderr="unknown flag: --nope")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli.time, "sleep", lambda _s: None)
+
+    runner = GhRunner(max_retries=4)
+    with pytest.raises(GhError):
+        runner.run(["project", "item-add", "21"])
+    assert len(calls) == 1  # failed once, did not retry

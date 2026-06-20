@@ -41,6 +41,15 @@ secrets/
 credentials.json
 .npmrc
 .pypirc
+
+# ADL run scaffolding — never commit into the deliverable. Root-anchored (leading /) so
+# a legit nested path like src/qa/ is untouched; kept untracked at runtime via
+# .git/info/exclude too; seeded here so it holds from the very first commit.
+/.agents/
+/qa/
+/execution-summary.md
+/07-execution-summary.md
+/debug.log
 """
 _SECRET_PATH_RE = re.compile(
     r"(^|/)("
@@ -48,6 +57,13 @@ _SECRET_PATH_RE = re.compile(
     r".*\.(key|pem|pfx|p12|secret)|id_rsa.*|id_ed25519.*|"
     r"secrets/.*|credentials\.json|\.npmrc|\.pypirc"
     r")$",
+    re.IGNORECASE,
+)
+# ADL run scaffolding, anchored to the project root so a legit nested src/qa/ is never
+# matched. The fail-safe drops these from the index even if they slipped in before the
+# ignore was seeded (mirrors _SECRET_PATH_RE / _unstage_secrets).
+_SCAFFOLDING_PATH_RE = re.compile(
+    r"^(\.agents/.*|qa/.*|execution-summary\.md|07-execution-summary\.md|debug\.log)$",
     re.IGNORECASE,
 )
 
@@ -110,6 +126,7 @@ class GitHubRepoAdapter:
         self._write_secrets_gitignore(target)
         self._git.run(["add", "-A"], cwd=target)
         self._unstage_secrets(target)
+        self._unstage_scaffolding(target)
         self._git.run(["commit", "-m", "Initial commit by Agentic Delivery Lab"], cwd=target)
         self._gh.run(
             [
@@ -147,6 +164,7 @@ class GitHubRepoAdapter:
         self._write_secrets_gitignore(target_dir)
         self._git.run(["add", "-A"], cwd=target_dir)
         self._unstage_secrets(target_dir)
+        self._unstage_scaffolding(target_dir)
         self._git.run(["commit", "-m", message], cwd=target_dir)
         self._git.run(["push", "-u", "origin", branch or "HEAD"], cwd=target_dir)
 
@@ -166,6 +184,19 @@ class GitHubRepoAdapter:
             rel = rel.strip()
             if rel and _SECRET_PATH_RE.search(rel):
                 LOGGER.warning("Refusing to commit secret-looking file: %s", rel)
+                self._git.run(
+                    ["rm", "--cached", "-r", "--ignore-unmatch", rel], cwd=target_dir
+                )
+
+    def _unstage_scaffolding(self, target_dir: Path) -> None:
+        """Fail-safe: drop ADL run scaffolding (.agents/, qa/, execution summary, debug
+        log) from the index before commit, so it never lands in the deliverable PR even
+        if it was staged before the ignore was seeded. Mirrors ``_unstage_secrets``."""
+        staged = self._git.run(["diff", "--cached", "--name-only"], cwd=target_dir)
+        for rel in staged.splitlines():
+            rel = rel.strip()
+            if rel and _SCAFFOLDING_PATH_RE.search(rel):
+                LOGGER.info("Dropping ADL scaffolding from the commit: %s", rel)
                 self._git.run(
                     ["rm", "--cached", "-r", "--ignore-unmatch", rel], cwd=target_dir
                 )

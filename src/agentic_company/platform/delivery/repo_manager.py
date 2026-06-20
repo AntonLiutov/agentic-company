@@ -36,8 +36,41 @@ def build_run_repo(
     from agentic_company.integrations.github.cli import GhRunner
     from agentic_company.integrations.github.repo import GitHubRepoAdapter, GitRunner
 
-    adapter = GitHubRepoAdapter(gh=gh or GhRunner(), git=git or GitRunner())
+    adapter = GitHubRepoAdapter(
+        gh=gh or GhRunner(github_token=resolve_oauth_github_token(repo, conn)),
+        git=git or GitRunner(),
+    )
     return adapter, _repo_spec(run, conn)
+
+
+def resolve_oauth_github_token(repo: Any, conn: Any) -> str:
+    """Decrypt the per-user GitHub OAuth token a connection points at.
+
+    A ``github`` connection created from the console login carries
+    ``token_ref = "user:<id>:github_oauth"``; we resolve it to the user's encrypted
+    access token so gh/git act under THAT user's GitHub account instead of the host's
+    stored auth (which a fresh VM may not have). Returns '' to fall back to host auth.
+    Best-effort — never raises.
+    """
+    token_ref = str(getattr(conn, "token_ref", "") or "").strip()
+    if not token_ref.startswith("user:"):
+        return ""
+    try:
+        _, user_id, provider = token_ref.split(":", 2)
+        with repo.connect() as connection:
+            row = connection.execute(
+                "SELECT encrypted_value FROM provider_credentials "
+                "WHERE user_id = ? AND provider = ?",
+                (int(user_id), provider),
+            ).fetchone()
+        if not row:
+            return ""
+        from agentic_company.console.web.auth import decrypt_secret
+
+        return decrypt_secret(row["encrypted_value"])
+    except Exception as exc:  # never break delivery on token resolution
+        LOGGER.warning("Could not resolve OAuth GitHub token: %s", exc)
+        return ""
 
 
 def _repo_spec(run: Any, conn: Any) -> RepoSpec:

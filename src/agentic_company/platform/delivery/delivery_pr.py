@@ -23,23 +23,13 @@ from typing import Any
 LOGGER = logging.getLogger("agentic_company.delivery_pr")
 
 # Per-run map of work_item_id -> {url, number, branch, merged}. Persisted in the run
-# workspace so the QA stage (a later Codex worker) can learn the PR exists and the
-# platform can merge/comment on the QA verdict.
+# workspace so later agent workers can learn the PR exists. Git operations stay
+# agent-owned through the git-pr-workflow skill; the platform only mirrors records.
 _PR_STORE_REL = "delivery/work-item-prs.json"
 
 # Only the agents that produce committable code/config open PRs.
 _PR_OWNER_AGENTS = {"fullstack-agent", "deployment-agent"}
 _REPO_ENSURED: set[str] = set()  # run_uids whose working tree is already prepared
-
-
-@dataclass(frozen=True, slots=True)
-class WorkItemPrMergeResult:
-    """Outcome of the platform-owned post-QA PR merge guard."""
-
-    ok: bool
-    status: str
-    message: str
-    pr_url: str = ""
 
 
 def should_publish_pr(owner_agent: str) -> bool:
@@ -162,7 +152,7 @@ def _run_dir(run_uid: str) -> Path | None:
 def record_work_item_pr(
     run_uid: str, work_item_id: str, pr_url: str, pr_number: str, branch: str = ""
 ) -> None:
-    """Persist a work item's PR so QA can review it and the platform can merge it."""
+    """Persist a work item's PR so downstream agents can review or update it."""
     if not (pr_url and work_item_id):
         return
     run_dir = _run_dir(run_uid)
@@ -203,7 +193,7 @@ def get_work_item_pr(run_uid: str, work_item_id: str) -> dict[str, Any] | None:
 
 
 def mark_work_item_pr_merged(run_uid: str, work_item_id: str) -> None:
-    """Record that the agent (QA) merged the work item's PR, for board/idempotency."""
+    """Record that the work item's PR was merged, for board/idempotency."""
     pr = get_work_item_pr(run_uid, work_item_id)
     if not pr:
         return
@@ -219,66 +209,49 @@ def mark_work_item_pr_merged(run_uid: str, work_item_id: str) -> None:
         pass
 
 
-def merge_work_item_pr_after_qa_pass(
-    run_uid: str, work_item_id: str, *, gh: Any = None, git: Any = None
-) -> WorkItemPrMergeResult:
-    """Merge the recorded work-item PR after QA passes.
+@dataclass(frozen=True, slots=True)
+class PrMergeOutcome:
+    """Result of the platform-owned, PR-gated merge after a QA pass."""
 
-    This is the deterministic backstop for the model-facing git-pr-workflow
-    instruction: QA may still review the PR itself, but the platform must not mark
-    a repo-backed work item complete while the PR remains unmerged.
+    status: str  # merged | already_merged | no_pr | no_repo | unsupported | failed
+    pr_url: str = ""
+    detail: str = ""
+
+
+def ensure_recorded_pr_merged(
+    run_uid: str, work_item_id: str, *, gh: Any = None, git: Any = None
+) -> PrMergeOutcome:
+    """Merge the work item's recorded PR after it passes QA — platform-owned.
+
+    The merge runs host-side via the platform's authenticated ``gh``: the sandboxed QA
+    worker has no valid GitHub credentials under its ``workspace-write`` policy, so an
+    in-worker ``gh pr merge`` 401s. The decision is gated on the PR ARTIFACT the builder
+    recorded — a PR exists -> merge it; none exists (e.g. a redeploy that opened no
+    branch) -> there is simply nothing to merge, which is never a failure. Guarded:
+    a merge problem is surfaced as a status, never raised into delivery.
     """
 
     try:
+        pr = get_work_item_pr(run_uid, work_item_id)
+        if not pr:
+            return PrMergeOutcome(status="no_pr")
+        pr_url = str(pr.get("url") or "")
+        if bool(pr.get("merged")):
+            return PrMergeOutcome(status="already_merged", pr_url=pr_url)
         from agentic_company.platform.delivery.repo_manager import build_run_repo
         from agentic_company.platform.db.runtime_db import _repo_and_run
 
         repo, db_run_id = _repo_and_run(run_uid)
         built = build_run_repo(repo, db_run_id, gh=gh, git=git)
         if built is None:
-            return WorkItemPrMergeResult(
-                ok=True,
-                status="skipped",
-                message="No repository host is connected; no PR merge is required.",
-            )
+            return PrMergeOutcome(status="no_repo", pr_url=pr_url)
         adapter, _spec = built
-        pr = get_work_item_pr(run_uid, work_item_id)
-        if not pr:
-            return WorkItemPrMergeResult(
-                ok=False,
-                status="missing_pr",
-                message=(
-                    f"Repository is connected, but no recorded PR exists for work item "
-                    f"{work_item_id}."
-                ),
-            )
-        pr_url = str(pr.get("url") or "")
-        if bool(pr.get("merged")):
-            return WorkItemPrMergeResult(
-                ok=True,
-                status="already_merged",
-                message=f"PR already recorded as merged for work item {work_item_id}.",
-                pr_url=pr_url,
-            )
         if not getattr(adapter.capabilities, "merge", False):
-            return WorkItemPrMergeResult(
-                ok=False,
-                status="unsupported",
-                message=f"Repository adapter does not support PR merge for {pr_url}.",
-                pr_url=pr_url,
-            )
+            return PrMergeOutcome(status="unsupported", pr_url=pr_url)
         adapter.merge_pr(pr_url)
         mark_work_item_pr_merged(run_uid, work_item_id)
-        return WorkItemPrMergeResult(
-            ok=True,
-            status="merged",
-            message=f"Merged PR for work item {work_item_id}: {pr_url}",
-            pr_url=pr_url,
-        )
-    except Exception as exc:
-        LOGGER.warning("PR merge after QA pass failed for %s: %s", work_item_id, exc)
-        return WorkItemPrMergeResult(
-            ok=False,
-            status="failed",
-            message=f"PR merge after QA pass failed for work item {work_item_id}: {exc}",
-        )
+        LOGGER.info("Merged recorded PR for %s: %s", work_item_id, pr_url)
+        return PrMergeOutcome(status="merged", pr_url=pr_url)
+    except Exception as exc:  # best-effort: a merge failure never breaks delivery
+        LOGGER.warning("Platform PR merge for %s failed: %s", work_item_id, exc)
+        return PrMergeOutcome(status="failed", detail=str(exc))

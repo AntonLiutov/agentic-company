@@ -102,6 +102,39 @@ def test_secrets_gitignore_is_idempotent(tmp_path: Path):
     assert (tmp_path / ".gitignore").read_text(encoding="utf-8").count("ADL secrets safety") == 1
 
 
+def test_commit_push_drops_adl_scaffolding(tmp_path: Path):
+    # The exact leak the brake-test caught: qa/ screenshots + check scripts and the
+    # execution summary must NEVER reach the deliverable PR. A legit NESTED src/qa/ is
+    # kept (the scaffolding pattern is anchored to the project root).
+    git = _DiffGit(
+        ".agents/skills/git-pr-workflow/SKILL.md\n"
+        "qa/screenshots/f1-full.png\n"
+        "qa/f1-playwright-check.js\n"
+        "execution-summary.md\n"
+        "07-execution-summary.md\n"
+        "debug.log\n"
+        "web/app.js\n"
+        "src/qa/helpers.py"
+    )
+    adapter = GitHubRepoAdapter(gh=_FakeGh(), git=git)
+    adapter.commit_push(tmp_path, "feat: F2", branch="adl/F2")
+
+    gitignore = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    assert "ADL run scaffolding" in gitignore and "/qa/" in gitignore  # seeded, root-anchored
+
+    removed = {c[-1] for c in git.calls if c[:2] == ["rm", "--cached"]}
+    assert {
+        ".agents/skills/git-pr-workflow/SKILL.md",
+        "qa/screenshots/f1-full.png",
+        "qa/f1-playwright-check.js",
+        "execution-summary.md",
+        "07-execution-summary.md",
+        "debug.log",
+    } <= removed
+    assert "web/app.js" not in removed  # real app file kept
+    assert "src/qa/helpers.py" not in removed  # nested qa/ is NOT scaffolding (root-anchored)
+
+
 def test_capabilities_and_pr_review_actions():
     gh, git = _FakeGh(), _FakeGit()
     adapter = GitHubRepoAdapter(gh=gh, git=git)

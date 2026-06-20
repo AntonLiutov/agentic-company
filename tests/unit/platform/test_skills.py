@@ -260,19 +260,21 @@ def test_both_coordinators_select_the_repair_loop_skill():
         assert "repair-loop" in ids, f"{agent_id} missing repair-loop; got {ids}"
 
 
-def test_runner_provisions_native_skills_into_codex_cwd_parent(tmp_path):
-    # The runner's single chokepoint must drop the catalog where Codex auto-discovers it:
-    # the worker's cwd is <run>/generated-project, so Codex scans $CWD/../.agents/skills.
+def test_runner_provisions_native_skills_into_worker_cwd(tmp_path):
+    # The real failure: most ADL workers (the Builder among them) run with cwd = run_dir,
+    # a NON-git workspace, and Codex scans $CWD/.agents/skills FIRST. Provisioning only
+    # the parent silently missed them, so the Builder fell back to a bundled skill. The
+    # runner MUST provision the cwd ITSELF so $CWD/.agents/skills resolves.
     from agentic_company.integrations.codex import runner
 
     runner._NATIVE_SKILLS_READY.clear()
-    target = tmp_path / "generated-project"
-    target.mkdir()
-    command = ["codex", "exec", "--cd", str(target), "-"]
+    run_dir = tmp_path / "run-workspace"  # cwd = run_dir, no .git (like the real Builder)
+    run_dir.mkdir()
+    command = ["codex", "exec", "--cd", str(run_dir), "-"]
 
     runner._ensure_native_skills(command)
 
-    skills_root = tmp_path / ".agents" / "skills"
+    skills_root = run_dir / ".agents" / "skills"  # == $CWD/.agents/skills
     assert (skills_root / "git-pr-workflow" / "SKILL.md").is_file()
     assert (skills_root / "browser-smoke-qa" / "SKILL.md").is_file()
 
@@ -280,6 +282,46 @@ def test_runner_provisions_native_skills_into_codex_cwd_parent(tmp_path):
     (skills_root / "git-pr-workflow" / "SKILL.md").write_text("X", encoding="utf-8")
     runner._ensure_native_skills(command)
     assert (skills_root / "git-pr-workflow" / "SKILL.md").read_text(encoding="utf-8") == "X"
+    runner._NATIVE_SKILLS_READY.clear()
+
+
+def test_exclude_adl_scaffolding_writes_every_pattern(tmp_path):
+    # The deliverable git must never carry ADL run scaffolding. Every pattern lands in
+    # .git/info/exclude, idempotently — regression for the qa/ + execution-summary.md leak.
+    from agentic_company.integrations.codex import runner
+
+    repo = tmp_path / "generated-project"
+    (repo / ".git" / "info").mkdir(parents=True)
+
+    runner._exclude_adl_scaffolding_from_git(repo)
+    excl = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8").splitlines()
+    assert set(runner._ADL_SCAFFOLDING_EXCLUDES) <= set(excl)
+    # root-anchored so a legit nested src/qa/ is never excluded
+    assert "/qa/" in excl and "/execution-summary.md" in excl and "/debug.log" in excl
+
+    runner._exclude_adl_scaffolding_from_git(repo)  # idempotent: no duplicate lines
+    excl2 = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8").splitlines()
+    assert excl == excl2
+
+
+def test_runner_provisions_native_skills_inside_generated_git_repo(tmp_path):
+    # When generated-project is a cloned git repo, Codex native skill discovery stops
+    # at that repo root and never reaches <run>/.agents/skills. The runner must also
+    # provision inside generated-project, while excluding the runtime-only folder from git.
+    from agentic_company.integrations.codex import runner
+
+    runner._NATIVE_SKILLS_READY.clear()
+    target = tmp_path / "generated-project"
+    (target / ".git" / "info").mkdir(parents=True)
+    command = ["codex", "exec", "--cd", str(target), "-"]
+
+    runner._ensure_native_skills(command)
+
+    parent_skills = tmp_path / ".agents" / "skills"
+    repo_skills = target / ".agents" / "skills"
+    assert (parent_skills / "git-pr-workflow" / "SKILL.md").is_file()
+    assert (repo_skills / "git-pr-workflow" / "SKILL.md").is_file()
+    assert ".agents/" in (target / ".git" / "info" / "exclude").read_text(encoding="utf-8")
     runner._NATIVE_SKILLS_READY.clear()
 
 

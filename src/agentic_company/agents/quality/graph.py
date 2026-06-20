@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, NotRequired, Protocol, TypedDict, cast
 
@@ -185,25 +184,29 @@ def _write_quality_execution_request(
     repo_ctx = _run_repo_context(str(delivery_state["run_id"]))
     if repo_ctx:
         pr = _work_item_pr(str(delivery_state["run_id"]), work_item_id)
-        branch = f"adl/{work_item_id.lower()}"
-        pr_ref = (
-            pr.get("url")
-            if pr
-            else f"the PR for branch `{branch}` (find it with `gh pr list --head {branch}`)"
-        )
-        instructions.append(
-            f"A git repository is connected for this run: {repo_ctx['repository']} "
-            f"(base branch `{repo_ctx['base_branch']}`). This work item is delivered as a PULL "
-            f"REQUEST on branch `{branch}` — YOU own reviewing and merging it. Follow the "
-            "git-pr-workflow skill (Reviewer section): ORIENT first — `git remote -v`, "
-            "`git status`, `git branch --show-current` — to confirm the repo and branch and that "
-            f"you are testing what is pushed. Open and review {pr_ref} (`gh pr diff`) against the "
-            "running app, and verify the pushed branch matches the code you tested (never review "
-            "or merge stale or unpushed code). If QA PASSES you MUST merge it: "
-            "`gh pr merge --squash --delete-branch` — merging is a REQUIRED step of a passing QA, "
-            "not optional. If it FAILS, leave ONE general PR comment with the defects "
-            "(`gh pr comment`) and do NOT merge."
-        )
+        if pr:
+            instructions.append(
+                f"A git repository is connected for this run: {repo_ctx['repository']} "
+                f"(base branch `{repo_ctx['base_branch']}`). A pull request is recorded for "
+                f"this work item: {pr.get('url')}. Follow the git-pr-workflow skill "
+                "(Reviewer section): ORIENT first with `git remote -v`, `git status`, "
+                "`git branch --show-current`, and the PR diff; review the running app against "
+                "exactly what the PR changes; never accept stale or unpushed code. Report "
+                "`passed` only when the PR is correct — the PLATFORM performs the merge on a "
+                "pass (you do not run `gh pr merge`; the worker sandbox has no merge "
+                "credentials). If QA FAILS, report the concrete defects so the builder repairs "
+                "the same branch and you re-review."
+            )
+        else:
+            instructions.append(
+                f"A git repository is connected for this run: {repo_ctx['repository']} "
+                f"(base branch `{repo_ctx['base_branch']}`), but no pull request is recorded "
+                f"for work item `{work_item_id}`. Do not invent a PR gate. Validate the "
+                "canonical work-item acceptance criteria and release contract. Treat the "
+                "missing PR as a QA blocker only when the canonical work-item contract or "
+                "upstream implementation handoff explicitly says this item must be accepted "
+                "through a PR."
+            )
     request = build_execution_request_payload(
         delivery_state,
         agent_id=QUALITY_AGENT_ID,
@@ -290,23 +293,11 @@ def _apply_quality_result(state: QualityAgentGraphState) -> QualityAgentGraphSta
 
     delivery_state = state["delivery_state"]
     status = state.get("status") or _normalize_qa_status(result.status)
-    pr_merge_blocker = ""
-    if work_item_id and status == "passed":
-        merge_result = _merge_work_item_pr_after_qa_pass(
-            str(delivery_state["run_id"]), str(work_item_id)
-        )
-        if not merge_result.ok:
-            status = "failed"
-            pr_merge_blocker = merge_result.message
-            result = replace(
-                result,
-                status="qa_failed",
-                blocking_findings=[*result.blocking_findings, merge_result.message],
-                recommended_next_action=(
-                    "Resolve the pull request merge blocker, then rerun QA for the same "
-                    "work item."
-                ),
-            )
+    if status == "passed" and work_item_id:
+        # Platform-owned, PR-gated merge: the sandboxed QA worker cannot merge (its
+        # workspace-write policy 401s gh), so the platform merges the recorded PR
+        # host-side. No recorded PR -> nothing to merge; never a QA blocker.
+        _ensure_recorded_pr_merged(str(delivery_state["run_id"]), str(work_item_id))
     event_log = Path(state["run_dir"])
     artifact = (
         _primary_report_artifact(str(work_item_id), result.output_artifacts)
@@ -350,9 +341,6 @@ def _apply_quality_result(state: QualityAgentGraphState) -> QualityAgentGraphSta
             updated = _mark_feature_provider_limited(updated, work_item_id, result)
         else:
             updated = _mark_feature_failed(updated, work_item_id)
-        if pr_merge_blocker:
-            updated["status"] = "qa_pr_merge_blocked"
-            updated["blockers"] = [*updated.get("blockers", []), pr_merge_blocker]
     return {**state, "delivery_state": updated}
 
 
@@ -376,11 +364,14 @@ def _run_repo_context(run_id: str) -> dict[str, str] | None:
         pass
 
 
-def _merge_work_item_pr_after_qa_pass(run_id: str, work_item_id: str):
-    """Merge the recorded PR for a QA-passed work item, when a repo is connected."""
-    from agentic_company.platform.delivery.delivery_pr import merge_work_item_pr_after_qa_pass
+def _ensure_recorded_pr_merged(run_id: str, work_item_id: str):
+    """Platform-owned, PR-gated merge after a QA pass (no-op when no PR is recorded)."""
+    try:
+        from agentic_company.platform.delivery.delivery_pr import ensure_recorded_pr_merged
 
-    return merge_work_item_pr_after_qa_pass(run_id, work_item_id)
+        return ensure_recorded_pr_merged(run_id, work_item_id)
+    except Exception:
+        return None
 
 
 def _quality_user_prompt(state: DeliveryState, work_item_id: str | None) -> str:

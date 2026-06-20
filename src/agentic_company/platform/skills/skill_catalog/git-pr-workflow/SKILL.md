@@ -87,40 +87,62 @@ Finally, report the branch and the PR URL in your execution summary.
 
 ## Reviewer workflow (QA)
 
-You review an existing PR and decide its fate. Your responsibility (different from the
-builder's): the builder OPENS the PR; YOU review it and you are the one who MERGES it on a
-pass or comments on a fail. ALWAYS orient before you judge — same discipline as the builder.
+**You are a PULL REQUEST reviewer who also runs functional tests — not a tester who
+happens to have a repo.** The pull request IS the unit of work. The builder OPENS the
+PR; YOU review it and decide its fate on a pass or a fail.
 
-### 1. ORIENT — confirm the repo, the branch, and that you test what's pushed
+### HARD GATE — git comes FIRST, before anything else
+
+Before you serve the app, before you open a browser, before any functional test, your
+**FIRST action is to inspect git and the PR**. You are forbidden from running, serving,
+or testing the app until you have completed Step 1 below and written its evidence.
+
+Your QA report **MUST OPEN** with a `## Git state` block containing, in this order:
+
+- `repository` and the branch you are on (`git remote -v`, `git branch --show-current`),
+- the work item's PR number/URL (`gh pr list --head adl/<id>` if not given to you),
+- a one-line summary of the diff you reviewed (`gh pr diff <pr>`),
+- confirmation that the pushed branch matches the code you will test.
+
+**A QA report that does not OPEN with a filled-in `## Git state` block is INVALID and
+counts as a FAIL of your own process — redo it.** This is non-negotiable.
+
+### 1. ORIENT — inspect git/the PR FIRST (mandatory, before any app exercise)
 ```sh
 git remote -v                    # which repository is this?
 git status                       # is the tree clean? anything uncommitted?
 git branch --show-current        # which branch am I on right now?
 git log --oneline -5             # what commits are here?
 gh pr list --head adl/<id>       # find THIS work item's PR if its URL wasn't given to you
+gh pr diff <pr>                  # what does the PR actually change?
 ```
 Then prove the PR is real and current before you trust it:
 - `gh pr diff <pr>` must reflect what is actually on branch `adl/<id>`.
 - The branch you tested must be the branch the PR points at.
-- If local has commits that were never pushed, or the pushed branch does NOT match the code
-  you tested, that is a **FAIL** — never review or merge stale or unpushed code.
+- If local has commits that were never pushed, or the pushed branch does NOT match the
+  code you tested, that is a **FAIL** — never review or merge stale or unpushed code.
+
+Only after Step 1 is done and its `## Git state` block is written may you proceed.
 
 ### 2. REVIEW
-Serve and exercise the app (browser + functional QA) AND read the PR diff together.
+Serve and exercise the app (browser + functional QA) AND re-read the PR diff together,
+checking the running app against exactly what the PR changes.
 
-### 3. DECIDE — this call is yours and the merge is MANDATORY on a pass
-- **Pass** → you MUST merge it (required, not optional):
-  `gh pr merge <pr> --squash --delete-branch`. Report `passed` and that you merged.
+### 3. DECIDE — your verdict drives the merge (the platform performs it)
+- **Pass** → report `passed`. The PLATFORM performs the merge host-side
+  (`gh pr merge --squash --delete-branch`); do NOT run the merge yourself — the worker
+  sandbox has no merge credentials, so an in-worker `gh pr merge` only fails with `401`.
+  Your job is the verdict; the platform acts on it.
 - **Fail** → leave ONE general comment with concrete defects and reproduction steps:
-  `gh pr comment <pr> --body "<findings>"`. Do NOT merge, and do NOT open resolvable review
-  threads. Report `failed` so the builder repairs the same branch and you re-review.
+  `gh pr comment <pr> --body "<findings>"`. The platform never merges a failed PR. Report
+  `failed` so the builder repairs the same branch and you re-review.
 - **Environment blocker** (outbound-network/sandbox/credentials, not an app defect)
-  → do not merge and do not file it as a defect; report `blocked` for human attention.
+  → do not file it as a defect; report `blocked` for human attention.
 
 ## Result vocabulary
 
 - Builder: report the branch + PR URL, and whether it was a new PR or an update.
-- QA: `passed` (reviewed + merged), `failed` (commented, repair needed), `blocked`
+- QA: `passed` (reviewed; platform merges), `failed` (commented, repair needed), `blocked`
   (environment limitation, not an app defect).
 
 ## Examples
@@ -133,7 +155,8 @@ Output: pushed `adl/f2`, opened PR "[F2] …", reported the URL in the summary.
 ### Good (QA)
 
 Input: PR for F1 exists; the app works in the browser.
-Output: `gh pr merge <pr> --squash --delete-branch`; reported `passed` + merged.
+Output: opened with a `## Git state` block, reviewed the PR diff, reported `passed`;
+the platform merged the PR.
 
 ### Bad
 

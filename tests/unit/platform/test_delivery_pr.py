@@ -129,34 +129,6 @@ def test_mark_work_item_pr_merged(tmp_path, monkeypatch):
     dp.mark_work_item_pr_merged("run", "F2")  # no PR for F2 -> no-op, no raise
 
 
-def test_merge_work_item_pr_after_qa_pass_merges_and_marks_recorded(tmp_path, monkeypatch):
-    adapter = _Adapter()
-    spec = RepoSpec(mode="support", target_dir=tmp_path, repository="o/app", base_branch="main")
-    _patch(monkeypatch, built=(adapter, spec))
-    _patch_pr_store(monkeypatch, tmp_path)
-    dp.record_work_item_pr("run", "F1", "https://github.com/o/app/pull/7", "7", "adl/f1")
-
-    result = dp.merge_work_item_pr_after_qa_pass("run", "F1")
-
-    assert result.ok is True
-    assert result.status == "merged"
-    assert ("merge_pr", "https://github.com/o/app/pull/7") in adapter.calls
-    assert dp.get_work_item_pr("run", "F1")["merged"] is True
-
-
-def test_merge_work_item_pr_after_qa_pass_fails_when_repo_has_no_pr(tmp_path, monkeypatch):
-    adapter = _Adapter()
-    spec = RepoSpec(mode="support", target_dir=tmp_path, repository="o/app", base_branch="main")
-    _patch(monkeypatch, built=(adapter, spec))
-    _patch_pr_store(monkeypatch, tmp_path)
-
-    result = dp.merge_work_item_pr_after_qa_pass("run", "F1")
-
-    assert result.ok is False
-    assert result.status == "missing_pr"
-    assert not any(call[0] == "merge_pr" for call in adapter.calls)
-
-
 def test_run_repo_context_returns_repo_and_base(monkeypatch):
     spec = RepoSpec(mode="support", target_dir=None, repository="o/app", base_branch="main")
     _patch(monkeypatch, built=(_Adapter(), spec))
@@ -179,3 +151,46 @@ def test_ensure_run_repo_clones_support_once(tmp_path, monkeypatch):
 
     assert sum(1 for c in adapter.calls if c[0] == "ensure_repo") == 1
     dp.reset_repo_state()
+
+
+def test_ensure_recorded_pr_merged_merges_when_pr_recorded(tmp_path, monkeypatch):
+    # Platform-owned merge on a QA pass: the recorded PR is merged host-side.
+    adapter = _Adapter()
+    spec = RepoSpec(mode="support", target_dir=tmp_path, repository="o/app", base_branch="main")
+    _patch(monkeypatch, built=(adapter, spec))
+    _patch_pr_store(monkeypatch, tmp_path)
+    dp.record_work_item_pr("run", "F1", "https://github.com/o/app/pull/7", "7", "adl/f1")
+
+    outcome = dp.ensure_recorded_pr_merged("run", "F1")
+
+    assert outcome.status == "merged"
+    assert ("merge_pr", "https://github.com/o/app/pull/7") in adapter.calls
+    assert dp.get_work_item_pr("run", "F1")["merged"] is True
+
+
+def test_ensure_recorded_pr_merged_is_noop_without_a_pr(tmp_path, monkeypatch):
+    # The DEPLOY fix: a redeploy that opened no branch has no recorded PR, so there is
+    # nothing to merge — `no_pr` is a benign no-op, NEVER a QA/sprint blocker.
+    adapter = _Adapter()
+    spec = RepoSpec(mode="support", target_dir=tmp_path, repository="o/app", base_branch="main")
+    _patch(monkeypatch, built=(adapter, spec))
+    _patch_pr_store(monkeypatch, tmp_path)
+
+    outcome = dp.ensure_recorded_pr_merged("run", "DEPLOY")
+
+    assert outcome.status == "no_pr"
+    assert not any(c[0] == "merge_pr" for c in adapter.calls)
+
+
+def test_ensure_recorded_pr_merged_is_idempotent(tmp_path, monkeypatch):
+    adapter = _Adapter()
+    spec = RepoSpec(mode="support", target_dir=tmp_path, repository="o/app", base_branch="main")
+    _patch(monkeypatch, built=(adapter, spec))
+    _patch_pr_store(monkeypatch, tmp_path)
+    dp.record_work_item_pr("run", "F1", "https://github.com/o/app/pull/7", "7", "adl/f1")
+    dp.mark_work_item_pr_merged("run", "F1")
+
+    outcome = dp.ensure_recorded_pr_merged("run", "F1")
+
+    assert outcome.status == "already_merged"
+    assert not any(c[0] == "merge_pr" for c in adapter.calls)

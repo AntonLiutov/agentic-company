@@ -76,8 +76,9 @@ def build_run_mirror(repo: Any, db_run_id: int, *, gh: Any = None) -> WorkMirror
 
     if gh is None:
         from agentic_company.integrations.github.cli import GhRunner
+        from agentic_company.platform.delivery.repo_manager import resolve_oauth_github_token
 
-        gh = GhRunner()
+        gh = GhRunner(github_token=resolve_oauth_github_token(repo, conn))
 
     repository = conn.repository.strip()
     md = dict(conn.metadata or {})
