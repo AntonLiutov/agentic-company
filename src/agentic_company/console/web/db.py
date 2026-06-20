@@ -836,6 +836,24 @@ class ConsoleRepository:
                 (run_id, process_name, now, now, now),
             )
 
+    def clear_console_process_stop(self, run_id: int, *, process_name: str) -> None:
+        """Clear a process stop request so a continued run is not re-stopped on re-entry.
+
+        ``upsert_console_process_state`` deliberately PRESERVES ``stop_requested_at`` (a
+        plain status write must not erase a pending stop), so a Continue has to clear it
+        explicitly — otherwise ``run_stop_requested`` keeps returning True and the run
+        re-stops on the first node."""
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE console_processes
+                SET stop_requested_at = '', updated_at = ?
+                WHERE run_id = ? AND process_name = ?
+                """,
+                (now, run_id, process_name),
+            )
+
     def set_run_control_intent(self, run_id: int, *, intent: str, reason: str = "") -> None:
         now = utc_now()
         with self.connect() as conn:

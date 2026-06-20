@@ -1075,8 +1075,12 @@ def test_continue_project_reuses_existing_run_dir(tmp_path, monkeypatch):
         mode="simple_prototype",
         reasoning="medium",
     )
+    # Drive the REAL stop path (control intent + durable process stop flag), not a
+    # cosmetic "failed" status — so the test proves Continue clears the ACTUAL stop
+    # sources (the previous fake masked that Continue left stop_requested_at set).
     repo.set_run_control_intent(run.id, intent="cancel", reason="Stopped by user.")
-    repo.upsert_console_process_state(run.id, process_name="codex_execution", status="failed")
+    repo.request_console_process_stop(run.id, process_name="codex_execution")
+    assert repo.get_console_process_state(run.id, "codex_execution").stop_requested_at
     started: list[Path] = []
     monkeypatch.setattr(
         "agentic_company.console.web.app.start_codex_execution",
@@ -1096,7 +1100,14 @@ def test_continue_project_reuses_existing_run_dir(tmp_path, monkeypatch):
     assert updated is not None
     assert updated.id == run.id
     assert updated.status == "running"
-    assert repo.get_console_process_state(run.id, "codex_execution").status == "continued"
+    proc = repo.get_console_process_state(run.id, "codex_execution")
+    assert proc.status == "continued"
+    assert not proc.stop_requested_at  # durable DB stop flag cleared on continue
+    # No remaining stop source (file gone, control_intent cleared, DB flag cleared,
+    # Redis noop in tests) => the continued run will not immediately re-stop.
+    from agentic_company.platform.db.runtime_db import run_stop_requested
+
+    assert run_stop_requested(run_dir.name, run_dir) is False
 
 
 def test_restart_button_visible_for_blocked_private_run(tmp_path):

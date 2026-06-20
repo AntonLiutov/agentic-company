@@ -21,6 +21,9 @@ class RuntimeCache(Protocol):
     def set_stop_requested(self, run_id: str, *, ttl_seconds: int = 3600) -> None:
         """Set a short-lived stop flag."""
 
+    def clear_stop_requested(self, run_id: str) -> None:
+        """Remove the stop flag so a continued run is not re-stopped on re-entry."""
+
     def stop_requested(self, run_id: str) -> bool:
         """Return whether a stop flag is currently present."""
 
@@ -33,6 +36,9 @@ class NoopRuntimeCache:
         return None
 
     def set_stop_requested(self, run_id: str, *, ttl_seconds: int = 3600) -> None:
+        return None
+
+    def clear_stop_requested(self, run_id: str) -> None:
         return None
 
     def stop_requested(self, run_id: str) -> bool:
@@ -69,6 +75,12 @@ class RedisRuntimeCache:
             self._client.set(f"run:{run_id}:stop_requested", "1", ex=ttl_seconds)
         except self._redis_errors as exc:
             LOGGER.warning("Redis runtime stop flag write failed run_id=%s error=%s", run_id, exc)
+
+    def clear_stop_requested(self, run_id: str) -> None:
+        try:
+            self._client.delete(f"run:{run_id}:stop_requested")
+        except self._redis_errors as exc:
+            LOGGER.warning("Redis runtime stop flag clear failed run_id=%s error=%s", run_id, exc)
 
     def stop_requested(self, run_id: str) -> bool:
         try:

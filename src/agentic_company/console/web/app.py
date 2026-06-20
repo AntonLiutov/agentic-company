@@ -519,6 +519,25 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             reconcile_reason="Operator continued the same run.",
         )
         prepare_codex_execution_continue(run_dir)
+        # Continue must clear EVERY stop source or the run re-stops on the first node.
+        # Files + control_intent were cleared above; also clear the durable DB process
+        # flag and the Redis stop flag (the stop route sets all of them).
+        repo.clear_console_process_stop(run.id, process_name="codex_execution")
+        try:
+            cache = runtime_cache_from_env()
+        except ValueError as exc:
+            LOGGER.warning(
+                "Redis cache config invalid on continue run_uid=%s error=%s", run.run_uid, exc
+            )
+        else:
+            try:
+                cache.clear_stop_requested(run.run_uid)
+            except redis_error_types() as exc:
+                LOGGER.warning(
+                    "Redis stop flag clear failed on continue run_uid=%s error=%s",
+                    run.run_uid,
+                    exc,
+                )
         repo.update_run_status(run.id, "running")
         repo.update_project_status(project.id, "running")
         try:

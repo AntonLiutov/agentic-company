@@ -15,6 +15,7 @@ def test_runtime_cache_defaults_to_noop_without_redis_url(monkeypatch):
     cache.publish_run_event("run-1", '{"type":"work_item_updated"}')
     cache.set_stop_requested("run-1")
     assert not cache.stop_requested("run-1")
+    cache.clear_stop_requested("run-1")  # no-op, never raises
 
 
 def test_runtime_cache_uses_redis_client_when_url_is_configured(monkeypatch):
@@ -32,6 +33,9 @@ def test_runtime_cache_uses_redis_client_when_url_is_configured(monkeypatch):
 
         def exists(self, key: str) -> bool:
             return key in self.values
+
+        def delete(self, key: str) -> None:
+            self.values.pop(key, None)
 
     fake_client = FakeRedisClient()
 
@@ -68,6 +72,8 @@ def test_runtime_cache_uses_redis_client_when_url_is_configured(monkeypatch):
 
     assert fake_client.published == [("events:run:run-1", '{"type":"work_item_updated"}')]
     assert cache.stop_requested("run-1")
+    cache.clear_stop_requested("run-1")  # Continue must be able to remove the flag
+    assert not cache.stop_requested("run-1")
 
 
 def test_runtime_cache_treats_redis_errors_as_best_effort(monkeypatch):
@@ -82,6 +88,9 @@ def test_runtime_cache_treats_redis_errors_as_best_effort(monkeypatch):
             raise FakeRedisError("redis unavailable")
 
         def exists(self, _key: str) -> bool:
+            raise FakeRedisError("redis unavailable")
+
+        def delete(self, _key: str) -> None:
             raise FakeRedisError("redis unavailable")
 
     class FakeRedis:
@@ -114,3 +123,4 @@ def test_runtime_cache_treats_redis_errors_as_best_effort(monkeypatch):
     cache.publish_run_event("run-1", '{"type":"work_item_updated"}')
     cache.set_stop_requested("run-1", ttl_seconds=10)
     assert cache.stop_requested("run-1") is False
+    cache.clear_stop_requested("run-1")  # best-effort: swallows the redis error
