@@ -177,3 +177,31 @@ def test_git_runner_raises_when_git_missing(tmp_path: Path):
     runner = GitRunner(git_binary="definitely-not-a-real-git-xyz")
     with pytest.raises(GitError):
         runner.run(["status"], cwd=tmp_path)
+
+
+def test_git_runner_injects_token_into_push_env(monkeypatch, tmp_path: Path):
+    # The platform-side `git push` must carry the per-user token in its subprocess env
+    # (the repo-local credential helper reads $GH_TOKEN), so delivery authenticates on a
+    # fresh VM with no ambient git credentials. Regression guard: the Phase-3 env-hardening
+    # moved push host-side but left GitRunner tokenless, silently breaking per-user push.
+    import agentic_company.integrations.github.repo as repo_mod
+
+    captured = {}
+
+    class _Proc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _Proc()
+
+    monkeypatch.setattr(repo_mod.subprocess, "run", fake_run)
+
+    GitRunner(github_token="gho_user").run(["push", "-u", "origin", "adl/f1"], cwd=tmp_path)
+    assert captured["env"]["GH_TOKEN"] == "gho_user"
+    assert captured["env"]["GITHUB_TOKEN"] == "gho_user"
+
+    GitRunner().run(["status"], cwd=tmp_path)  # no token -> inherit host env (env=None)
+    assert captured["env"] is None
