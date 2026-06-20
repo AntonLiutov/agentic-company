@@ -46,7 +46,24 @@ def test_ensure_repo_support_clones(tmp_path: Path):
     adapter.ensure_repo(RepoSpec(mode="support", target_dir=tmp_path, repository="o/existing"))
 
     assert ["repo", "clone", "o/existing", str(tmp_path)] in gh.calls
-    assert git.calls == []  # support clones, does not init
+    assert git.calls == []  # support clones, does not init (and no token -> host git creds)
+
+
+def test_ensure_repo_configures_push_credentials_with_token(tmp_path: Path):
+    # With a per-user token bound, the worker's later `git push` must authenticate on a
+    # host with no git credentials (a fresh VM). A repo-local credential helper supplies
+    # the token from the GH_TOKEN env at push time — the literal token is NEVER written
+    # into git config / argv, so `git remote -v` and logs stay clean.
+    gh, git = _FakeGh(), _FakeGit()
+    adapter = GitHubRepoAdapter(gh=gh, git=git, github_token="gho_secret")
+    adapter.ensure_repo(RepoSpec(mode="support", target_dir=tmp_path, repository="o/existing"))
+
+    helper_cmds = [c[0] for c in git.calls if c[0][:2] == ["config", "--local"]]
+    assert len(helper_cmds) == 1
+    assert "credential.helper" in helper_cmds[0]
+    helper_value = helper_cmds[0][-1]
+    assert "$GH_TOKEN" in helper_value  # reads the token from the env at push time
+    assert "gho_secret" not in helper_value  # the literal token is never embedded
 
 
 def test_create_branch_and_commit_push(tmp_path: Path):

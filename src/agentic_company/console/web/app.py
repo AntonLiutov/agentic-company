@@ -379,6 +379,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             codex_model=codex_model,
             codex_reasoning=codex_reasoning,
             service_tier=service_tier,
+            github_token=gh_token if repository.strip() else "",
         )
         run = repo.create_run(
             project_id=project.id,
@@ -435,6 +436,9 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             user.username,
             _run_requirements(project.name, request_text, project.mode, project.complexity),
         )
+        gh_conn = repo.get_active_work_system_connection(
+            project_id=project.id, system="github"
+        )
         prepare_run_environment(
             run_dir,
             api_key=api_key,
@@ -445,6 +449,11 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             codex_model=settings["codex_model"],
             codex_reasoning=settings["codex_reasoning"],
             service_tier=settings["service_tier"],
+            github_token=(
+                _github_token(repo, user)
+                if gh_conn is not None and gh_conn.repository.strip()
+                else ""
+            ),
         )
         run = repo.create_run(
             project_id=project.id,
@@ -1474,6 +1483,7 @@ def prepare_run_environment(
     service_tier: str,
     gemini_api_key: str = "",
     agent_provider: str = "google_gemini",
+    github_token: str = "",
 ) -> Path:
     agent_provider = normalize_agent_provider(agent_provider)
     agent_model = normalize_agent_model(agent_provider, agent_model)
@@ -1498,6 +1508,13 @@ def prepare_run_environment(
     }
     if values["AGENT_LLM_PROVIDER"] == "google_gemini" and gemini_api_key.strip():
         values["GOOGLE_API_KEY"] = gemini_api_key.strip()
+    if github_token.strip():
+        # The connected user's GitHub OAuth token, so the Codex worker delivers
+        # (git push / gh pr / merge) under THAT user's account on any host —
+        # including a fresh VM with no host gh auth. It lives only in the run-local
+        # delivery env (never the generated-project deliverable).
+        values["GH_TOKEN"] = github_token.strip()
+        values["GITHUB_TOKEN"] = github_token.strip()
     return write_target_env(run_dir, values)
 
 

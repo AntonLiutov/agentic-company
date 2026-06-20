@@ -112,14 +112,16 @@ class GitHubRepoAdapter:
         branch=True, pull_request=True, merge=True, review_comment=True
     )
 
-    def __init__(self, *, gh: GhLike, git: GitLike) -> None:
+    def __init__(self, *, gh: GhLike, git: GitLike, github_token: str = "") -> None:
         self._gh = gh
         self._git = git
+        self._github_token = (github_token or "").strip()
 
     def ensure_repo(self, spec: RepoSpec) -> None:
         target = spec.target_dir
         if spec.mode == "support":
             self._gh.run(["repo", "clone", spec.repository, str(target)])
+            self._configure_push_credentials(target)
             return
         # new: commit the generated project, create the remote, push.
         self._git.run(["init", "-b", spec.base_branch or "main"], cwd=target)
@@ -141,6 +143,27 @@ class GitHubRepoAdapter:
                 "--push",
             ]
         )
+        self._configure_push_credentials(target)
+
+    def _configure_push_credentials(self, target_dir: Path) -> None:
+        """Make the worker's ``git push`` authenticate via the per-user token on a host
+        with no git credential setup (a fresh VM). A repo-local credential helper reads
+        the token from the worker's ``GH_TOKEN`` env at push time, so the token never
+        lands in ``.git/config``, the command line, or ``git remote -v`` output. When no
+        per-user token is bound we leave it untouched and fall back to the host's own git
+        credentials (local development)."""
+        if not self._github_token:
+            return
+        # POSIX shell helper (git ships sh on Windows too): answer only credential `get`
+        # with username + the token from the environment.
+        helper = '!f() { test "$1" = get && printf "username=x-access-token\\npassword=%s\\n" "$GH_TOKEN"; }; f'
+        try:
+            self._git.run(
+                ["config", "--local", "--replace-all", "credential.helper", helper],
+                cwd=target_dir,
+            )
+        except GitError:
+            LOGGER.warning("Could not configure git push credentials in %s", target_dir)
 
     def create_branch(self, target_dir: Path, branch: str, *, base: str = "") -> None:
         # Idempotent: on a repair re-run the work item's branch already exists, so
