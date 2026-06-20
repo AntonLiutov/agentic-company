@@ -629,6 +629,8 @@ def build_codex_exec_environment(target_project_dir: Path) -> dict[str, str]:
     env = _codex_subprocess_env()
     _merge_run_local_env(env, target_project_dir)
     auth_mode = codex_auth_mode_from_env(env)
+    if auth_mode == CODEX_AUTH_MODE_USER_CHATGPT:
+        _apply_run_owner_codex_home(env, target_project_dir)
     if _uses_extension_binary_mode(env):
         env.pop(CODEX_API_KEY_ENV, None)
     elif auth_mode == CODEX_AUTH_MODE_USER_CHATGPT:
@@ -742,6 +744,28 @@ def _is_secret_runtime_env_key(key: str) -> bool:
     }:
         return True
     return upper.endswith("_TOKEN") or upper.endswith("_SECRET") or upper.endswith("_PASSWORD")
+
+
+def _apply_run_owner_codex_home(env: dict[str, str], target_project_dir: Path) -> None:
+    if env.get(CODEX_HOME_ENV, "").strip():
+        return
+    run_dir = target_project_dir.parent
+    try:
+        from agentic_company.console.web.db import ConsoleRepository
+        from agentic_company.integrations.codex.account_auth import codex_home_for_user
+    except Exception:
+        return
+    try:
+        repo = ConsoleRepository()
+        run = repo.get_run_by_uid(run_dir.name)
+        if run is None:
+            return
+        project = repo.get_project(run.project_id)
+        if project is None or project.owner_user_id is None:
+            return
+        env[CODEX_HOME_ENV] = str(codex_home_for_user(project.owner_user_id))
+    except Exception:
+        return
 
 
 def _uses_extension_binary_mode(env: dict[str, str]) -> bool:

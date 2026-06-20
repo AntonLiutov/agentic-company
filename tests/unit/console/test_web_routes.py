@@ -218,6 +218,40 @@ def test_create_project_starts_run_with_monkeypatched_runtime(tmp_path, monkeypa
     assert repo.list_projects_for_user(1)[0].name == "Task Tracker"
 
 
+def test_create_project_requires_codex_connection_in_user_chatgpt_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "user_chatgpt")
+    repo = ConsoleRepository()
+    app = create_app(repo)
+    client = TestClient(app)
+    client.post(
+        "/register",
+        data={
+            "email": "codex-required@example.test",
+            "username": "codexrequired",
+            "password": "password-1",
+        },
+    )
+    repo.save_provider_secret(1, "google_gemini", "AIza-project")
+
+    response = client.post(
+        "/projects",
+        data={
+            "name": "Task Tracker",
+            "request_text": "Build a task tracker",
+            "mode": "simple_prototype",
+            "complexity": "simple",
+            "agent_provider": "google_gemini",
+            "agent_model": "gemini-3.1-flash-lite",
+            "codex_model": "gpt-5.5",
+            "codex_reasoning": "medium",
+            "service_tier": "standard",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Connect your Codex account" in response.text
+
+
 def test_create_project_with_github_board_records_connection(tmp_path, monkeypatch):
     repo = ConsoleRepository()
     app = create_app(repo)

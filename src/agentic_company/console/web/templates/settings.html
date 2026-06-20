@@ -58,6 +58,31 @@
           {% endif %}
         </span>
       </div>
+      <div class="conn-row">
+        <span class="conn-name">Codex <span class="info-i" title="Use your own ChatGPT/Codex subscription for worker execution on this VM.">i</span></span>
+        <span class="conn-status">
+          {% if codex_auth and codex_auth.status == "connected" %}
+            <span class="ok-dot"></span>{{ codex_auth.auth_mode or "chatgpt" }}
+          {% elif codex_auth and codex_auth.status == "pending" %}
+            Device login pending{% if codex_device_login.message %}: {{ codex_device_login.message }}{% endif %}
+          {% elif codex_auth and codex_auth.status == "needs_relogin" %}
+            Needs re-login
+          {% elif codex_auth and codex_auth.status == "error" %}
+            Error: {{ codex_auth.last_error }}
+          {% else %}
+            Not connected
+          {% endif %}
+        </span>
+        <span class="conn-action">
+          {% if codex_auth and codex_auth.status == "connected" %}
+          <form method="post" action="/auth/codex/check" style="margin:0;"><button type="submit">Check</button></form>
+          <form method="post" action="/auth/codex/disconnect" style="margin:0;"><button class="danger" type="submit">Disconnect</button></form>
+          {% else %}
+          <form method="post" action="/auth/codex/connect" style="margin:0;"><button class="primary" type="submit">Connect Codex</button></form>
+          <form method="post" action="/auth/codex/check" style="margin:0;"><button type="submit">Check</button></form>
+          {% endif %}
+        </span>
+      </div>
     </div>
   </section>
 {% endblock %}

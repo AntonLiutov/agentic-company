@@ -101,6 +101,18 @@ class ProviderCredential:
 
 
 @dataclass(frozen=True, slots=True)
+class CodexAuthConnection:
+    user_id: int
+    auth_slot: str
+    status: str
+    auth_mode: str
+    last_checked_at: str
+    last_refresh_at: str
+    last_error: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class WorkItem:
     id: int
     run_id: int
@@ -2038,6 +2050,69 @@ class ConsoleRepository:
                 (user_id, provider),
             )
 
+    def get_codex_auth_connection(self, user_id: int) -> CodexAuthConnection | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT user_id, auth_slot, status, auth_mode, last_checked_at,
+                       last_refresh_at, last_error, updated_at
+                FROM user_codex_auth
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+        return _codex_auth_connection(row) if row else None
+
+    def upsert_codex_auth_connection(
+        self,
+        user_id: int,
+        *,
+        auth_slot: str,
+        status: str,
+        auth_mode: str = "",
+        last_error: str = "",
+        last_refresh_at: str = "",
+    ) -> CodexAuthConnection:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_codex_auth (
+                    user_id, auth_slot, status, auth_mode, last_checked_at,
+                    last_refresh_at, last_error, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id)
+                DO UPDATE SET
+                    auth_slot = excluded.auth_slot,
+                    status = excluded.status,
+                    auth_mode = excluded.auth_mode,
+                    last_checked_at = excluded.last_checked_at,
+                    last_refresh_at = excluded.last_refresh_at,
+                    last_error = excluded.last_error,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    auth_slot,
+                    status,
+                    auth_mode,
+                    now,
+                    last_refresh_at,
+                    last_error,
+                    now,
+                    now,
+                ),
+            )
+        connection = self.get_codex_auth_connection(user_id)
+        if connection is None:  # pragma: no cover - defensive
+            raise RuntimeError("Saved Codex auth connection could not be loaded")
+        return connection
+
+    def delete_codex_auth_connection(self, user_id: int) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM user_codex_auth WHERE user_id = ?", (user_id,))
+
     def seed_public_demo_from_env(self) -> None:
         run_dir = os.getenv("PUBLIC_DEMO_RUN_DIR", "").strip()
         if not run_dir:
@@ -2163,6 +2238,19 @@ def _provider(row: Any) -> ProviderCredential:
         masked_value=str(row["masked_value"]),
         encrypted_value=str(row["encrypted_value"]),
         storage_mode=str(row["storage_mode"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def _codex_auth_connection(row: Any) -> CodexAuthConnection:
+    return CodexAuthConnection(
+        user_id=int(row["user_id"]),
+        auth_slot=str(row["auth_slot"]),
+        status=str(row["status"]),
+        auth_mode=str(row["auth_mode"]),
+        last_checked_at=str(row["last_checked_at"]),
+        last_refresh_at=str(row["last_refresh_at"]),
+        last_error=str(row["last_error"]),
         updated_at=str(row["updated_at"]),
     )
 

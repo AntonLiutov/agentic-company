@@ -1,3 +1,5 @@
+from dataclasses import fields
+
 from agentic_company.console.web.db import CONSOLE_SCHEMA_VERSION, ConsoleRepository
 from agentic_company.platform.artifacts.artifact_registry import artifact_id_for, register_artifact
 from agentic_company.platform.run.run_trace import ModelCallEvent, ToolCallEvent
@@ -79,6 +81,29 @@ def test_provider_key_storage_masks_and_deletes(tmp_path, monkeypatch):
     assert "sk-demo-secret-1234" not in credential.encrypted_value
     repo.delete_provider_secret(user.id, "openai")
     assert repo.get_provider_secret(user.id, "openai") is None
+
+
+def test_codex_auth_connection_stores_metadata_only(tmp_path):
+    repo = ConsoleRepository()
+    repo.init_schema()
+    user = repo.create_user(
+        email="codex-auth@example.test",
+        username="codexauth",
+        password="password-1",
+    )
+
+    connection = repo.upsert_codex_auth_connection(
+        user.id,
+        auth_slot=f"user:{user.id}",
+        status="connected",
+        auth_mode="chatgpt",
+    )
+
+    assert connection.user_id == user.id
+    assert connection.auth_slot == f"user:{user.id}"
+    assert connection.status == "connected"
+    assert connection.auth_mode == "chatgpt"
+    assert all("token" not in field.name for field in fields(connection))
 
 
 def test_artifact_metadata_upsert_and_filter(tmp_path):

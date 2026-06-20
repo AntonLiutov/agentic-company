@@ -191,6 +191,45 @@ def test_codex_exec_environment_accepts_user_chatgpt_codex_home(monkeypatch, tmp
     assert "CODEX_API_KEY" not in env
 
 
+def test_codex_exec_environment_sets_owner_codex_home(monkeypatch, tmp_path: Path):
+    from agentic_company.console.web.db import ConsoleRepository
+
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "user_chatgpt")
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("CODEX_API_KEY", raising=False)
+    repo = ConsoleRepository()
+    repo.init_schema()
+    user = repo.create_user(
+        email="codex-home@example.test",
+        username="codexhome",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Codex Home",
+        request_text="Build",
+        mode="simple_prototype",
+        complexity="simple",
+    )
+    run_dir = tmp_path / "project-1"
+    target_dir = run_dir / "generated-project"
+    target_dir.mkdir(parents=True)
+    repo.create_run(
+        project_id=project.id,
+        run_uid=run_dir.name,
+        run_dir=run_dir,
+        status="running",
+        mode="simple_prototype",
+        reasoning="medium",
+    )
+
+    env = build_codex_exec_environment(target_dir)
+
+    expected_suffix = os.path.join("data", "codex-auth", "users", str(user.id))
+    assert env["CODEX_HOME"].endswith(expected_suffix)
+    assert "CODEX_API_KEY" not in env
+
+
 def test_codex_exec_environment_sets_tool_caches_when_api_key_exists(monkeypatch, tmp_path: Path):
     target_dir = tmp_path / "generated-project"
     monkeypatch.setenv("CODEX_API_KEY", "sk-test")

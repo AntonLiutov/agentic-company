@@ -66,6 +66,12 @@ from agentic_company.console.web.product import (
 )
 from agentic_company.console.web.rate_limit import RateLimiter
 from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
+from agentic_company.integrations.codex import account_auth as codex_account_auth
+from agentic_company.integrations.codex.runner import (
+    CODEX_AUTH_MODE_ENV,
+    CODEX_AUTH_MODE_USER_CHATGPT,
+    codex_auth_mode_from_env,
+)
 from agentic_company.platform.db.runtime_cache import redis_error_types, runtime_cache_from_env
 from agentic_company.platform.db.runtime_db import (
     reconcile_run,
@@ -320,6 +326,15 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
                 form_values=form_values,
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
+        codex_error = _codex_start_preflight(repo, user)
+        if codex_error:
+            return render_new_project(
+                request,
+                user,
+                error=codex_error,
+                form_values=form_values,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
         gemini_api_key = user_or_platform_gemini_key(repo, user)
         if agent_provider == "google_gemini" and not gemini_api_key:
             return render_new_project(
@@ -423,6 +438,9 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         if not request_text.strip():
             raise HTTPException(status_code=400)
         settings = restart_run_settings(repo, project, user)
+        codex_error = _codex_start_preflight(repo, user, ignore_project_id=project.id)
+        if codex_error:
+            return redirect("/settings")
         api_key = user_openai_key(repo, user)
         if settings["agent_provider"] == "openai" and not api_key:
             return redirect("/settings")
@@ -564,6 +582,9 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             github_configured=github_oauth.is_configured(),
             github_connected=bool(_github_token(repo, user)),
             github_login=_github_login(repo, user),
+            codex_auth=repo.get_codex_auth_connection(user.id),
+            codex_device_login=codex_account_auth.codex_device_login_state(user.id),
+            codex_auth_mode=codex_auth_mode_from_env(),
             checks=system_checks(
                 openai_key_configured=bool(user_openai_key(repo, user)),
                 gemini_key_configured=bool(user_or_platform_gemini_key(repo, user)),
@@ -612,6 +633,51 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
     def delete_gemini_key(request: Request, user: CurrentUser) -> Response:
         get_repo(request).delete_provider_secret(user.id, "google_gemini")
         return redirect("/settings")
+
+    @app.post("/auth/codex/connect")
+    def codex_connect(request: Request, user: CurrentUser) -> Response:
+        repo = get_repo(request)
+        try:
+            codex_account_auth.start_codex_device_login(user.id)
+        except OSError as exc:
+            repo.upsert_codex_auth_connection(
+                user.id,
+                auth_slot=f"user:{user.id}",
+                status="error",
+                last_error=str(exc),
+            )
+            return redirect("/settings?codex_error=start")
+        repo.upsert_codex_auth_connection(
+            user.id,
+            auth_slot=f"user:{user.id}",
+            status="pending",
+            auth_mode="chatgpt",
+        )
+        return redirect("/settings?codex_login=started")
+
+    @app.post("/auth/codex/check")
+    def codex_check(request: Request, user: CurrentUser) -> Response:
+        repo = get_repo(request)
+        status_result = codex_account_auth.codex_login_status(user.id)
+        repo.upsert_codex_auth_connection(
+            user.id,
+            auth_slot=f"user:{user.id}",
+            status="connected" if status_result.connected else "needs_relogin",
+            auth_mode=status_result.auth_mode or "chatgpt",
+            last_error="" if status_result.connected else status_result.message,
+        )
+        return redirect("/settings")
+
+    @app.post("/auth/codex/disconnect")
+    def codex_disconnect(request: Request, user: CurrentUser) -> Response:
+        repo = get_repo(request)
+        repo.delete_codex_auth_connection(user.id)
+        codex_account_auth.delete_codex_home_for_user(user.id)
+        return redirect("/settings")
+
+    @app.get("/api/codex/device-login")
+    def codex_device_login_api(request: Request, user: CurrentUser) -> JSONResponse:
+        return JSONResponse(codex_account_auth.codex_device_login_state(user.id))
 
     # ---- GitHub OAuth: "Login with GitHub" + repo picker ----
     def _github_callback_uri(request: Request) -> str:
@@ -1480,6 +1546,7 @@ def prepare_run_environment(
     agent_model = normalize_agent_model(agent_provider, agent_model)
     codex_model = normalize_codex_model(codex_model)
     values = {
+        CODEX_AUTH_MODE_ENV: codex_auth_mode_from_env(),
         "AGENT_LLM_PROVIDER": agent_provider,
         "AGENT_LLM_MODEL": agent_model,
         "COORDINATOR_AGENT_REASONING_EFFORT": agent_reasoning,
@@ -1496,6 +1563,34 @@ def prepare_run_environment(
         "AGENTIC_CODEX_SERVICE_TIER": service_tier,
     }
     return write_target_env(run_dir, values)
+
+
+def _codex_start_preflight(
+    repo: ConsoleRepository,
+    user: User,
+    *,
+    ignore_project_id: int | None = None,
+) -> str:
+    if codex_auth_mode_from_env() != CODEX_AUTH_MODE_USER_CHATGPT:
+        return ""
+    connection = repo.get_codex_auth_connection(user.id)
+    if connection is None or connection.status != "connected":
+        return "Connect your Codex account in Settings before starting a run."
+    active_statuses = {
+        "starting",
+        "running",
+        "initialized",
+        "head",
+        "sprint_running",
+        "deployment_running",
+    }
+    for project in repo.list_projects_for_user(user.id):
+        if ignore_project_id is not None and project.id == ignore_project_id:
+            continue
+        run = repo.latest_run_for_project(project.id, user.id)
+        if run and run.status.strip().lower() in active_statuses:
+            return "Your Codex account already has a run in progress. Stop or finish it first."
+    return ""
 
 
 def restart_run_settings(repo: ConsoleRepository, project: Project, user: User) -> dict[str, str]:
