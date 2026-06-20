@@ -7,7 +7,7 @@ from agentic_company.orchestration.graphs import (
     render_delivery_graph_mermaid,
     run_delivery_graph,
 )
-from agentic_company.platform.state import DeliveryState, initial_delivery_state
+from agentic_company.platform.db.state import DeliveryState, initial_delivery_state
 
 
 def test_delivery_graph_runs_linear_stage_order(tmp_path):

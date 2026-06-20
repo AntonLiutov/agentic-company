@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from agentic_company.platform.runtime_db import _effective_transition_status
+from agentic_company.platform.db.runtime_db import _effective_transition_status
 
 
 def _effective(current, requested, *, tool_name, owner_agent, raw=None):

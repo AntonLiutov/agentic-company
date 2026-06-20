@@ -6,8 +6,8 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agentic_company.platform.run_trace import record_run_event
-from agentic_company.platform.status import classify_work_item_status
+from agentic_company.platform.run.run_trace import record_run_event
+from agentic_company.platform.status.status import classify_work_item_status
 
 LOGGER = logging.getLogger(__name__)
 

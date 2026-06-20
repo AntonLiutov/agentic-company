@@ -16,7 +16,7 @@ from agentic_company.integrations.codex.cli import (
 )
 from agentic_company.integrations.codex.events import append_raw_codex_event
 from agentic_company.integrations.commands import StreamedCommand, stream_command
-from agentic_company.platform.run_trace import record_raw_log_event, record_run_event
+from agentic_company.platform.run.run_trace import record_raw_log_event, record_run_event
 
 CODEX_SANDBOX_ENV = "AGENTIC_CODEX_SANDBOX"
 CODEX_INHERIT_ENV_ENV = "AGENTIC_CODEX_INHERIT_ENV"
@@ -295,7 +295,7 @@ def stream_codex_exec_to_log(
 
         def effective_stop_requested() -> bool:
             try:
-                from agentic_company.platform.runtime_db import run_stop_requested
+                from agentic_company.platform.db.runtime_db import run_stop_requested
 
                 return run_stop_requested(str(trace_run_id), stop_run_dir)
             except Exception:

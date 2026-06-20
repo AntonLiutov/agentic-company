@@ -17,7 +17,7 @@ from agentic_company.platform.skills import (
     render_skill_instructions,
     select_skills_for_agent,
 )
-from agentic_company.platform.tool_contracts import CODEX_EXEC_TOOL_CONTRACT
+from agentic_company.platform.contracts.tool_contracts import CODEX_EXEC_TOOL_CONTRACT
 
 
 def test_skill_catalog_loads_initial_skills_with_unique_ids():

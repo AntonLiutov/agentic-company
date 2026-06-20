@@ -12,34 +12,34 @@ from agentic_company.agents.deployment.codex_cli import (
     public_urls_from_deployment_result,
 )
 from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
-from agentic_company.platform.agent_contracts import (
+from agentic_company.platform.agent.agent_contracts import (
     append_downstream_response,
     artifact_refs,
     extend_artifacts,
     record_specialist_completion,
     record_specialist_start,
 )
-from agentic_company.platform.agent_runtime import (
+from agentic_company.platform.agent.agent_runtime import (
     AGENT_EXECUTOR_GRAPH_NODE_ORDER,
     SpecialistAgentExecutor,
     SpecialistAgentRequest,
     agent_env_value,
     build_agent_executor_graph,
 )
-from agentic_company.platform.artifacts import (
+from agentic_company.platform.artifacts.artifacts import (
     build_execution_request_payload,
     update_execution_request_context,
     write_execution_request,
 )
-from agentic_company.platform.events import write_event
-from agentic_company.platform.models import AgentRunResult
-from agentic_company.platform.runtime_db import (
+from agentic_company.platform.run.events import write_event
+from agentic_company.platform.db.models import AgentRunResult
+from agentic_company.platform.db.runtime_db import (
     completed_work_item_ids,
     get_work_item,
     packet_for_work_item,
     record_generated_app_url,
 )
-from agentic_company.platform.state import (
+from agentic_company.platform.db.state import (
     DeliveryState,
     codex_resume_thread_id,
 )
@@ -208,7 +208,7 @@ def _write_deployment_execution_request(run_dir: Path, delivery_state: DeliveryS
 def _run_repo_context(run_id: str) -> dict[str, str] | None:
     """Connected repo info so the Publisher delivers committed config as a PR."""
     try:
-        from agentic_company.platform.delivery_pr import run_repo_context
+        from agentic_company.platform.delivery.delivery_pr import run_repo_context
 
         return run_repo_context(run_id)
     except Exception:
@@ -302,7 +302,7 @@ def _apply_deployment_result(state: DeploymentAgentGraphState) -> DeploymentAgen
     deploy_item = str(updated.get("agent_call_correlation_id") or "")
     if deployment_status not in {"failed", "blocked"} and deploy_item:
         try:  # best-effort: PR any deployment config the Publisher committed to the repo
-            from agentic_company.platform.delivery_pr import publish_work_item_pr
+            from agentic_company.platform.delivery.delivery_pr import publish_work_item_pr
 
             publish_work_item_pr(str(updated["run_id"]), deploy_item)
         except Exception:

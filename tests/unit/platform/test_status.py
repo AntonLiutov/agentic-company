@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from agentic_company.platform.status import (
+from agentic_company.platform.status.status import (
     FailureMode,
     InvalidStatusTransition,
     WorkItemStatus,

@@ -16,32 +16,32 @@ from agentic_company.integrations.codex import (
     DEFAULT_CODEX_MODEL,
     codex_usage_from_artifacts,
 )
-from agentic_company.platform.artifact_registry import (
+from agentic_company.platform.artifacts.artifact_registry import (
     artifact_id_for,
     tool_artifact_refs_from_records,
 )
-from agentic_company.platform.artifacts import discover_implementation_artifacts
-from agentic_company.platform.messages import AgentMessage, AgentMessageStore
-from agentic_company.platform.models import AgentRunResult
-from agentic_company.platform.run_trace import (
+from agentic_company.platform.artifacts.artifacts import discover_implementation_artifacts
+from agentic_company.platform.mirror.messages import AgentMessage, AgentMessageStore
+from agentic_company.platform.db.models import AgentRunResult
+from agentic_company.platform.run.run_trace import (
     record_model_call_event,
     record_run_event,
     record_tool_call_event,
 )
-from agentic_company.platform.runtime_db import record_artifact_link
+from agentic_company.platform.db.runtime_db import record_artifact_link
 from agentic_company.platform.skills import (
     SkillSelection,
     render_skill_instructions,
     select_skills_for_agent,
     selected_skill_trace_data,
 )
-from agentic_company.platform.state import DeliveryState, record_codex_thread
-from agentic_company.platform.status import (
+from agentic_company.platform.db.state import DeliveryState, record_codex_thread
+from agentic_company.platform.status.status import (
     WorkItemStatus,
     classify_failure_mode,
     classify_work_item_status,
 )
-from agentic_company.platform.tool_contracts import (
+from agentic_company.platform.contracts.tool_contracts import (
     CODEX_EXEC_TOOL_CONTRACT,
     ArtifactRegistrationRequest,
     ToolCallResult,

@@ -17,22 +17,22 @@ from agentic_company.agents.handoff.contracts import (
 from agentic_company.agents.registry import route_for_node
 from agentic_company.agents.team_lead.contracts import TeamLeadDecision, TeamLeadToolName
 from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
-from agentic_company.platform.agent_runtime import agent_env_value
-from agentic_company.platform.artifact_registry import artifact_id_for
-from agentic_company.platform.codex_review import (
+from agentic_company.platform.agent.agent_runtime import agent_env_value
+from agentic_company.platform.artifacts.artifact_registry import artifact_id_for
+from agentic_company.platform.delivery.codex_review import (
     CodexReviewRequest,
     CodexReviewResult,
     CodexReviewRunner,
 )
-from agentic_company.platform.events import write_event
-from agentic_company.platform.executions import build_agent_execution_id, short_hash
-from agentic_company.platform.messages import (
+from agentic_company.platform.run.events import write_event
+from agentic_company.platform.run.executions import build_agent_execution_id, short_hash
+from agentic_company.platform.mirror.messages import (
     AgentMessage,
     AgentMessageStore,
     append_agent_response,
 )
-from agentic_company.platform.run_trace import record_tool_call_event
-from agentic_company.platform.runtime_db import (
+from agentic_company.platform.run.run_trace import record_tool_call_event
+from agentic_company.platform.db.runtime_db import (
     artifact_links_for_paths,
     artifact_paths_by_type,
     claim_work_item_for_execution,
@@ -51,20 +51,20 @@ from agentic_company.platform.runtime_db import (
     sprint_is_final,
     submit_coordinator_comment,
 )
-from agentic_company.platform.state import (
+from agentic_company.platform.db.state import (
     DeliveryState,
     codex_resume_thread_id,
     mark_node_completed,
     record_codex_thread,
     write_delivery_state,
 )
-from agentic_company.platform.status import CoordinatorOutcome
-from agentic_company.platform.status_inspector import (
+from agentic_company.platform.status.status import CoordinatorOutcome
+from agentic_company.platform.status.status_inspector import (
     StatusInspectionRequest,
     StatusInspectorLike,
     StatusInspectorRunner,
 )
-from agentic_company.platform.tool_contracts import (
+from agentic_company.platform.contracts.tool_contracts import (
     ArtifactRegistrationRequest,
     ToolCallResult,
     ToolDashboardUpdate,

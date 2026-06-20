@@ -17,17 +17,17 @@ from agentic_company.integrations.codex import (
     extract_codex_usage,
     stream_codex_exec_to_log,
 )
-from agentic_company.platform.artifact_registry import artifact_id_for
-from agentic_company.platform.artifacts import read_json_object_artifact, write_json_artifact
-from agentic_company.platform.executions import (
+from agentic_company.platform.artifacts.artifact_registry import artifact_id_for
+from agentic_company.platform.artifacts.artifacts import read_json_object_artifact, write_json_artifact
+from agentic_company.platform.run.executions import (
     build_agent_execution_id,
     build_codex_execution_id,
     execution_artifact_dir,
     extract_codex_thread_id,
 )
-from agentic_company.platform.run_trace import record_model_call_event
-from agentic_company.platform.runtime_db import record_artifact_link
-from agentic_company.platform.tool_contracts import ArtifactRegistrationRequest
+from agentic_company.platform.run.run_trace import record_model_call_event
+from agentic_company.platform.db.runtime_db import record_artifact_link
+from agentic_company.platform.contracts.tool_contracts import ArtifactRegistrationRequest
 
 CommandExecutor = Callable[
     [Sequence[str], str, int, Path, Path],

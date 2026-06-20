@@ -11,10 +11,10 @@ from agentic_company.orchestration.runtime import (
     DeliveryGraphRuntime,
     _resolve_final_run_status,
 )
-from agentic_company.platform.run_finalizer import RunStatus
-from agentic_company.platform.run_trace import load_run_events
-from agentic_company.platform.runtime_db import request_run_control_intent
-from agentic_company.platform.state import DeliveryState, initial_delivery_state
+from agentic_company.platform.run.run_finalizer import RunStatus
+from agentic_company.platform.run.run_trace import load_run_events
+from agentic_company.platform.db.runtime_db import request_run_control_intent
+from agentic_company.platform.db.state import DeliveryState, initial_delivery_state
 
 
 def test_delivery_graph_runtime_starts_graph_and_persists_state(tmp_path, monkeypatch):

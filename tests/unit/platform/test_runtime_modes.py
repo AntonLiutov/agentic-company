@@ -1,4 +1,4 @@
-from agentic_company.platform.runtime_modes import RiskMode, RunMode, mode_policy
+from agentic_company.platform.agent.runtime_modes import RiskMode, RunMode, mode_policy
 
 
 def test_runtime_mode_policy_maps_current_console_modes():

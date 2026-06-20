@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
-from agentic_company.platform.agent_runtime import agent_env_value
-from agentic_company.platform.state import DeliveryState
-from agentic_company.platform.tool_contracts import (
+from agentic_company.platform.agent.agent_runtime import agent_env_value
+from agentic_company.platform.db.state import DeliveryState
+from agentic_company.platform.contracts.tool_contracts import (
     CODEX_EXEC_TOOL_CONTRACT,
     ToolContract,
     ToolContractRegistry,

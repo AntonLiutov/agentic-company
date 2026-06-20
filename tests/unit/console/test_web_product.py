@@ -11,7 +11,7 @@ from agentic_company.console.web.product import (
     delivery_overview_from_work_items,
     task_detail_from_work_items,
 )
-from agentic_company.platform.artifact_registry import artifact_id_for, register_artifact
+from agentic_company.platform.artifacts.artifact_registry import artifact_id_for, register_artifact
 
 
 def test_board_cards_are_materialized_from_db_work_items_only():
@@ -344,7 +344,7 @@ def test_delivery_overview_uses_db_work_item_blockers():
 
 def test_artifact_payload_for_record_rejects_internal_registry_record(tmp_path):
     from agentic_company.console.web.product import artifact_payload_for_record
-    from agentic_company.platform.artifact_registry import artifact_id_for, register_artifact
+    from agentic_company.platform.artifacts.artifact_registry import artifact_id_for, register_artifact
 
     log_path = tmp_path / "generated-project" / "execution.log"
     log_path.parent.mkdir()

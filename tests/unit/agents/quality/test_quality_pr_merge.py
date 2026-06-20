@@ -1,8 +1,8 @@
 from pathlib import Path
 
 from agentic_company.agents.quality import graph as quality_graph
-from agentic_company.platform.delivery_pr import WorkItemPrMergeResult
-from agentic_company.platform.models import AgentRunResult
+from agentic_company.platform.delivery.delivery_pr import WorkItemPrMergeResult
+from agentic_company.platform.db.models import AgentRunResult
 
 
 def _state(tmp_path: Path) -> dict:

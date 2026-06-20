@@ -134,7 +134,7 @@ def write_delivery_state(state: DeliveryState, path: str | Path | None = None) -
                 temp_path.unlink(missing_ok=True)
                 break
             time.sleep(0.05 * (attempt + 1))
-    from agentic_company.platform.runtime_db import record_delivery_state_snapshot
+    from agentic_company.platform.db.runtime_db import record_delivery_state_snapshot
 
     record_delivery_state_snapshot(dict(state))
     return state_path

@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from agentic_company.platform.tool_contracts import ArtifactLink
+from agentic_company.platform.contracts.tool_contracts import ArtifactLink
 
 USER_FACING_VISIBILITIES = {"business", "release", "qa_evidence"}
 

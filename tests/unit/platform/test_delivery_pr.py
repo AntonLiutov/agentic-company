@@ -1,4 +1,4 @@
-import agentic_company.platform.delivery_pr as dp
+import agentic_company.platform.delivery.delivery_pr as dp
 from agentic_company.ports.repo import PullRequest, RepoCapabilities, RepoSpec
 
 
@@ -45,13 +45,13 @@ class _Adapter:
 
 def _patch(monkeypatch, *, built, item=None):
     monkeypatch.setattr(
-        "agentic_company.platform.runtime_db._repo_and_run", lambda uid: (object(), 1)
+        "agentic_company.platform.db.runtime_db._repo_and_run", lambda uid: (object(), 1)
     )
     monkeypatch.setattr(
-        "agentic_company.platform.repo_manager.build_run_repo", lambda *a, **k: built
+        "agentic_company.platform.delivery.repo_manager.build_run_repo", lambda *a, **k: built
     )
     monkeypatch.setattr(
-        "agentic_company.platform.runtime_db.get_work_item", lambda uid, wid: item or _Item()
+        "agentic_company.platform.db.runtime_db.get_work_item", lambda uid, wid: item or _Item()
     )
 
 
@@ -83,7 +83,7 @@ def test_publish_mirrors_the_pr_the_agent_opened(tmp_path, monkeypatch):
     _patch_pr_store(monkeypatch, tmp_path)
     mirrored = []
     monkeypatch.setattr(
-        "agentic_company.platform.runtime_db._submit_pr_mirror",
+        "agentic_company.platform.db.runtime_db._submit_pr_mirror",
         lambda uid, wid, url, pid: mirrored.append((wid, url, pid)),
     )
 

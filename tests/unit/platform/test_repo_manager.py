@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from agentic_company.integrations.github.repo import GitHubRepoAdapter
-from agentic_company.platform.repo_manager import _repo_spec, build_run_repo
+from agentic_company.platform.delivery.repo_manager import _repo_spec, build_run_repo
 
 
 class _Run:

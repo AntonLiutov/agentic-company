@@ -15,7 +15,7 @@ from agentic_company.agents.team_lead.tools import (
     TeamLeadToolbox,
     TeamLeadWorkers,
 )
-from agentic_company.platform.agent_runtime import (
+from agentic_company.platform.agent.agent_runtime import (
     AGENT_REASONING_EFFORT_ENV,
     COORDINATOR_AGENT_REASONING_EFFORT_ENV,
     DEFAULT_COORDINATOR_AGENT_REASONING_EFFORT,
@@ -26,8 +26,8 @@ from agentic_company.platform.agent_runtime import (
     coordinator_quality_review_policy,
     coordinator_repair_policy,
 )
-from agentic_company.platform.state import DeliveryState
-from agentic_company.platform.tool_contracts import render_tool_docstring
+from agentic_company.platform.db.state import DeliveryState
+from agentic_company.platform.contracts.tool_contracts import render_tool_docstring
 
 TEAM_LEAD_COORDINATION_WORK_ITEM_ID = "PLAN-04"
 

@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 from agentic_company.console.web.db import ConsoleRepository
-from agentic_company.platform.status_inspector import (
+from agentic_company.platform.status.status_inspector import (
     StatusInspectionRequest,
     StatusInspectorRunner,
     build_status_inspection_prompt,

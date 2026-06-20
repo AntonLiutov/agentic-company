@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from agentic_company.platform.models import ExecutionRequest
+from agentic_company.platform.db.models import ExecutionRequest
 
 EXECUTION_REQUEST_ARTIFACT = "delivery/execution-request.json"
 IMPLEMENTATION_ARTIFACT_EXCLUDED_DIRS = {
@@ -206,7 +206,7 @@ def _is_absolute_artifact_path(path: str | Path) -> bool:
 def load_execution_request(run_dir: Path) -> ExecutionRequest:
     """Load the current delivery execution request from the DB contract."""
 
-    from agentic_company.platform.runtime_db import latest_execution_request
+    from agentic_company.platform.db.runtime_db import latest_execution_request
 
     payload = latest_execution_request(run_dir.name)
     return _execution_request_from_payload(payload)
@@ -299,7 +299,7 @@ def write_execution_request(run_dir: Path, payload: Mapping[str, Any]) -> None:
     """Persist the current Codex execution request envelope in DB and as an export."""
 
     normalized = dict(payload)
-    from agentic_company.platform.runtime_db import record_execution_request
+    from agentic_company.platform.db.runtime_db import record_execution_request
 
     record_execution_request(str(normalized["run_id"]), normalized)
     write_json_artifact(run_dir / EXECUTION_REQUEST_ARTIFACT, normalized)
@@ -321,7 +321,7 @@ def update_execution_request_context(
 ) -> None:
     """Persist the current tool-call execution context into the DB request contract."""
 
-    from agentic_company.platform.runtime_db import (
+    from agentic_company.platform.db.runtime_db import (
         latest_execution_request,
         record_execution_request,
     )

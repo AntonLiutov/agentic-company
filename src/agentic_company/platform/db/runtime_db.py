@@ -13,26 +13,26 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from agentic_company.platform.artifact_registry import (
+from agentic_company.platform.artifacts.artifact_registry import (
     ArtifactRecord,
     normalize_artifact_path,
     register_artifact,
     resolve_run_artifact_path,
 )
-from agentic_company.platform.run_finalizer import TERMINAL_RUN_STATUSES, RunStatus
-from agentic_company.platform.status import (
+from agentic_company.platform.run.run_finalizer import TERMINAL_RUN_STATUSES, RunStatus
+from agentic_company.platform.status.status import (
     InvalidStatusTransition,
     WorkItemStatus,
     classify_work_item_status,
     transition,
 )
-from agentic_company.platform.tool_contracts import (
+from agentic_company.platform.contracts.tool_contracts import (
     ActivityEventRecord,
     ArtifactRegistrationRequest,
     ToolExecutionRecord,
     WorkItemExecutionPacket,
 )
-from agentic_company.platform.work_item_contracts import (
+from agentic_company.platform.contracts.work_item_contracts import (
     HEAD_PLANNING_ITEMS,
     pm_sprints_from_run_dir,
     pm_work_items_from_run_dir,
@@ -149,7 +149,7 @@ def materialize_planning_items(run_id: str) -> None:
             )
     _mirror_seed_work_items(repo, db_run_id, run_id)  # all planning items -> board at once
     try:  # run start: clone an existing delivery repo before any agent builds
-        from agentic_company.platform.delivery_pr import ensure_run_repo
+        from agentic_company.platform.delivery.delivery_pr import ensure_run_repo
 
         ensure_run_repo(run_id)
     except Exception:  # best-effort: never block the run on repo setup
@@ -465,7 +465,7 @@ _NO_MIRROR_RUNS: set[str] = set()  # runs with no external board -> skip all wor
 
 def _submit_item_mirror(run_uid: str, work_item_id: str) -> None:
     """Schedule a work item's board mirror off the run's critical path."""
-    from agentic_company.platform.mirror_dispatch import submit_mirror
+    from agentic_company.platform.mirror.mirror_dispatch import submit_mirror
 
     submit_mirror((run_uid, work_item_id), lambda: mirror_work_item_now(run_uid, work_item_id))
 
@@ -479,7 +479,7 @@ def mirror_work_item_now(run_uid: str, work_item_id: str) -> None:
     if run_uid in _NO_MIRROR_RUNS:
         return  # known internal-board run -> no external board, skip without a DB hit
     try:
-        from agentic_company.platform.run_mirror import get_run_mirror
+        from agentic_company.platform.run.run_mirror import get_run_mirror
 
         repo, db_run_id = _repo_and_run(run_uid)
         mirror = get_run_mirror(repo, db_run_id)
@@ -565,7 +565,7 @@ def _submit_pr_mirror(run_uid: str, work_item_id: str, pr_url: str, pr_id: str) 
     """Schedule mirroring a PR onto the work item's board card."""
     if not work_item_id or not pr_url:
         return
-    from agentic_company.platform.mirror_dispatch import submit_mirror
+    from agentic_company.platform.mirror.mirror_dispatch import submit_mirror
 
     submit_mirror(
         (run_uid, work_item_id, "pr", pr_url),
@@ -578,7 +578,7 @@ def mirror_pr_now(run_uid: str, work_item_id: str, pr_url: str, pr_id: str) -> N
     if run_uid in _NO_MIRROR_RUNS:
         return
     try:
-        from agentic_company.platform.run_mirror import get_run_mirror
+        from agentic_company.platform.run.run_mirror import get_run_mirror
 
         repo, db_run_id = _repo_and_run(run_uid)
         mirror = get_run_mirror(repo, db_run_id)
@@ -594,7 +594,7 @@ def _artifact_section(repo: Any, db_run_id: int, run_uid: str, refs: list[str]) 
     """Markdown for a card comment that EMBEDS artifact content (no binary upload
     needed): .mmd renders as a Mermaid diagram, .md/.csv collapse into <details>.
     Internal Codex trace (prompt.md/summary.md/logs) is excluded — leakage."""
-    from agentic_company.platform.artifact_registry import artifact_id_for
+    from agentic_company.platform.artifacts.artifact_registry import artifact_id_for
 
     blocks: list[str] = []
     for ref in refs:
@@ -709,7 +709,7 @@ def _submit_response_comment(
             return
     except Exception:  # best-effort: never block delivery on a board lookup
         return
-    from agentic_company.platform.mirror_dispatch import submit_mirror
+    from agentic_company.platform.mirror.mirror_dispatch import submit_mirror
 
     refs = list(artifact_refs or [])
     submit_mirror(
@@ -732,7 +732,7 @@ def mirror_response_comment_now(
     if run_uid in _NO_MIRROR_RUNS:
         return
     try:
-        from agentic_company.platform.run_mirror import get_run_mirror
+        from agentic_company.platform.run.run_mirror import get_run_mirror
         from agentic_company.ports.board import BoardComment, BoardItem
 
         repo, db_run_id = _repo_and_run(run_uid)
@@ -788,7 +788,7 @@ def submit_coordinator_comment(
             return
     except Exception:  # best-effort: never block delivery on a board lookup
         return
-    from agentic_company.platform.mirror_dispatch import submit_mirror
+    from agentic_company.platform.mirror.mirror_dispatch import submit_mirror
 
     refs = list(artifact_refs or [])
     key = f"{work_item_id}:coord:{sprint_id}:{action}"
@@ -814,7 +814,7 @@ def mirror_coordinator_comment_now(
     if run_uid in _NO_MIRROR_RUNS:
         return
     try:
-        from agentic_company.platform.run_mirror import get_run_mirror
+        from agentic_company.platform.run.run_mirror import get_run_mirror
         from agentic_company.ports.board import BoardComment, BoardItem
 
         repo, db_run_id = _repo_and_run(run_uid)
@@ -893,7 +893,7 @@ def claim_work_item_for_execution(record: ToolExecutionRecord) -> WorkItemClaimR
         _submit_item_mirror(record.run_id, record.work_item_id)
         # ...and let its card settle, but only briefly — the board is a view, never
         # a gate on real delivery, so a slow GitHub can't stall the run on claim.
-        from agentic_company.platform.mirror_dispatch import flush_mirror
+        from agentic_company.platform.mirror.mirror_dispatch import flush_mirror
 
         flush_mirror((record.run_id, record.work_item_id), timeout=1.5)
     return result
@@ -981,7 +981,7 @@ def record_run_lifecycle(
     in one atomic statement so concurrent finalizers cannot race.
     """
 
-    from agentic_company.platform.run_finalizer import TERMINAL_RUN_STATUSES
+    from agentic_company.platform.run.run_finalizer import TERMINAL_RUN_STATUSES
 
     repo, db_run_id = _repo_and_run(run_id)
     repo.update_run_status(
@@ -999,7 +999,7 @@ def record_run_lifecycle(
 def _evict_run_mirror_caches(run_uid: str, db_run_id: int) -> None:
     """Release a finished run's mirror state so a long-lived console doesn't leak."""
     try:
-        from agentic_company.platform.run_mirror import reset_run_mirror
+        from agentic_company.platform.run.run_mirror import reset_run_mirror
 
         reset_run_mirror(db_run_id)
     except Exception:  # eviction is hygiene, never fatal
@@ -1464,7 +1464,7 @@ def run_stop_requested(run_id: str, run_dir: Path | str) -> bool:
         LOGGER.warning("Durable stop flag read failed run_id=%s error=%s", run_id, exc)
 
     try:
-        from agentic_company.platform.runtime_cache import redis_error_types, runtime_cache_from_env
+        from agentic_company.platform.db.runtime_cache import redis_error_types, runtime_cache_from_env
 
         return runtime_cache_from_env().stop_requested(str(run_id))
     except redis_error_types() as exc:

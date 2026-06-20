@@ -9,7 +9,7 @@ from langgraph.graph import END, START, StateGraph
 
 from agentic_company.orchestration.graphs.nodes import DeliveryGraphNodes
 from agentic_company.orchestration.graphs.routing import DELIVERY_GRAPH_NODE_ORDER
-from agentic_company.platform.state import DeliveryState
+from agentic_company.platform.db.state import DeliveryState
 
 CompiledDeliveryGraph = Any
 

@@ -169,7 +169,7 @@ def append_agent_response(
     )
     # Best-effort: mirror this agent's final message + artifacts onto its board card.
     try:
-        from agentic_company.platform.runtime_db import _submit_response_comment
+        from agentic_company.platform.db.runtime_db import _submit_response_comment
 
         _submit_response_comment(
             run_uid=Path(run_dir).name,

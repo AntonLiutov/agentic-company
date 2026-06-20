@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from agentic_company.platform.security import redact_sensitive_output
-from agentic_company.platform.status import WorkItemStatus, classify_work_item_status
+from agentic_company.platform.status.status import WorkItemStatus, classify_work_item_status
 
 RUN_TRACE_DIR = "delivery"
 RUN_EVENTS_FILE = "run-events.jsonl"
@@ -562,8 +562,8 @@ def _record_card_log_from_run_event(event: RunEvent) -> None:
     if not _is_card_log_run_event(event):
         return
     try:
-        from agentic_company.platform.runtime_db import record_activity_event
-        from agentic_company.platform.tool_contracts import ActivityEventRecord
+        from agentic_company.platform.db.runtime_db import record_activity_event
+        from agentic_company.platform.contracts.tool_contracts import ActivityEventRecord
 
         record_activity_event(
             ActivityEventRecord(

@@ -1,7 +1,7 @@
 from agentic_company.integrations.board.internal import InternalBoardAdapter
 from agentic_company.integrations.github.board import GitHubBoardAdapter
 from agentic_company.integrations.github.projects import GitHubProjectsBoardAdapter
-from agentic_company.platform.board_selection import select_board
+from agentic_company.platform.delivery.board_selection import select_board
 
 
 class _Store:

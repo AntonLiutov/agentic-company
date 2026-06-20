@@ -1,7 +1,7 @@
 import threading
 import time
 
-from agentic_company.platform.mirror_dispatch import MirrorDispatcher
+from agentic_company.platform.mirror.mirror_dispatch import MirrorDispatcher
 
 
 def test_same_key_is_serialised_never_overlapping():

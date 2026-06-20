@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Protocol
 
 from agentic_company.agents.business_analysis.graph import run_business_analyst_agent_graph
-from agentic_company.platform.agent_contracts import (
+from agentic_company.platform.agent.agent_contracts import (
     CODEX_EXEC_TOOL,
     AgentCapabilities,
     AgentCommunicationPolicy,
@@ -14,9 +14,9 @@ from agentic_company.platform.agent_contracts import (
     BaseAgentExecutorDeliveryAgent,
     coordinator_response_policy,
 )
-from agentic_company.platform.agent_runtime import SpecialistAgentExecutor
-from agentic_company.platform.models import AgentRunResult
-from agentic_company.platform.state import DeliveryState
+from agentic_company.platform.agent.agent_runtime import SpecialistAgentExecutor
+from agentic_company.platform.db.models import AgentRunResult
+from agentic_company.platform.db.state import DeliveryState
 from agentic_company.ports.registry import worker_runner_for_agent
 
 

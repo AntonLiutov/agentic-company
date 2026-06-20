@@ -23,7 +23,7 @@ from agentic_company.console.support import (
     repo_root,
 )
 from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
-from agentic_company.platform.artifact_registry import USER_FACING_VISIBILITIES
+from agentic_company.platform.artifacts.artifact_registry import USER_FACING_VISIBILITIES
 
 AGENT_MODEL_OPTIONS = [
     "gpt-4.1",

@@ -14,9 +14,9 @@ from agentic_company.agents.team_lead.tools import (
     write_sprint_plan_artifact,
     write_team_lead_event,
 )
-from agentic_company.platform.agent_runtime import build_agent_executor_graph
-from agentic_company.platform.state import DeliveryState
-from agentic_company.platform.status import CoordinatorOutcome
+from agentic_company.platform.agent.agent_runtime import build_agent_executor_graph
+from agentic_company.platform.db.state import DeliveryState
+from agentic_company.platform.status.status import CoordinatorOutcome
 
 TEAM_LEAD_AGENT_GRAPH_NODE_ORDER: tuple[str, ...] = (
     "prepare_sprint",
@@ -119,7 +119,7 @@ def _build_sprint_board(run_id: str, sprint_id: str) -> dict[str, Any]:
 
     board: dict[str, Any] = {"sprint_id": sprint_id, "id": sprint_id}
     try:  # best-effort: a board read must never break sprint execution
-        from agentic_company.platform.runtime_db import (
+        from agentic_company.platform.db.runtime_db import (
             list_sprint_work_items,
             sprint_completion_state,
         )

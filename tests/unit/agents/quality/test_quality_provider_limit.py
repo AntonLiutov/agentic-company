@@ -2,11 +2,11 @@ import subprocess
 
 from agentic_company.agents.quality.codex_cli import QualityCodexRunner
 from agentic_company.console.web.db import ConsoleRepository
-from agentic_company.platform.artifacts import (
+from agentic_company.platform.artifacts.artifacts import (
     build_execution_request_payload,
     write_execution_request,
 )
-from agentic_company.platform.runtime_db import materialize_planning_items
+from agentic_company.platform.db.runtime_db import materialize_planning_items
 
 
 def test_quality_provider_limit_does_not_register_missing_report_artifacts(tmp_path, monkeypatch):

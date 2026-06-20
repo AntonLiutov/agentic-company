@@ -24,7 +24,7 @@ from typing import Any
 
 import yaml
 
-from agentic_company.platform.state import DeliveryState
+from agentic_company.platform.db.state import DeliveryState
 
 KNOWN_ARTIFACT_TYPES = {
     "requirements_brief",

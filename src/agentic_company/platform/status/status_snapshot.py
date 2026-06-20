@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agentic_company.platform.runtime_db import (
+from agentic_company.platform.db.runtime_db import (
     blocked_work_items,
     completed_work_item_ids,
     get_work_item,
@@ -18,7 +18,7 @@ from agentic_company.platform.runtime_db import (
     sprint_completion_state,
     sprint_ids,
 )
-from agentic_company.platform.state import DeliveryState
+from agentic_company.platform.db.state import DeliveryState
 
 
 def build_sprint_status_snapshot(

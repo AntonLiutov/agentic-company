@@ -22,13 +22,13 @@ from agentic_company.console.web.auth import (
 )
 from agentic_company.console.web.migrations import upgrade_database
 from agentic_company.console.web.sql_backend import DatabaseSettings, connect_database
-from agentic_company.platform.artifact_registry import (
+from agentic_company.platform.artifacts.artifact_registry import (
     ArtifactRecord,
     artifact_id_for,
     artifact_record_from_mapping,
     register_artifact,
 )
-from agentic_company.platform.run_trace import (
+from agentic_company.platform.run.run_trace import (
     ModelCallEvent,
     RunEvent,
     ToolCallEvent,
@@ -37,13 +37,13 @@ from agentic_company.platform.run_trace import (
     sanitize_trace_data,
     tool_call_event_from_mapping,
 )
-from agentic_company.platform.status import (
+from agentic_company.platform.status.status import (
     InvalidStatusTransition,
     WorkItemStatus,
     classify_work_item_status,
     transition,
 )
-from agentic_company.platform.work_item_contracts import HEAD_PLANNING_ITEMS
+from agentic_company.platform.contracts.work_item_contracts import HEAD_PLANNING_ITEMS
 
 SESSION_DAYS = 14
 CONSOLE_SCHEMA_VERSION = "2026-06-13.1"

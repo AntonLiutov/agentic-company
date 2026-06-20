@@ -17,8 +17,8 @@ from agentic_company.agents.team_lead.tools import (
     apply_team_lead_result,
 )
 from agentic_company.console.web.db import ConsoleRepository
-from agentic_company.platform.codex_review import CodexReviewResult
-from agentic_company.platform.runtime_db import (
+from agentic_company.platform.delivery.codex_review import CodexReviewResult
+from agentic_company.platform.db.runtime_db import (
     get_work_item,
     mark_sprint_done,
     mark_sprint_started,
@@ -29,8 +29,8 @@ from agentic_company.platform.runtime_db import (
     sprint_completion_state,
     sprint_is_final,
 )
-from agentic_company.platform.status_inspector import StatusInspectionResult
-from agentic_company.platform.tool_contracts import ToolExecutionRecord
+from agentic_company.platform.status.status_inspector import StatusInspectionResult
+from agentic_company.platform.contracts.tool_contracts import ToolExecutionRecord
 
 
 def test_complete_sprint_records_db_sprint_done_without_finishing_plan_04(tmp_path, monkeypatch):

@@ -64,8 +64,8 @@ def ensure_run_repo(run_uid: str, *, gh: Any = None, git: Any = None) -> None:
     if run_uid in _REPO_ENSURED:
         return
     try:
-        from agentic_company.platform.repo_manager import build_run_repo
-        from agentic_company.platform.runtime_db import _repo_and_run
+        from agentic_company.platform.delivery.repo_manager import build_run_repo
+        from agentic_company.platform.db.runtime_db import _repo_and_run
 
         repo, db_run_id = _repo_and_run(run_uid)
         built = build_run_repo(repo, db_run_id, gh=gh, git=git)
@@ -93,8 +93,8 @@ def publish_work_item_pr(
     repo host or the agent has not opened a PR. Never raises into delivery.
     """
     try:
-        from agentic_company.platform.repo_manager import build_run_repo
-        from agentic_company.platform.runtime_db import _repo_and_run
+        from agentic_company.platform.delivery.repo_manager import build_run_repo
+        from agentic_company.platform.db.runtime_db import _repo_and_run
 
         repo, db_run_id = _repo_and_run(run_uid)
         built = build_run_repo(repo, db_run_id, gh=gh, git=git)
@@ -124,8 +124,8 @@ def run_repo_context(run_uid: str, *, gh: Any = None, git: Any = None) -> dict[s
     it triggers the git-pr-workflow skill and delivers via a PR.
     """
     try:
-        from agentic_company.platform.repo_manager import build_run_repo
-        from agentic_company.platform.runtime_db import _repo_and_run
+        from agentic_company.platform.delivery.repo_manager import build_run_repo
+        from agentic_company.platform.db.runtime_db import _repo_and_run
 
         repo, db_run_id = _repo_and_run(run_uid)
         built = build_run_repo(repo, db_run_id, gh=gh, git=git)
@@ -138,7 +138,7 @@ def run_repo_context(run_uid: str, *, gh: Any = None, git: Any = None) -> dict[s
 
 
 def _mirror_pr(run_uid: str, work_item_id: str, pr_url: str, pr_id: str) -> None:
-    from agentic_company.platform.runtime_db import _submit_pr_mirror
+    from agentic_company.platform.db.runtime_db import _submit_pr_mirror
 
     _submit_pr_mirror(run_uid, work_item_id, pr_url, pr_id)
 
@@ -146,7 +146,7 @@ def _mirror_pr(run_uid: str, work_item_id: str, pr_url: str, pr_id: str) -> None
 def _run_dir(run_uid: str) -> Path | None:
     """The run workspace directory for a run uid (where the PR store lives)."""
     try:
-        from agentic_company.platform.runtime_db import _repo_and_run
+        from agentic_company.platform.db.runtime_db import _repo_and_run
 
         repo, db_run_id = _repo_and_run(run_uid)
         with repo.connect() as conn:
@@ -230,8 +230,8 @@ def merge_work_item_pr_after_qa_pass(
     """
 
     try:
-        from agentic_company.platform.repo_manager import build_run_repo
-        from agentic_company.platform.runtime_db import _repo_and_run
+        from agentic_company.platform.delivery.repo_manager import build_run_repo
+        from agentic_company.platform.db.runtime_db import _repo_and_run
 
         repo, db_run_id = _repo_and_run(run_uid)
         built = build_run_repo(repo, db_run_id, gh=gh, git=git)

@@ -1,4 +1,4 @@
-from agentic_company.platform.work_mirror import WorkMirror
+from agentic_company.platform.mirror.work_mirror import WorkMirror
 from agentic_company.ports.board import BoardComment, BoardItem, BoardRef
 
 

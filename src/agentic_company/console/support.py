@@ -14,7 +14,7 @@ from agentic_company.orchestration.graphs import (
     CONSOLE_DEPLOYMENT_NODE_ORDER,
     CONSOLE_EXECUTION_NODE_ORDER,
 )
-from agentic_company.platform.artifacts import read_json_artifact
+from agentic_company.platform.artifacts.artifacts import read_json_artifact
 
 LOGGER = logging.getLogger(__name__)
 

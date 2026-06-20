@@ -11,7 +11,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, cast
 
-from agentic_company.platform.status import classify_failure_mode, classify_work_item_status
+from agentic_company.platform.status.status import classify_failure_mode, classify_work_item_status
 
 DashboardSystem = Literal["github", "jira", "azure_devops", "internal"]
 DashboardReferenceType = Literal["issue", "pull_request", "board_card", "work_item"]

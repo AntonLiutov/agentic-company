@@ -7,7 +7,7 @@ import json
 import re
 from pathlib import Path
 
-from agentic_company.platform.artifacts import read_text_artifact
+from agentic_company.platform.artifacts.artifacts import read_text_artifact
 
 
 def slugify(value: object, *, default_value: str = "run") -> str:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agentic_company.platform.agent_contracts import AgentDescriptor
+from agentic_company.platform.agent.agent_contracts import AgentDescriptor
 
 AGENT_NODE_ROUTES: dict[str, tuple[str, str]] = {
     "business_analyst": ("business-analyst-agent", "request_business_analysis"),

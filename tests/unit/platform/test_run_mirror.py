@@ -1,15 +1,15 @@
 import json
 
-import agentic_company.platform.run_mirror as run_mirror_mod
-import agentic_company.platform.runtime_db as rdb
+import agentic_company.platform.run.run_mirror as run_mirror_mod
+import agentic_company.platform.db.runtime_db as rdb
 from agentic_company.integrations.github.projects import GitHubProjectsBoardAdapter
-from agentic_company.platform.run_mirror import (
+from agentic_company.platform.run.run_mirror import (
     build_run_mirror,
     get_run_mirror,
     reset_run_mirror,
 )
-from agentic_company.platform.runtime_db import _mirror_seed_work_items, _sprint_title
-from agentic_company.platform.work_mirror import WorkMirror
+from agentic_company.platform.db.runtime_db import _mirror_seed_work_items, _sprint_title
+from agentic_company.platform.mirror.work_mirror import WorkMirror
 
 
 class _Run:
@@ -286,7 +286,7 @@ def test_artifact_section_embeds_content_and_excludes_trace(monkeypatch):
             return {"content_text": "# Notes\nbody"}
 
     monkeypatch.setattr(
-        "agentic_company.platform.artifact_registry.artifact_id_for",
+        "agentic_company.platform.artifacts.artifact_registry.artifact_id_for",
         lambda run, path: path,
     )
     section = rdb._artifact_section(
@@ -323,7 +323,7 @@ def test_artifact_section_renders_html_report_as_readable_text(monkeypatch):
             }
 
     monkeypatch.setattr(
-        "agentic_company.platform.artifact_registry.artifact_id_for",
+        "agentic_company.platform.artifacts.artifact_registry.artifact_id_for",
         lambda run, path: path,
     )
     section = rdb._artifact_section(

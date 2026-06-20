@@ -10,14 +10,14 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from agentic_company.platform.state import DeliveryState
-from agentic_company.platform.status import WorkItemStatus, classify_work_item_status
+from agentic_company.platform.db.state import DeliveryState
+from agentic_company.platform.status.status import WorkItemStatus, classify_work_item_status
 
 
 class RunStatus(StrEnum):
     """Canonical lifecycle status of a delivery run.
 
-    Distinct from :class:`~agentic_company.platform.status.WorkItemStatus`: a run
+    Distinct from :class:`~agentic_company.platform.status.status.WorkItemStatus`: a run
     is an execution, not a board lane, so it carries execution outcomes such as
     ``running`` and ``stopped`` rather than ``todo``/``review``.
     """

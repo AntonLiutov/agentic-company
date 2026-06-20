@@ -17,8 +17,8 @@ import logging
 import threading
 from typing import Any
 
-from agentic_company.platform.board_selection import select_board
-from agentic_company.platform.work_mirror import WorkMirror
+from agentic_company.platform.delivery.board_selection import select_board
+from agentic_company.platform.mirror.work_mirror import WorkMirror
 
 LOGGER = logging.getLogger("agentic_company.run_mirror")
 

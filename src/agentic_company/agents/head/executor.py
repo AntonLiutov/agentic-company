@@ -9,7 +9,7 @@ from typing import Any
 from agentic_company.agents.head.contracts import HEAD_TOOL_CONTRACT_REGISTRY, HEAD_TOOLS
 from agentic_company.agents.head.tools import HeadExecutorResult, HeadToolbox, HeadWorkers
 from agentic_company.agents.registry import agent_by_id
-from agentic_company.platform.agent_runtime import (
+from agentic_company.platform.agent.agent_runtime import (
     AGENT_REASONING_EFFORT_ENV,
     COORDINATOR_AGENT_REASONING_EFFORT_ENV,
     DEFAULT_COORDINATOR_AGENT_REASONING_EFFORT,
@@ -20,8 +20,8 @@ from agentic_company.platform.agent_runtime import (
     coordinator_quality_review_policy,
     coordinator_repair_policy,
 )
-from agentic_company.platform.state import DeliveryState
-from agentic_company.platform.tool_contracts import render_tool_docstring
+from agentic_company.platform.db.state import DeliveryState
+from agentic_company.platform.contracts.tool_contracts import render_tool_docstring
 
 
 class LangChainHeadExecutor:
