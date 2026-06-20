@@ -59,4 +59,3 @@ def downgrade() -> None:
             DROP COLUMN IF EXISTS run_mode;
         """
     )
-

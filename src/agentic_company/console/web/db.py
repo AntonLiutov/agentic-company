@@ -2182,8 +2182,9 @@ class ConsoleRepository:
             clauses.append("status = ?")
             params.append(status)
         with self.connect() as conn:
+            where_sql = " AND ".join(clauses)
             rows = conn.execute(
-                f"SELECT * FROM run_approvals WHERE {' AND '.join(clauses)} ORDER BY created_at, id",
+                f"SELECT * FROM run_approvals WHERE {where_sql} ORDER BY created_at, id",
                 tuple(params),
             ).fetchall()
         return [_run_approval(row) for row in rows]

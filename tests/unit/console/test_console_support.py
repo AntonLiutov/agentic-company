@@ -38,7 +38,9 @@ def test_console_support_lists_and_loads_sample_requirements(tmp_path):
 def test_env_persistence_helpers_round_trip(tmp_path):
     run_dir = tmp_path / "run"
 
-    write_target_env(run_dir, {"AGENT_LLM_MODEL": "gpt-4.1", "OPENAI_API_KEY": "sk-test", "EMPTY": ""})
+    write_target_env(
+        run_dir, {"AGENT_LLM_MODEL": "gpt-4.1", "OPENAI_API_KEY": "sk-test", "EMPTY": ""}
+    )
 
     assert saved_env_keys(run_dir) == ["AGENT_LLM_MODEL"]
     assert initial_env_value("MISSING", tmp_path) == ""
@@ -65,7 +67,9 @@ def test_env_persistence_mirrors_safe_key_metadata_when_run_exists(tmp_path, mon
         reasoning="medium",
     )
 
-    write_target_env(run_dir, {"AGENT_LLM_MODEL": "gpt-4.1", "OPENAI_API_KEY": "sk-test", "EMPTY": ""})
+    write_target_env(
+        run_dir, {"AGENT_LLM_MODEL": "gpt-4.1", "OPENAI_API_KEY": "sk-test", "EMPTY": ""}
+    )
 
     state = repo.get_console_process_state(run.id, "agent_runtime_env")
     assert state is not None

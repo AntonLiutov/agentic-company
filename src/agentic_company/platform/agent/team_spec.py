@@ -64,7 +64,9 @@ TEAM_PRESETS: dict[TeamPreset, TeamSpec] = {
 
 
 def team_spec(value: str | TeamPreset) -> TeamSpec:
-    preset = value if isinstance(value, TeamPreset) else TeamPreset(str(value or "standard").lower())
+    preset = (
+        value if isinstance(value, TeamPreset) else TeamPreset(str(value or "standard").lower())
+    )
     return TEAM_PRESETS[preset]
 
 

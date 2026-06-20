@@ -968,6 +968,8 @@ def test_create_project_requires_saved_openai_key(tmp_path, monkeypatch):
             "request_text": "Build a task tracker",
             "mode": "simple_prototype",
             "complexity": "simple",
+            "agent_provider": "openai",
+            "agent_model": "gpt-4.1",
         },
     )
 

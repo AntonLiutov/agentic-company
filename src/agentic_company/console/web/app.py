@@ -332,9 +332,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             return render_new_project(
                 request,
                 user,
-                error=(
-                    "Add your OpenAI key in Settings before starting OpenAI-backed planning."
-                ),
+                error=("Add your OpenAI key in Settings before starting OpenAI-backed planning."),
                 form_values=form_values,
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
@@ -1773,8 +1771,7 @@ def restart_run_settings(repo: ConsoleRepository, project: Project, user: User) 
         "service_tier": latest_env.get("AGENTIC_CODEX_SERVICE_TIER", "standard"),
         "run_mode": (latest_run.run_mode if latest_run else "") or normalize_run_mode(project.mode),
         "risk_mode": (latest_run.risk_mode if latest_run else "") or RiskMode.ASSISTED.value,
-        "team_preset": (latest_run.team_preset if latest_run else "")
-        or TeamPreset.STANDARD.value,
+        "team_preset": (latest_run.team_preset if latest_run else "") or TeamPreset.STANDARD.value,
     }
 
 

@@ -190,4 +190,3 @@ def _chmod_best_effort(path: Path, mode: int) -> None:
             path.chmod(stat.S_IREAD | stat.S_IWRITE)
         except OSError:
             return
-
