@@ -52,3 +52,6 @@ ops/qa-runtime/node_modules/
 ops/qa-runtime/browsers/
 ops/qa-runtime/package*.json
 ops/qa-runtime/setup-proof.png
+
+# Phase 3 planning docs kept local-only (off commit history)
+docs/milestones/phase-3/
