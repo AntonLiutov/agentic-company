@@ -57,9 +57,19 @@ VAULT="$(printf '%s' "$OUT" | python -c 'import sys,json;print(json.load(sys.std
 PG_FQDN="$(printf '%s' "$OUT" | python -c 'import sys,json;print(json.load(sys.stdin)["pgFqdn"]["value"])')"
 echo "    vault=$VAULT  pg=$PG_FQDN"
 
-echo ">>> seed secrets into $VAULT (enter this env's GitHub OAuth app credentials)"
-read -r -p "GitHub OAuth client id: " GH_ID
-read -r -s -p "GitHub OAuth client secret: " GH_SECRET; echo
+echo ">>> seed secrets into $VAULT"
+# Non-interactive friendly: take OAuth from env, else prompt if a TTY, else use placeholders
+# (the app boots; GitHub login waits until you set the real values + restart the services).
+GH_ID="${GH_OAUTH_CLIENT_ID:-}"; GH_SECRET="${GH_OAUTH_CLIENT_SECRET:-}"
+if [ -z "$GH_ID" ] || [ -z "$GH_SECRET" ]; then
+  if [ -t 0 ]; then
+    read -r -p "GitHub OAuth client id (blank = placeholder): " GH_ID
+    read -r -s -p "GitHub OAuth client secret (blank = placeholder): " GH_SECRET; echo
+  fi
+  GH_ID="${GH_ID:-__PENDING_SET_OAUTH__}"; GH_SECRET="${GH_SECRET:-__PENDING_SET_OAUTH__}"
+  echo "    using PLACEHOLDER GitHub OAuth — set the real app credentials later:"
+  echo "    ops/deploy/seed-secrets.sh $VAULT '<db-pw>' <client-id> <client-secret>; then restart the services."
+fi
 "$HERE/../ops/deploy/seed-secrets.sh" "$VAULT" "$DB_PW" "$GH_ID" "$GH_SECRET"
 unset DB_PW GH_SECRET
 
