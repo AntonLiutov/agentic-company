@@ -289,8 +289,8 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         project_owner: Annotated[str, Form()] = "",
         new_repo_name: Annotated[str, Form()] = "",
         new_repo_private: Annotated[str, Form()] = "",
-        run_mode: Annotated[str, Form()] = "",
-        risk_mode: Annotated[str, Form()] = "assisted",
+        run_mode: Annotated[str, Form()] = "complex",
+        risk_mode: Annotated[str, Form()] = "autonomous",
     ) -> Response:
         agent_provider = normalize_agent_provider(agent_provider)
         agent_model = normalize_agent_model(agent_provider, agent_model)
@@ -1630,8 +1630,8 @@ def new_project_form_values(
     board_adapter: str = "internal",
     repository: str = "",
     project_owner: str = "",
-    run_mode: str = "",
-    risk_mode: str = "assisted",
+    run_mode: str = "complex",
+    risk_mode: str = "autonomous",
 ) -> dict[str, str]:
     agent_provider = normalize_agent_provider(agent_provider)
     return {
