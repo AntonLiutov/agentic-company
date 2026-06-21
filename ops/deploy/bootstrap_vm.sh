@@ -45,6 +45,14 @@ systemctl enable agentic-secrets-fetch.service "$SERVICE"
 echo ">>> uv for $DEPLOY_USER"
 sudo -u "$DEPLOY_USER" bash -lc 'command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh'
 
+# The console unit's ExecStart is /usr/local/bin/uv — make sure that path resolves whether
+# uv came from host-setup (system-wide) or the user-local install above.
+if [ ! -x /usr/local/bin/uv ]; then
+  UVPATH="$(command -v uv 2>/dev/null || true)"
+  [ -z "$UVPATH" ] && [ -x "/home/$DEPLOY_USER/.local/bin/uv" ] && UVPATH="/home/$DEPLOY_USER/.local/bin/uv"
+  if [ -n "$UVPATH" ]; then ln -sf "$UVPATH" /usr/local/bin/uv; else echo "WARN: uv not found — the console service needs /usr/local/bin/uv"; fi
+fi
+
 echo ">>> render secrets now (managed identity -> Key Vault) and verify"
 systemctl start agentic-secrets-fetch.service
 test -s "$DEPLOY_ROOT/shared/.env" \

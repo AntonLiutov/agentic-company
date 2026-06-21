@@ -41,13 +41,16 @@ sudo ENV_NAME=dev bash ops/deploy/bootstrap_vm.sh
 # 6. TLS + nginx (free Let's Encrypt cert, auto-renew). NSG must allow inbound 80 + 443.
 sudo DOMAIN=console.yourdomain.com EMAIL=you@yourdomain.com bash ops/deploy/setup-tls.sh
 
-# 7. start the app
-sudo systemctl restart agentic-secrets-fetch agentic-company-console
-curl -fsS https://console.yourdomain.com/healthz   # {"status":"ok","sha":""}
+# 7. CD: register the self-hosted runner on the VM as `deployer` (label vm-dev) — the exact
+#    ./config.sh command is printed by bootstrap_vm.sh. Then in the repo: create Environments
+#    dev/prod and disable fork-PR runs on self-hosted runners.
 
-# 8. CD: register the self-hosted runner (label vm-dev), repo Environments dev/prod,
-#    disable fork-PR runs (see bootstrap output), land the branch to main, trigger the
-#    first deploy manually (workflow_run won't auto-fire for the introducing merge).
+# 8. FIRST deploy: there is NO /opt/agentic-company/current until a release lands, so do not
+#    start the service by hand. Trigger the dev deploy manually (deploy.yml has a
+#    workflow_dispatch trigger) — it runs migrations, creates `current`, and starts the app:
+gh workflow run "Deploy (dev)" --ref main
+#    then check:  curl -fsS https://console.yourdomain.com/healthz   # {"status":"ok","sha":"<sha>"}
+#    Subsequent merges to main auto-deploy.
 
 # 9. once the new setup is proven, DROP the old junk:
 az group delete -n rg-agentic-dev --yes            # (already done this session)
