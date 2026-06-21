@@ -1,90 +1,95 @@
-# CD: self-hosted runner on the VM
+# CD + production secret/DB management
 
-Auto-deploy the console to the Azure VM on merge to `main`. Chosen over cloud-runner+SSH
-and Azure DevOps because the VM's NSG IP-gates port 22 — a runner **on** the VM is
-outbound-only (HTTPS:443 long-poll), so the NSG and SSH are irrelevant. dev auto-deploys;
-**prod is gated behind a manual, reviewed promotion**.
+Auto-deploy the console to an Azure VM on merge to `main`, with secrets in **Azure Key
+Vault** (read via the VM's **Managed Identity**) and a **managed Postgres Flexible
+Server**. dev auto-deploys; **prod is a manual, reviewed promotion**. Reproducible per
+env via **Bicep**. Chosen because a runner ON the VM is outbound-only (sidesteps the NSG
+SSH IP-gate) and Key Vault + a managed DB take secrets and durable state off the VM disk.
 
-## Layout on the VM
+## Pieces
 
+- **Secrets:** one Key Vault per env (`kv-agentic-<env>`). The VM's system-assigned
+  Managed Identity has `Key Vault Secrets User`. A oneshot `agentic-secrets-fetch.service`
+  runs `Before=` the console, does `az login --identity`, and renders
+  `/opt/agentic-company/shared/.env` (0600) from the vault. The app is UNCHANGED — it
+  still reads env vars. `deploy.sh` never writes `shared/.env`; only the oneshot does.
+  Secrets in the vault: `app-secret-key` (Fernet ROOT key — **immutable per env**),
+  `github-oauth-client-id/secret`, `db-app-password`. Non-secret config is the committed
+  `ops/deploy/env.nonsecret.<env>`.
+- **DB:** Azure Database for PostgreSQL Flexible Server per env, public-access firewalled
+  to the VM IP, `sslmode=require`, 7-day managed backups + PITR. Redis stays docker ($0).
+- **IaC:** `infra/bicep/` (`main.bicep` → `modules/keyvault.bicep` + `modules/postgres.bicep`),
+  per-env `params/<env>.bicepparam`, driven by `infra/provision.sh`.
+- **Release layout on the VM:** `/opt/agentic-company/{releases/<sha>, current→release,
+  previous→release, shared/{.env, bin/fetch-secrets.sh, env.nonsecret, data/codex-auth,
+  runs, backups}}`, owned by an unprivileged `deployer` user with a 4-command sudoers grant.
+
+## First-time setup (per env, from scratch)
+
+```bash
+# 1. From your machine (az login + az account set --subscription <id>):
+#    creates Key Vault + role assignment + Postgres, seeds secrets (prompts for the
+#    env's GitHub OAuth client id/secret — create a fresh OAuth app first, callback =
+#    https://<env-dns>/auth/github/callback).
+infra/provision.sh dev <resource-group> <vm-name> [vm-resource-group]
+
+# 2. Put the printed vault + Postgres FQDN into ops/deploy/env.nonsecret.dev
+#    (AGENTIC_KEY_VAULT, AGENTIC_PG_HOST, GITHUB_OAUTH_CALLBACK_URL) and commit it.
+
+# 3. On the VM (renders shared/.env from Key Vault and verifies):
+sudo ENV_NAME=dev bash ops/deploy/bootstrap_vm.sh
+
+# 4. Register the self-hosted runner as `deployer`, label vm-dev (printed by bootstrap).
+# 5. Repo settings: disable fork-PR runs; create Environments dev (no gate) / prod (required reviewers).
+# 6. Land CD on main; trigger the FIRST deploy manually (workflow_run gotcha below); then merges auto-deploy.
 ```
-/opt/agentic-company/
-  releases/<sha>/      immutable checkout + its own uv .venv
-  current  -> releases/<sha>     atomic symlink = live version
-  previous -> releases/<sha>     last-known-good (auto-rollback target)
-  shared/.env                    prod secrets — symlinked into each release, deploy NEVER writes it
-  shared/data/codex-auth/        per-user Codex auth.json, persisted across releases
-  shared/runs/                   run artifacts, persisted
-  shared/backups/                pre-migration pg_dumps
-```
-
-- A dedicated unprivileged **`deployer`** user owns the tree and runs the GitHub Actions
-  runner as a boot-persistent systemd service. Its sudoers grant is exactly three commands:
-  `systemctl restart|is-active|status agentic-company-console`.
-- `agentic-company-console.service` loads `current/.env` (→ `shared/.env`) + `current/.release.env`
-  (the per-release sha), so the live env is always the host-local prod secret file.
-- nginx (TLS) → `127.0.0.1:$AGENTIC_WEB_PORT` is unchanged.
 
 ## Flow
 
-`merge to main` → **CI** (ruff + pytest, cov ≥ 75) → on success **Deploy (dev)** fires via
-`workflow_run` (guarded `conclusion==success && head_branch==main`, fork runs off) → the
-job lands on the `vm-dev` runner → `ops/deploy/deploy.sh`:
-checkout → rsync into `releases/<sha>` → symlink `shared/*` → `uv sync --extra app` →
-`pg_dump` backup → `agentic-db-upgrade` → atomic `current` flip → `sudo systemctl restart`
-→ poll `/healthz` until it reports the new sha → on failure repoint `current`→`previous`,
-restart, exit red (the merge author sees the failure).
+`merge to main` → **CI** (ruff + pytest) → on success **Deploy (dev)** fires via
+`workflow_run` → the `vm-dev` runner runs `deploy.sh`: re-render secrets from Key Vault →
+rsync into `releases/<sha>` → symlink `shared/*` → `uv sync` → best-effort `pg_dump`
+(managed PITR is the real safety) → `agentic-db-upgrade` → atomic `current` flip →
+restart → poll `/healthz` 90s for the new sha → on failure roll back to `previous`.
 
-## One-time setup (per host)
+## Gotchas (built into the runbook, repeated here)
 
-```bash
-sudo REPO_URL=https://github.com/AntonLiutov/agentic-company bash ops/deploy/bootstrap_vm.sh
-# then follow the printed MANUAL steps:
-#  1. fill /opt/agentic-company/shared/.env  (from shared-env.example)
-#  2. register the runner as `deployer` with label vm-dev (vm-staging / vm-prod elsewhere)
-#  3. repo Actions settings: disable fork-PR runs; require approval for outside collaborators
-#  4. repo Environments: create `dev` (no gate) and `prod` (required reviewers)
-```
+- **workflow_run only fires from the default branch.** The merge that introduces
+  `deploy.yml` to main does NOT auto-deploy itself — trigger the first deploy manually
+  (re-run CI on main / push a trivial commit). Subsequent merges auto-deploy.
+- **Fork-PR safety** relies on the repo setting *and* the workflow `if:` guard — set both.
+- **Migrations must be EXPAND-CONTRACT** (additive in a release, drops in a later one) so a
+  code rollback stays compatible with the advanced schema. The legacy drop migration
+  `20260621_0006` is fine on a clean DB; rework it before it runs against data.
+- **`APP_SECRET_KEY` is immutable per env.** Changing it orphans every per-user secret;
+  "rotation" = a deliberate app-level re-encrypt migration, not an ops swap.
+
+## Rotation
+
+- **GitHub OAuth secret** (zero-downtime — GitHub allows two active secrets): add secret #2
+  in GitHub → `az keyvault secret set --name github-oauth-client-secret` → on the VM
+  `sudo systemctl restart agentic-secrets-fetch agentic-company-console` → delete the old
+  GitHub secret.
+- **DB password:** rotate on the server, `az keyvault secret set --name db-app-password`,
+  restart the two services.
 
 ## Rollback
 
-Automatic on a failed `/healthz` (deploy repoints `current`→`previous` and restarts).
-Manual:
-```bash
-ln -sfn "$(readlink -f /opt/agentic-company/previous)" /opt/agentic-company/current
-sudo systemctl restart agentic-company-console
-```
+Automatic on a failed `/healthz` (repoints `current`→`previous`, restarts). Manual:
+`ln -sfn "$(readlink -f /opt/agentic-company/previous)" /opt/agentic-company/current && sudo systemctl restart agentic-company-console`.
+For a bad schema change, restore the managed Postgres via PITR.
 
 ## Promotion to staging / prod
 
-The per-host delta is exactly TWO things — the runner **label** and the host-local
-`shared/.env`; everything else (workflows, deploy.sh, bootstrap, unit, sudoers, layout)
-is identical.
+Per-env delta = the runner label + `env.nonsecret.<env>` + that env's Bicep param +
+its OWN vault + OWN `APP_SECRET_KEY` (never travels between envs) + its OWN GitHub OAuth
+app. Run `infra/provision.sh <env> ...`, set `env.nonsecret.<env>`, `bootstrap_vm.sh` on
+that VM with `ENV_NAME=<env>`, register a `vm-<env>` runner. prod deploys only via the
+manual **Deploy (prod)** workflow gated by the `prod` Environment's required reviewers.
 
-- **Staging:** 2nd VM → `bootstrap_vm.sh` → own `shared/.env` (staging OAuth app + staging
-  DNS callback + fresh `APP_SECRET_KEY`) → runner label `vm-staging`. Add a matrix entry to
-  `deploy.yml` to auto-deploy it alongside dev.
-- **Prod:** same, label `vm-prod`. Promote with the **`Deploy (prod)`** workflow
-  (`workflow_dispatch`), which is gated by the `prod` Environment's required reviewers — prod
-  is never auto-flipped on a merge.
+## Rejected alternatives
 
-Each environment needs its OWN GitHub OAuth app (one callback URL per app) and its own
-`APP_SECRET_KEY`, so token ciphertexts stay isolated per host.
-
-## Prereqs before turning CD on
-
-1. **Land the work on `main`** — CD deploys from main.
-2. **The drop migration `20260621_0006`** runs against prod Postgres and is irreversible.
-   deploy.sh takes a `pg_dump` first; prefer reworking destructive migrations to
-   expand-contract (add+backfill in one release, drop in a later one).
-3. CI must be **green** on main.
-
-## Rejected alternatives (for the record)
-
-- **Cloud GitHub runner → SSH/rsync to the VM:** needs to punch the NSG (dynamic runner IPs)
-  via an Azure OIDC app + JIT NSG rule whose teardown can leak on cancel; plus an SSH key in
-  GitHub secrets. More moving parts, more secret surface. Kept only as the migration path if
-  the VM is ever replaced by an ephemeral/autoscaled fleet.
-- **Azure DevOps Pipelines:** not worth migrating off GitHub when the repo, OAuth, and board
-  integrations already live there.
-- **Secrets via `az vm run-command`:** forbidden — its scripts/output land in Azure logs.
+Cloud-runner→SSH (NSG hole-punching, key in GitHub), Azure DevOps (not worth migrating off
+GitHub), compose-Postgres (no managed backups/PITR), SOPS/systemd-creds for secrets
+(workable but Key Vault gives central RBAC + audit + rotation with no app change). Secrets
+must NEVER flow through `az vm run-command` (Azure logs them).

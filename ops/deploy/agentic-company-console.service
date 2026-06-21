@@ -4,8 +4,10 @@
 # per-release sha file the deploy writes (current/.release.env).
 [Unit]
 Description=Agentic Company Console
-After=network-online.target docker.service
+After=network-online.target docker.service agentic-secrets-fetch.service
 Wants=network-online.target
+# The console must not start until shared/.env has been rendered from Key Vault.
+Requires=agentic-secrets-fetch.service
 
 [Service]
 Type=simple
