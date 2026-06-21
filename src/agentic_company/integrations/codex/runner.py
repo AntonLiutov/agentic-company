@@ -107,7 +107,7 @@ _CODEX_ENV_ALLOWED_PREFIXES = (
     "PLAYWRIGHT_",
     "LC_",
 )
-DEFAULT_CODEX_MODEL = "gpt-5.5"
+DEFAULT_CODEX_MODEL = "gpt-5.4"
 # Least-privilege default: workers write only inside the workspace. Agents that
 # genuinely need host/network access (deployment, fullstack) opt into a broader
 # sandbox explicitly.
@@ -703,9 +703,9 @@ def codex_auth_mode_from_env(env: dict[str, str] | None = None) -> str:
     """Return the configured Codex authentication mode."""
 
     source = env if env is not None else os.environ
-    configured = source.get(CODEX_AUTH_MODE_ENV, CODEX_AUTH_MODE_API_KEY).strip().lower()
+    configured = source.get(CODEX_AUTH_MODE_ENV, CODEX_AUTH_MODE_USER_CHATGPT).strip().lower()
     if not configured:
-        return CODEX_AUTH_MODE_API_KEY
+        return CODEX_AUTH_MODE_USER_CHATGPT
     if configured not in {CODEX_AUTH_MODE_API_KEY, CODEX_AUTH_MODE_USER_CHATGPT}:
         raise ValueError(
             f"{CODEX_AUTH_MODE_ENV} must be one of: "
@@ -766,7 +766,6 @@ def _is_secret_runtime_env_key(key: str) -> bool:
         "CODEX_API_KEY",
         "OPENAI_API_KEY",
         "GOOGLE_API_KEY",
-        "GEMINI_API_KEY",
         "GH_TOKEN",
         "GITHUB_TOKEN",
         "CODEX_ACCESS_TOKEN",
