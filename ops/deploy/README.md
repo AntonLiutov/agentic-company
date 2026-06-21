@@ -24,6 +24,26 @@ SSH IP-gate) and Key Vault + a managed DB take secrets and durable state off the
   previous→release, shared/{.env, bin/fetch-secrets.sh, env.nonsecret, data/codex-auth,
   runs, backups}}`, owned by an unprivileged `deployer` user with a 4-command sudoers grant.
 
+## Before you provision (operator gotchas — from the Azure vet)
+
+- **Pin the VM's public IP to STATIC.** The Postgres firewall is a single-IP allow rule
+  (the VM's IP); a dynamic IP that changes on dealloc/restart silently breaks DB access.
+  The firewall uses the VM's instance-level **public** IP — valid only if the VM has one
+  and uses default outbound. Behind a NAT Gateway / LB the egress IP differs; switch to
+  VNet integration / private endpoint then.
+- **NSG outbound must allow 443** to `*.vault.azure.net` (secret fetch),
+  `login.microsoftonline.com` + IMDS `169.254.169.254` (managed-identity token), and the
+  Postgres FQDN:5432. The NSG today only IP-gates inbound SSH; confirm outbound is open.
+- **First secret fetch waits on RBAC propagation.** The `Key Vault Secrets User` grant can
+  take ~1–5 min to reach the data plane; `fetch-secrets.sh` retries for up to 5 min, so the
+  first `bootstrap_vm.sh` may pause there — that's expected, not a hang.
+- **Vault/Postgres names carry a unique suffix** (`uniqueString` per RG) to avoid global
+  name collisions — so the real names come from `provision.sh` output; put them into
+  `env.nonsecret.<env>` (which ships `__SET_FROM_PROVISION_OUTPUT__` sentinels that fail
+  loudly if left unedited).
+- **`provision.sh` is idempotent** via `infra/.provision-state/<env>.dbpw` (gitignored) — a
+  re-run reuses the same DB password instead of rotating the live credential.
+
 ## First-time setup (per env, from scratch)
 
 ```bash

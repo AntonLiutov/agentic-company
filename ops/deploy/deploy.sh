@@ -44,10 +44,10 @@ log "uv sync --extra app"; uv sync --extra app
 # 4. Best-effort logical backup (managed PITR is the primary safety net), then migrate.
 if command -v pg_dump >/dev/null 2>&1 && [ -n "${AGENTIC_DATABASE_URL:-}" ]; then
   ts="$(date +%Y%m%d-%H%M%S)"
-  if pg_dump "$AGENTIC_DATABASE_URL" > "$SHARED/backups/pre-$ts-$SHA.sql" 2>/dev/null; then
+  if pg_dump "$AGENTIC_DATABASE_URL" > "$SHARED/backups/pre-$ts-$SHA.sql" 2>"$SHARED/backups/pre-$ts-$SHA.err"; then
     log "pg_dump backup -> $SHARED/backups/pre-$ts-$SHA.sql"
   else
-    log "WARN: pg_dump failed (managed PITR still covers recovery)"
+    log "WARN: pg_dump failed (see $SHARED/backups/pre-$ts-$SHA.err; managed PITR still covers recovery)"
   fi
 fi
 log "agentic-db-upgrade"; uv run --extra app agentic-db-upgrade

@@ -29,6 +29,10 @@ ENV/
 !.env.example
 !.env.template
 
+# provisioning state (holds the generated DB password — operator machine only)
+infra/.provision-state/
+*.dbpw
+
 # IDEs
 .idea/
 .vscode/

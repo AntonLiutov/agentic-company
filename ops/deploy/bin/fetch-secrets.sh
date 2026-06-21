@@ -6,6 +6,8 @@
 # kept (we render to a temp file and mv only on success).
 set -euo pipefail
 umask 077
+tmp=""
+trap '[ -n "${tmp:-}" ] && rm -f "$tmp" 2>/dev/null || true' EXIT
 
 DEPLOY_ROOT="${DEPLOY_ROOT:-/opt/agentic-company}"
 SHARED="$DEPLOY_ROOT/shared"
@@ -17,6 +19,9 @@ NONSECRET="${NONSECRET_FILE:-$SHARED/env.nonsecret}"
 . "$NONSECRET"   # AGENTIC_KEY_VAULT, AGENTIC_PG_HOST/DB/USER, AGENTIC_WEB_*, callback, redis, codex, profile
 : "${AGENTIC_KEY_VAULT:?set AGENTIC_KEY_VAULT in $NONSECRET}"
 : "${AGENTIC_PG_HOST:?set AGENTIC_PG_HOST in $NONSECRET}"
+case "$AGENTIC_KEY_VAULT$AGENTIC_PG_HOST${GITHUB_OAUTH_CALLBACK_URL:-}" in
+  *__SET_*) echo "FATAL: $NONSECRET still has placeholder values — set the real vault/PG host/callback from provision.sh output."; exit 1 ;;
+esac
 
 # Managed-identity login, with a short retry while IMDS warms up at boot.
 for i in 1 2 3 4 5; do
@@ -25,13 +30,22 @@ for i in 1 2 3 4 5; do
   sleep 3
 done
 
-kv() { az keyvault secret show --vault-name "$AGENTIC_KEY_VAULT" --name "$1" --query value -o tsv --only-show-errors; }
+# Read a secret, retrying through RBAC role-assignment propagation lag (~5 min) — the
+# 'Key Vault Secrets User' grant can take minutes to reach the data plane after provision.
+kv() {
+  local name="$1" val="" i
+  for i in $(seq 1 30); do
+    val="$(az keyvault secret show --vault-name "$AGENTIC_KEY_VAULT" --name "$name" --query value -o tsv --only-show-errors 2>/dev/null || true)"
+    [ -n "$val" ] && { printf '%s' "$val"; return 0; }
+    sleep 10
+  done
+  return 1
+}
 
-APP_SECRET_KEY="$(kv app-secret-key)"
-GH_ID="$(kv github-oauth-client-id)"
-GH_SECRET="$(kv github-oauth-client-secret)"
-DB_PW="$(kv db-app-password)"
-[ -n "$APP_SECRET_KEY" ] && [ -n "$DB_PW" ] || { echo "FATAL: a required secret came back empty from $AGENTIC_KEY_VAULT"; exit 1; }
+APP_SECRET_KEY="$(kv app-secret-key)"        || { echo "FATAL: app-secret-key unreadable from $AGENTIC_KEY_VAULT (RBAC propagation / access?)"; exit 1; }
+GH_ID="$(kv github-oauth-client-id)"         || { echo "FATAL: github-oauth-client-id unreadable from $AGENTIC_KEY_VAULT"; exit 1; }
+GH_SECRET="$(kv github-oauth-client-secret)" || { echo "FATAL: github-oauth-client-secret unreadable from $AGENTIC_KEY_VAULT"; exit 1; }
+DB_PW="$(kv db-app-password)"                || { echo "FATAL: db-app-password unreadable from $AGENTIC_KEY_VAULT"; exit 1; }
 
 DB_URL="postgresql://${AGENTIC_PG_USER:-agentic}:${DB_PW}@${AGENTIC_PG_HOST}:5432/${AGENTIC_PG_DB:-agentic_company}?sslmode=require"
 
@@ -44,5 +58,5 @@ chmod 0600 "$tmp"
   printf 'AGENTIC_DATABASE_URL=%s\n' "$DB_URL"
   grep -vE '^[[:space:]]*(#|$)' "$NONSECRET"   # append the non-secret config verbatim
 } > "$tmp"
-mv -f "$tmp" "$ENV_OUT"
+mv -f "$tmp" "$ENV_OUT"; tmp=""
 echo "rendered $ENV_OUT from Key Vault $AGENTIC_KEY_VAULT"

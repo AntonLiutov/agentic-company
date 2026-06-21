@@ -14,8 +14,11 @@ param dbAdminPassword string
 @description('Key Vault purge protection — true for staging/prod, may be false for dev')
 param keyVaultPurgeProtection bool = true
 
-var vaultName = 'kv-agentic-${env}'
-var pgServerName = 'pg-agentic-${env}'
+// Globally-unique DNS names — add a stable per-RG suffix to avoid name-taken collisions
+// (Key Vault names are tenant-wide unique + capped at 24 chars; PG FQDN is global).
+var suffix = substring(uniqueString(resourceGroup().id), 0, 5)
+var vaultName = 'kv-agentic-${env}-${suffix}'
+var pgServerName = 'pg-agentic-${env}-${suffix}'
 
 module keyvault 'modules/keyvault.bicep' = {
   name: 'keyvault-${env}'

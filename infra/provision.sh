@@ -31,8 +31,18 @@ VM_IP="$(az vm list-ip-addresses -g "$VM_RG" -n "$VM_NAME" \
 [ -n "$VM_IP" ] || { echo "FATAL: could not resolve the VM public IP."; exit 1; }
 echo "    VM public IP=$VM_IP"
 
-echo ">>> generate the DB password (used for BOTH the Postgres admin login and the vault secret)"
-DB_PW="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+echo ">>> DB password (idempotent: reuse a prior local copy so a re-run does NOT rotate the live credential)"
+STATE="$HERE/.provision-state"; mkdir -p "$STATE"; chmod 700 "$STATE"
+PWFILE="$STATE/$ENV.dbpw"
+if [ -f "$PWFILE" ]; then
+  DB_PW="$(cat "$PWFILE")"
+  echo "    reusing existing DB password from $PWFILE"
+else
+  # token_urlsafe + a fixed tail guarantees Azure PG's 3-of-4 complexity (upper/lower/digit/special).
+  DB_PW="$(python -c 'import secrets; print(secrets.token_urlsafe(28) + "Aa1-")')"
+  ( umask 077; printf '%s' "$DB_PW" > "$PWFILE" )
+  echo "    generated + stored DB password at $PWFILE (gitignored)"
+fi
 
 echo ">>> deploy Bicep (Key Vault + role assignment + Postgres) for env=$ENV"
 # The .bicepparam reads these dynamic values via readEnvironmentVariable() and resolves
