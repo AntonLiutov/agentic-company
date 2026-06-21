@@ -203,5 +203,12 @@ def test_git_runner_injects_token_into_push_env(monkeypatch, tmp_path: Path):
     assert captured["env"]["GH_TOKEN"] == "gho_user"
     assert captured["env"]["GITHUB_TOKEN"] == "gho_user"
 
-    GitRunner().run(["status"], cwd=tmp_path)  # no token -> inherit host env (env=None)
-    assert captured["env"] is None
+    # No per-user token bound: an ambient GH_TOKEN/GITHUB_TOKEN from the host environment
+    # must NEVER authenticate the push — the UI-issued token is the only token source.
+    monkeypatch.setenv("GH_TOKEN", "ambient-should-not-leak")
+    monkeypatch.setenv("GITHUB_TOKEN", "ambient-should-not-leak")
+    monkeypatch.setenv("PATH", "/usr/bin")  # other host env still inherited
+    GitRunner().run(["status"], cwd=tmp_path)
+    assert "GH_TOKEN" not in captured["env"]
+    assert "GITHUB_TOKEN" not in captured["env"]
+    assert captured["env"]["PATH"] == "/usr/bin"

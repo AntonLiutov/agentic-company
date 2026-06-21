@@ -88,14 +88,21 @@ class GitRunner:
         self._timeout = timeout_seconds
         self._github_token = (github_token or "").strip()
 
-    def _env(self) -> dict[str, str] | None:
-        """When a per-user token is bound, expose it as ``GH_TOKEN``/``GITHUB_TOKEN`` so the
-        repo-local credential helper (``_configure_push_credentials``) can authenticate
-        ``git push`` on a host with no ambient git credentials (a fresh VM). Returns None to
-        inherit the host env unchanged (local development)."""
-        if not self._github_token:
-            return None
-        return {**os.environ, "GH_TOKEN": self._github_token, "GITHUB_TOKEN": self._github_token}
+    def _env(self) -> dict[str, str]:
+        """Authenticate ``git`` as the connected user — and as nobody else.
+
+        With a per-user token bound, expose it as ``GH_TOKEN``/``GITHUB_TOKEN`` so the
+        repo-local credential helper (``_configure_push_credentials``) can push on a host
+        with no ambient git credentials (a fresh VM). With NO token bound, scrub any
+        ambient ``GH_TOKEN``/``GITHUB_TOKEN`` inherited from the host environment so an
+        env-supplied token can never silently authenticate the push: the UI-issued token is
+        the only token source. (The OS git credential manager used in local dev is not an
+        env var, so it is unaffected.)"""
+        env = {k: v for k, v in os.environ.items() if k not in {"GH_TOKEN", "GITHUB_TOKEN"}}
+        if self._github_token:
+            env["GH_TOKEN"] = self._github_token
+            env["GITHUB_TOKEN"] = self._github_token
+        return env
 
     def run(self, args: list[str], *, cwd: Path) -> str:
         try:

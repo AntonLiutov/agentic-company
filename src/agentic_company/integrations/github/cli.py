@@ -68,12 +68,19 @@ class GhRunner:
         self._backoff = backoff_seconds
         self._github_token = (github_token or "").strip()
 
-    def _env(self) -> dict[str, str] | None:
-        """When a per-user OAuth token is bound, authenticate gh with it (instead of the
-        host's stored auth) so runs act under the connected user's GitHub account."""
-        if not self._github_token:
-            return None
-        return {**os.environ, "GH_TOKEN": self._github_token, "GITHUB_TOKEN": self._github_token}
+    def _env(self) -> dict[str, str]:
+        """Authenticate ``gh`` as the connected user — and as nobody else.
+
+        With a per-user OAuth token bound, authenticate gh with it (instead of the host's
+        stored auth) so runs act under the connected user's GitHub account. With NO token
+        bound, scrub any ambient ``GH_TOKEN``/``GITHUB_TOKEN`` inherited from the host
+        environment so an env-supplied token can never silently authenticate gh: the
+        UI-issued token is the only token source."""
+        env = {k: v for k, v in os.environ.items() if k not in {"GH_TOKEN", "GITHUB_TOKEN"}}
+        if self._github_token:
+            env["GH_TOKEN"] = self._github_token
+            env["GITHUB_TOKEN"] = self._github_token
+        return env
 
     def run(self, args: list[str], *, cwd: Path | None = None) -> str:
         last_stderr = ""

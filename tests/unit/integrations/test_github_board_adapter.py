@@ -224,8 +224,14 @@ def test_gh_runner_authenticates_with_oauth_token(monkeypatch):
     assert captured["env"]["GH_TOKEN"] == "gho_user"
     assert captured["env"]["GITHUB_TOKEN"] == "gho_user"
 
-    GhRunner().run(["api", "user"])  # no token -> inherit host env (gh stored auth)
-    assert captured["env"] is None
+    # No per-user token: an ambient GH_TOKEN/GITHUB_TOKEN must not authenticate gh either —
+    # gh may still use its own stored auth (a config file, not an env var), but never a
+    # token inherited from the host environment.
+    monkeypatch.setenv("GH_TOKEN", "ambient-should-not-leak")
+    monkeypatch.setenv("GITHUB_TOKEN", "ambient-should-not-leak")
+    GhRunner().run(["api", "user"])
+    assert "GH_TOKEN" not in captured["env"]
+    assert "GITHUB_TOKEN" not in captured["env"]
 
 
 def test_resolve_oauth_github_token_decrypts_connection_credential(monkeypatch):
