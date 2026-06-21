@@ -299,16 +299,6 @@ def _apply_deployment_result(state: DeploymentAgentGraphState) -> DeploymentAgen
         updated,
         artifact_refs(result.output_artifacts, kind="deployment", owner_agent=result.agent_id),
     )
-    # Platform-side PR publishing DISABLED — the worker owns git/PR via the git-pr-workflow
-    # skill. Re-enable only once the platform flow is proven end-to-end.
-    # deploy_item = str(updated.get("agent_call_correlation_id") or "")
-    # if deployment_status not in {"failed", "blocked"} and deploy_item:
-    #     try:  # best-effort: PR any deployment config the Publisher committed to the repo
-    #         from agentic_company.platform.delivery.delivery_pr import publish_work_item_pr
-    #
-    #         publish_work_item_pr(str(updated["run_id"]), deploy_item)
-    #     except Exception:
-    #         pass
     append_downstream_response(
         updated,
         from_agent=DEPLOYMENT_AGENT_ID,
