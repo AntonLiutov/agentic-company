@@ -7,6 +7,7 @@ on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
+  workflow_dispatch: {}   # manual dev deploy (first release / re-deploy without a trivial commit)
 
 # Serialize deploys so two quick merges don't race the release dirs.
 concurrency:
@@ -18,18 +19,19 @@ jobs:
     name: Release to dev VM
     # Only after CI SUCCEEDED, only for main, never for fork PR runs.
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.event != 'pull_request'
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.event != 'pull_request')
     runs-on: [self-hosted, vm-dev]
     environment: dev
     steps:
       - name: Check out the exact commit CI validated
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - name: Release on the VM (immutable release + atomic flip + /healthz gate)
         run: bash ops/deploy/deploy.sh
         env:
-          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           DEPLOY_ENV: dev

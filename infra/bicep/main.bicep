@@ -19,8 +19,10 @@ param keyVaultPurgeProtection bool = true
 // Globally-unique DNS names — add a stable per-RG suffix to avoid name-taken collisions
 // (Key Vault names are tenant-wide unique + capped at 24 chars; PG FQDN is global).
 var suffix = substring(uniqueString(resourceGroup().id), 0, 5)
+// PG name is region-derived so a failed/reserved deploy in another region can't block it.
+var pgSuffix = substring(uniqueString(resourceGroup().id, dbLocation), 0, 5)
 var vaultName = 'kv-agentic-${env}-${suffix}'
-var pgServerName = 'pg-agentic-${env}-${suffix}'
+var pgServerName = 'pg-agentic-${env}-${pgSuffix}'
 
 module keyvault 'modules/keyvault.bicep' = {
   name: 'keyvault-${env}'

@@ -16,7 +16,7 @@ Group=deployer
 WorkingDirectory=/opt/agentic-company/current
 EnvironmentFile=/opt/agentic-company/current/.env
 EnvironmentFile=-/opt/agentic-company/current/.release.env
-ExecStart=/home/deployer/.local/bin/uv run --extra app agentic-web-console
+ExecStart=/usr/local/bin/uv run --extra app agentic-web-console
 Restart=on-failure
 RestartSec=3
 
