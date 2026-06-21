@@ -77,14 +77,41 @@ git add -A && git status                       # re-check: unstage secrets (git 
 git commit -m "feat(<id>): <title>"            # use fix(<id>): ... on a repair
 git push -u origin adl/<id>
 ```
-Pull request — open one only if none exists (you checked in step 1):
+### 4. PULL REQUEST — write its details from the TEMPLATE, off the real branch diff
+
+The PR title and body must ALWAYS describe **what this branch actually changes vs the base**
+— derive them from the real diff, never from guesswork and never leaving a stale or
+machine-written body in place. First read the diff:
 ```sh
-gh pr create --base <base_branch> --head adl/<id> --title "[<id>] <title>" --body "<what this delivers>"
+git diff --stat <base_branch>...adl/<id>     # files/areas this branch changes vs base
+git log <base_branch>..adl/<id> --oneline    # the commits being proposed
 ```
-If a PR already exists, your push already updated its commits — do NOT open a second one.
-Also keep the PR details CURRENT so they always reflect the work now on the branch:
+
+Open a PR only if none exists (you checked in step 1):
 ```sh
-gh pr edit <pr> --title "[<id>] <title>" --body "<what this delivers now>"
+gh pr create --base <base_branch> --head adl/<id> --title "[<id>] <title>" --body "<TEMPLATE below>"
+```
+If a PR ALREADY exists (even one opened by something else), your push updated its commits —
+do NOT open a second one, but you MUST refresh its title and body so they reflect the work
+now on the branch (overwrite any stale/placeholder body):
+```sh
+gh pr edit <pr> --title "[<id>] <title>" --body "<TEMPLATE below>"
+```
+
+**PR body TEMPLATE** — fill every section from the actual diff above; keep it tight (no fluff,
+no invented sections):
+```md
+## What this delivers
+<one sentence: what a user can now do, in product terms>
+
+## Changes
+- <3-6 bullets summarising the files/areas changed, taken from `git diff --stat <base>...adl/<id>`>
+
+## Verification
+<how it was built/checked locally (e.g. build command, smoke); leave to QA's review otherwise>
+
+## Work item
+<id> — <title>
 ```
 
 Finally, report the branch and the PR URL in your execution summary.
