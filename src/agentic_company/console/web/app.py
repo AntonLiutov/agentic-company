@@ -21,6 +21,7 @@ from fastapi.templating import Jinja2Templates
 from agentic_company.console.support import (
     agent_runtime_env_path,
     create_console_run,
+    prepare_codex_execution_continue,
     read_env_keys,
     repo_root,
     request_codex_execution_stop,
@@ -51,11 +52,9 @@ from agentic_company.console.web.product import (
     delivery_overview_from_work_items,
     format_request_text_with_llm,
     html_report_document,
-    project_type_label,
     render_markdown,
     rendered_log_entries_from_db_events,
     run_timing_from_work_items,
-    scope_size_label,
     sprint_board_groups_from_work_items,
     status_label,
     system_checks,
@@ -66,6 +65,19 @@ from agentic_company.console.web.product import (
 )
 from agentic_company.console.web.rate_limit import RateLimiter
 from agentic_company.integrations.codex import DEFAULT_CODEX_MODEL
+from agentic_company.integrations.codex import account_auth as codex_account_auth
+from agentic_company.integrations.codex.runner import (
+    CODEX_API_KEY_ENV,
+    CODEX_AUTH_MODE_ENV,
+    CODEX_AUTH_MODE_USER_CHATGPT,
+    codex_auth_mode_from_env,
+)
+from agentic_company.platform.agent.runtime_modes import (
+    RiskMode,
+    RunMode,
+    mode_policy,
+    start_gate_required,
+)
 from agentic_company.platform.db.runtime_cache import redis_error_types, runtime_cache_from_env
 from agentic_company.platform.db.runtime_db import (
     reconcile_run,
@@ -85,8 +97,6 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.filters["status_label"] = status_label
-templates.env.filters["project_type_label"] = project_type_label
-templates.env.filters["scope_size_label"] = scope_size_label
 templates.env.filters["agent_icon"] = agent_icon_path
 
 
@@ -127,6 +137,11 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
                     status_code=status.HTTP_403_FORBIDDEN,
                 )
         return await call_next(request)
+
+    @app.get("/healthz")
+    def healthz() -> dict[str, str]:
+        """Liveness probe for the deploy gate — no auth, no DB. Reports the live release sha."""
+        return {"status": "ok", "sha": os.getenv("AGENTIC_RELEASE_SHA", "")}
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request) -> Response:
@@ -243,7 +258,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             ),
             checks=system_checks(
                 openai_key_configured=bool(user_openai_key(repo, user)),
-                gemini_key_configured=bool(user_or_platform_gemini_key(repo, user)),
+                gemini_key_configured=bool(user_gemini_key(repo, user)),
             ),
         )
 
@@ -268,11 +283,9 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         user: CurrentUser,
         name: Annotated[str, Form()] = "",
         request_text: Annotated[str, Form()] = "",
-        mode: Annotated[str, Form()] = "simple_prototype",
-        complexity: Annotated[str, Form()] = "simple",
         reasoning: Annotated[str, Form()] = "medium",
-        agent_provider: Annotated[str, Form()] = "google_gemini",
-        agent_model: Annotated[str, Form()] = "gemini-3.1-flash-lite",
+        agent_provider: Annotated[str, Form()] = "openai",
+        agent_model: Annotated[str, Form()] = "gpt-4.1",
         codex_model: Annotated[str, Form()] = DEFAULT_CODEX_MODEL,
         codex_reasoning: Annotated[str, Form()] = "medium",
         service_tier: Annotated[str, Form()] = "standard",
@@ -281,16 +294,18 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         project_owner: Annotated[str, Form()] = "",
         new_repo_name: Annotated[str, Form()] = "",
         new_repo_private: Annotated[str, Form()] = "",
+        run_mode: Annotated[str, Form()] = "complex",
+        risk_mode: Annotated[str, Form()] = "autonomous",
     ) -> Response:
         agent_provider = normalize_agent_provider(agent_provider)
         agent_model = normalize_agent_model(agent_provider, agent_model)
         codex_model = normalize_codex_model(codex_model)
+        run_mode = normalize_run_mode(run_mode)
+        risk_mode = normalize_risk_mode(risk_mode)
         board_adapter = normalize_board_adapter(board_adapter)
         form_values = new_project_form_values(
             name=name,
             request_text=request_text,
-            mode=mode,
-            complexity=complexity,
             agent_provider=agent_provider,
             agent_model=agent_model,
             codex_model=codex_model,
@@ -299,6 +314,8 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             board_adapter=board_adapter,
             repository=repository,
             project_owner=project_owner,
+            run_mode=run_mode,
+            risk_mode=risk_mode,
         )
         if not name.strip() or not request_text.strip():
             return render_new_project(
@@ -310,23 +327,29 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             )
         repo = get_repo(request)
         api_key = user_openai_key(repo, user)
-        if not api_key:
+        if agent_provider == "openai" and not api_key:
             return render_new_project(
                 request,
                 user,
-                error=(
-                    "Add your OpenAI key in Settings before starting. "
-                    "It powers your private projects."
-                ),
+                error=("Add your OpenAI key in Settings before starting OpenAI-backed planning."),
                 form_values=form_values,
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
-        gemini_api_key = user_or_platform_gemini_key(repo, user)
+        gemini_api_key = user_gemini_key(repo, user)
         if agent_provider == "google_gemini" and not gemini_api_key:
             return render_new_project(
                 request,
                 user,
                 error="Gemini is not configured yet. Add a Gemini key in Settings.",
+                form_values=form_values,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        codex_error = _codex_start_preflight(repo, user)
+        if codex_error:
+            return render_new_project(
+                request,
+                user,
+                error=codex_error,
                 form_values=form_values,
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
@@ -353,8 +376,6 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             owner_user_id=user.id,
             name=name,
             request_text=request_text,
-            mode=mode,
-            complexity=complexity,
             status="starting",
         )
         _maybe_create_board_connection(
@@ -367,11 +388,10 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         )
         run_dir = create_web_console_run(
             user.username,
-            _run_requirements(name, request_text, mode, complexity),
+            _run_requirements(name, request_text, run_mode),
         )
         prepare_run_environment(
             run_dir,
-            api_key=api_key,
             gemini_api_key=gemini_api_key,
             agent_provider=agent_provider,
             agent_model=agent_model,
@@ -379,23 +399,24 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             codex_model=codex_model,
             codex_reasoning=codex_reasoning,
             service_tier=service_tier,
-            github_token=gh_token if repository.strip() else "",
         )
         run = repo.create_run(
             project_id=project.id,
             run_uid=run_dir.name,
             run_dir=run_dir,
             status="running",
-            mode=mode,
             reasoning=reasoning,
+            run_mode=run_mode,
+            risk_mode=risk_mode,
         )
-        try:
-            start_codex_execution(run_dir)
-        except Exception:
-            repo.update_run_status(run.id, "failed_to_start")
-            repo.update_project_status(project.id, "failed_to_start")
-            raise
-        repo.update_project_status(project.id, "running")
+        _gate_or_start_run(
+            repo,
+            project_id=project.id,
+            run=run,
+            run_dir=run_dir,
+            run_mode=run_mode,
+            risk_mode=risk_mode,
+        )
         return redirect(f"/projects/{project.id}")
 
     @app.get("/projects/{project_id}", response_class=HTMLResponse)
@@ -425,21 +446,22 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         request_text = repo.project_request_text(project.id, user.id)
         if not request_text.strip():
             raise HTTPException(status_code=400)
-        api_key = user_openai_key(repo, user)
-        if not api_key:
-            return redirect("/settings")
         settings = restart_run_settings(repo, project, user)
-        gemini_api_key = user_or_platform_gemini_key(repo, user)
+        api_key = user_openai_key(repo, user)
+        if settings["agent_provider"] == "openai" and not api_key:
+            return redirect("/settings")
+        gemini_api_key = user_gemini_key(repo, user)
         if settings["agent_provider"] == "google_gemini" and not gemini_api_key:
+            return redirect("/settings")
+        codex_error = _codex_start_preflight(repo, user, ignore_project_id=project.id)
+        if codex_error:
             return redirect("/settings")
         run_dir = create_web_console_run(
             user.username,
-            _run_requirements(project.name, request_text, project.mode, project.complexity),
+            _run_requirements(project.name, request_text, settings["run_mode"]),
         )
-        gh_conn = repo.get_active_work_system_connection(project_id=project.id, system="github")
         prepare_run_environment(
             run_dir,
-            api_key=api_key,
             gemini_api_key=gemini_api_key,
             agent_provider=settings["agent_provider"],
             agent_model=settings["agent_model"],
@@ -447,27 +469,78 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             codex_model=settings["codex_model"],
             codex_reasoning=settings["codex_reasoning"],
             service_tier=settings["service_tier"],
-            github_token=(
-                _github_token(repo, user)
-                if gh_conn is not None and gh_conn.repository.strip()
-                else ""
-            ),
         )
         run = repo.create_run(
             project_id=project.id,
             run_uid=run_dir.name,
             run_dir=run_dir,
             status="running",
-            mode=project.mode,
             reasoning=settings["agent_reasoning"],
+            run_mode=settings["run_mode"],
+            risk_mode=settings["risk_mode"],
         )
+        _gate_or_start_run(
+            repo,
+            project_id=project.id,
+            run=run,
+            run_dir=run_dir,
+            run_mode=settings["run_mode"],
+            risk_mode=settings["risk_mode"],
+        )
+        return redirect(f"/projects/{project.id}")
+
+    @app.post("/projects/{project_id}/continue")
+    def continue_project(
+        request: Request,
+        project_id: int,
+        user: CurrentUser,
+    ) -> Response:
+        repo = get_repo(request)
+        project = repo.get_project_for_user(project_id, user.id)
+        if not project or project.visibility == "public_demo" or project.owner_user_id != user.id:
+            raise HTTPException(status_code=403)
+        run = repo.latest_run_for_project(project.id, user.id)
+        if run is None:
+            raise HTTPException(status_code=400, detail="Project has no run to continue.")
+        if _run_status_running(run.status) or _run_delivery_done(run.status):
+            return redirect(f"/projects/{project.id}")
+        codex_error = _codex_start_preflight(repo, user, ignore_project_id=project.id)
+        if codex_error:
+            return redirect("/settings")
+        run_dir = Path(run.run_dir)
+        repo.clear_run_control_intent(
+            run.id,
+            reconcile_status="continued",
+            reconcile_reason="Operator continued the same run.",
+        )
+        prepare_codex_execution_continue(run_dir)
+        # Continue must clear EVERY stop source or the run re-stops on the first node.
+        # Files + control_intent were cleared above; also clear the durable DB process
+        # flag and the Redis stop flag (the stop route sets all of them).
+        repo.clear_console_process_stop(run.id, process_name="codex_execution")
+        try:
+            cache = runtime_cache_from_env()
+        except ValueError as exc:
+            LOGGER.warning(
+                "Redis cache config invalid on continue run_uid=%s error=%s", run.run_uid, exc
+            )
+        else:
+            try:
+                cache.clear_stop_requested(run.run_uid)
+            except redis_error_types() as exc:
+                LOGGER.warning(
+                    "Redis stop flag clear failed on continue run_uid=%s error=%s",
+                    run.run_uid,
+                    exc,
+                )
+        repo.update_run_status(run.id, "running")
+        repo.update_project_status(project.id, "running")
         try:
             start_codex_execution(run_dir)
         except Exception:
             repo.update_run_status(run.id, "failed_to_start")
             repo.update_project_status(project.id, "failed_to_start")
             raise
-        repo.update_project_status(project.id, "running")
         return redirect(f"/projects/{project.id}")
 
     @app.post("/projects/{project_id}/stop")
@@ -506,6 +579,26 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
                     )
         repo.update_project_status(project.id, "stopped")
         return redirect(f"/projects/{project.id}")
+
+    @app.post("/projects/{project_id}/approvals/{approval_id}/approve")
+    def approve_project_gate(
+        request: Request,
+        project_id: int,
+        approval_id: int,
+        user: CurrentUser,
+    ) -> Response:
+        _decide_project_approval(request, project_id, approval_id, user, status="approved")
+        return redirect(f"/projects/{project_id}")
+
+    @app.post("/projects/{project_id}/approvals/{approval_id}/reject")
+    def reject_project_gate(
+        request: Request,
+        project_id: int,
+        approval_id: int,
+        user: CurrentUser,
+    ) -> Response:
+        _decide_project_approval(request, project_id, approval_id, user, status="rejected")
+        return redirect(f"/projects/{project_id}")
 
     @app.post("/projects/{project_id}/promote")
     def promote_project(
@@ -561,6 +654,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page(request: Request, user: CurrentUser, key_error: str = "") -> HTMLResponse:
         repo = get_repo(request)
+        _reconcile_pending_codex_login(repo, user)
         credential = repo.get_provider_secret(user.id, "openai")
         gemini_credential = repo.get_provider_secret(user.id, "google_gemini")
         return render(
@@ -573,9 +667,12 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             github_configured=github_oauth.is_configured(),
             github_connected=bool(_github_token(repo, user)),
             github_login=_github_login(repo, user),
+            codex_auth=repo.get_codex_auth_connection(user.id),
+            codex_device_login=codex_account_auth.codex_device_login_state(user.id),
+            codex_auth_mode=codex_auth_mode_from_env(),
             checks=system_checks(
                 openai_key_configured=bool(user_openai_key(repo, user)),
-                gemini_key_configured=bool(user_or_platform_gemini_key(repo, user)),
+                gemini_key_configured=bool(user_gemini_key(repo, user)),
             ),
             agents=agent_catalog_for_run(_latest_user_run(repo, user.id)),
             agent_providers=AGENT_PROVIDER_OPTIONS,
@@ -621,6 +718,56 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
     def delete_gemini_key(request: Request, user: CurrentUser) -> Response:
         get_repo(request).delete_provider_secret(user.id, "google_gemini")
         return redirect("/settings")
+
+    @app.post("/auth/codex/connect")
+    def codex_connect(request: Request, user: CurrentUser) -> Response:
+        from agentic_company.platform.runtime_profile import RuntimeProfile, current_profile
+
+        repo = get_repo(request)
+        # local host has a browser → VS Code-style browser OAuth (no code typing);
+        # a headless vm_mvp host falls back to the device-code flow.
+        use_device = current_profile() is RuntimeProfile.VM_MVP
+        try:
+            codex_account_auth.start_codex_login(user.id, device=use_device)
+        except OSError as exc:
+            repo.upsert_codex_auth_connection(
+                user.id,
+                auth_slot=f"user:{user.id}",
+                status="error",
+                last_error=str(exc),
+            )
+            return redirect("/settings?codex_error=start")
+        repo.upsert_codex_auth_connection(
+            user.id,
+            auth_slot=f"user:{user.id}",
+            status="pending",
+            auth_mode="chatgpt",
+        )
+        return redirect("/settings?codex_login=started")
+
+    @app.post("/auth/codex/check")
+    def codex_check(request: Request, user: CurrentUser) -> Response:
+        repo = get_repo(request)
+        status_result = codex_account_auth.codex_login_status(user.id)
+        repo.upsert_codex_auth_connection(
+            user.id,
+            auth_slot=f"user:{user.id}",
+            status="connected" if status_result.connected else "needs_relogin",
+            auth_mode=status_result.auth_mode or "chatgpt",
+            last_error="" if status_result.connected else status_result.message,
+        )
+        return redirect("/settings")
+
+    @app.post("/auth/codex/disconnect")
+    def codex_disconnect(request: Request, user: CurrentUser) -> Response:
+        repo = get_repo(request)
+        repo.delete_codex_auth_connection(user.id)
+        codex_account_auth.delete_codex_home_for_user(user.id)
+        return redirect("/settings")
+
+    @app.get("/api/codex/device-login")
+    def codex_device_login_api(request: Request, user: CurrentUser) -> JSONResponse:
+        return JSONResponse(codex_account_auth.codex_device_login_state(user.id))
 
     # ---- GitHub OAuth: "Login with GitHub" + repo picker ----
     def _github_callback_uri(request: Request) -> str:
@@ -751,7 +898,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
             user=user,
             checks=system_checks(
                 openai_key_configured=bool(user_openai_key(get_repo(request), user)),
-                gemini_key_configured=bool(user_or_platform_gemini_key(get_repo(request), user)),
+                gemini_key_configured=bool(user_gemini_key(get_repo(request), user)),
             ),
         )
 
@@ -777,7 +924,15 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         artifact_title = record.label
         artifact_path = record.relative_path
         if raw and payload["kind"] == "html":
-            return HTMLResponse(html_report_document(str(payload["content"])))
+            return HTMLResponse(
+                html_report_document(str(payload["content"])),
+                headers={
+                    "Content-Security-Policy": (
+                        "sandbox; default-src 'none'; style-src 'unsafe-inline'"
+                    ),
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
         return render(
             request,
             "artifact_view.html",
@@ -913,28 +1068,41 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
     async def format_request(request: Request, user: CurrentUser) -> JSONResponse:
         form = await request.form()
         text = str(form.get("text", ""))
-        api_key = formatter_gemini_key(get_repo(request), user)
+        provider = normalize_agent_provider(str(form.get("agent_provider", "openai")))
+        model = normalize_agent_model(provider, str(form.get("agent_model", "")))
+        repo = get_repo(request)
+        api_key = (
+            user_gemini_key(repo, user)
+            if provider == "google_gemini"
+            else user_openai_key(repo, user)
+        )
+        provider_label = "Gemini" if provider == "google_gemini" else "OpenAI"
         if not api_key.strip():
             return JSONResponse(
                 {
                     "ok": False,
-                    "source": "gemini",
+                    "source": provider,
                     "formatted": text,
                     "message": (
-                        "Gemini formatting is not configured yet. Your text was not changed."
+                        f"{provider_label} is not connected in Settings. Your text was not changed."
                     ),
                 }
             )
         try:
-            formatted = format_request_text_with_llm(text, api_key=api_key)
+            formatted = format_request_text_with_llm(
+                text,
+                provider=provider,
+                model=model,
+                api_key=api_key,
+            )
         except GeminiFormatterUnavailable:
             return JSONResponse(
                 {
                     "ok": False,
-                    "source": "gemini",
+                    "source": provider,
                     "formatted": text,
                     "message": (
-                        "Sorry, Gemini formatting is not reachable right now. "
+                        f"Sorry, {provider_label} formatting is not reachable right now. "
                         "Your text was not changed."
                     ),
                 }
@@ -942,9 +1110,9 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
         return JSONResponse(
             {
                 "ok": True,
-                "source": "gemini",
+                "source": provider,
                 "formatted": formatted,
-                "message": "Formatted with Gemini.",
+                "message": f"Formatted with {provider_label}.",
             }
         )
 
@@ -1089,6 +1257,7 @@ def render_workspace(
         "run_running": False,
         "run_completed": False,
         "can_restart": False,
+        "can_continue": False,
         "showcase_ready": False,
         "run_timing": {},
     }
@@ -1159,6 +1328,17 @@ def render_workspace(
                     and project.visibility != "public_demo"
                     and not run_running
                 ),
+                "can_continue": (
+                    project.owner_user_id == user.id
+                    and project.visibility != "public_demo"
+                    and not run_running
+                    and not _run_delivery_done(run.status)
+                    # a gated run resumes via Approve/Reject, not Continue
+                    and run.status != "awaiting_approval"
+                ),
+                "pending_approvals": repo.list_run_approvals(run.id, status="pending")
+                if project.owner_user_id == user.id
+                else [],
                 "showcase_ready": _run_showcase_ready(repo, run),
                 "run_timing": run_timing_from_work_items(
                     work_items,
@@ -1181,15 +1361,125 @@ def _sync_canonical_run_completion(
         repo.update_project_status(project.id, run.status)
 
 
+def _reconcile_pending_codex_login(repo: ConsoleRepository, user: User) -> None:
+    """Flip pending Codex auth to connected only after ``codex login status`` agrees."""
+    conn = repo.get_codex_auth_connection(user.id)
+    if conn is None or conn.status != "pending":
+        return
+    if not (codex_account_auth.codex_home_for_user(user.id) / "auth.json").exists():
+        return
+    status_result = codex_account_auth.codex_login_status(user.id)
+    if status_result.connected:
+        repo.upsert_codex_auth_connection(
+            user.id,
+            auth_slot=f"user:{user.id}",
+            status="connected",
+            auth_mode=status_result.auth_mode or "chatgpt",
+        )
+
+
+def _gate_or_start_run(
+    repo: ConsoleRepository,
+    *,
+    project_id: int,
+    run: Run,
+    run_dir: Path,
+    run_mode: str,
+    risk_mode: str,
+) -> None:
+    """Hold the run at an approval gate, or start it.
+
+    When the chosen risk/run mode requires a human gate (``start_gate_required``), the
+    run is parked in ``awaiting_approval`` with a pending approval INSTEAD of starting
+    (and spending on Codex); the operator's Approve/Reject then starts or stops it. This
+    is what makes the run-mode and risk-mode selections behavioural, not cosmetic."""
+    if start_gate_required(run_mode, risk_mode):
+        repo.request_run_approval(
+            run.id,
+            gate_type="run_start",
+            requested_action="start_delivery_run",
+            risk_summary=f"Start a {run_mode} run (risk mode: {risk_mode}).",
+        )
+        repo.update_run_status(run.id, "awaiting_approval")
+        repo.update_project_status(project_id, "awaiting_approval")
+        return
+    try:
+        start_codex_execution(run_dir)
+    except Exception:
+        repo.update_run_status(run.id, "failed_to_start")
+        repo.update_project_status(project_id, "failed_to_start")
+        raise
+    repo.update_run_status(run.id, "running")
+    repo.update_project_status(project_id, "running")
+
+
+def _decide_project_approval(
+    request: Request,
+    project_id: int,
+    approval_id: int,
+    user: User,
+    *,
+    status: str,
+) -> None:
+    repo = get_repo(request)
+    project = repo.get_project_for_user(project_id, user.id)
+    if not project or project.visibility == "public_demo" or project.owner_user_id != user.id:
+        raise HTTPException(status_code=403)
+    run = repo.latest_run_for_project(project.id, user.id)
+    approval = repo.get_run_approval(approval_id)
+    if run is None or approval is None or approval.run_id != run.id:
+        raise HTTPException(status_code=404)
+    repo.decide_run_approval(approval_id, status=status, decided_by=user.username)
+    # A decision must MOVE the run, or the gate is theatre. Approve resumes (starts the
+    # held run); Reject stops it. Only act on a run actually parked at the gate.
+    if run.status != "awaiting_approval":
+        return
+    if status == "approved":
+        run_dir = Path(run.run_dir)
+        repo.clear_run_control_intent(
+            run.id, reconcile_status="approved", reconcile_reason="Operator approved the gate."
+        )
+        prepare_codex_execution_continue(run_dir)
+        repo.clear_console_process_stop(run.id, process_name="codex_execution")
+        repo.update_run_status(run.id, "running")
+        repo.update_project_status(project.id, "running")
+        try:
+            start_codex_execution(run_dir)
+        except Exception:
+            repo.update_run_status(run.id, "failed_to_start")
+            repo.update_project_status(project.id, "failed_to_start")
+            raise
+    elif status == "rejected":
+        request_run_control_intent(run.run_uid, "cancel", "Operator rejected the approval gate.")
+        record_run_lifecycle(run.run_uid, RunStatus.STOPPED)
+        repo.update_run_status(run.id, "stopped")
+        repo.update_project_status(project.id, "stopped")
+
+
 def _run_status_running(status: str) -> bool:
     return status in {"starting", "running", "initialized"}
 
 
 def _run_status_completed(status: str) -> bool:
     normalized = status.lower()
-    if normalized in {"stopped", "complete", "completed", "failed", "blocked"}:
+    if normalized in {
+        "stopped",
+        "complete",
+        "completed",
+        "failed",
+        "blocked",
+        "paused_provider_limit",
+        "paused_codex_auth",
+    }:
         return True
-    return any(token in normalized for token in ("blocked", "failed", "complete"))
+    return any(token in normalized for token in ("blocked", "failed", "complete", "paused"))
+
+
+def _run_delivery_done(status: str) -> bool:
+    normalized = status.strip().lower()
+    return normalized in {"complete", "completed", "done", "delivery_completed"} or (
+        "completed" in normalized and "blocked" not in normalized and "failed" not in normalized
+    )
 
 
 def _active_owner_label(overview: Any) -> str:
@@ -1276,6 +1566,32 @@ def render_new_project(
             gh_repos = github_oauth.list_repos(gh_token)
         except github_oauth.GitHubOAuthError:
             gh_repos = []
+    openai_credential = repo.get_provider_secret(user.id, "openai")
+    gemini_credential = repo.get_provider_secret(user.id, "google_gemini")
+    planning_ready = (
+        bool(openai_credential)
+        if values["agent_provider"] == "openai"
+        else bool(user_gemini_key(repo, user))
+    )
+    codex_auth = repo.get_codex_auth_connection(user.id)
+    if codex_auth_mode_from_env() == CODEX_AUTH_MODE_USER_CHATGPT:
+        codex_ready = bool(codex_auth and codex_auth.status == "connected")
+    else:
+        codex_ready = bool(os.getenv(CODEX_API_KEY_ENV, "").strip())
+    start_ready = planning_ready and codex_ready
+    start_blocker = ""
+    if not planning_ready:
+        start_blocker = (
+            "Add your OpenAI key in Settings before starting OpenAI-backed planning."
+            if values["agent_provider"] == "openai"
+            else "Add your Gemini key in Settings before starting."
+        )
+    elif not codex_ready:
+        start_blocker = (
+            "Connect Codex in Settings before starting."
+            if codex_auth_mode_from_env() == CODEX_AUTH_MODE_USER_CHATGPT
+            else "Set CODEX_API_KEY before starting."
+        )
     return render(
         request,
         "new_project.html",
@@ -1287,16 +1603,22 @@ def render_new_project(
         github_connected=bool(gh_token),
         github_login=_github_login(repo, user),
         github_repos=gh_repos,
-        credential=repo.get_provider_secret(user.id, "openai"),
-        gemini_credential=repo.get_provider_secret(user.id, "google_gemini"),
-        platform_gemini_configured=bool(platform_agent_gemini_key()),
-        formatter_gemini_configured=bool(platform_formatter_gemini_key()),
+        credential=openai_credential,
+        gemini_credential=gemini_credential,
+        platform_gemini_configured=False,
+        formatter_gemini_configured=False,
+        planning_ready=planning_ready,
+        codex_ready=codex_ready,
+        start_ready=start_ready,
+        start_blocker=start_blocker,
         agent_providers=AGENT_PROVIDER_OPTIONS,
         agent_models=AGENT_MODEL_OPTIONS,
         gemini_models=GEMINI_MODEL_OPTIONS,
         codex_models=CODEX_MODEL_OPTIONS,
         reasoning_options=REASONING_OPTIONS,
         service_tiers=CODEX_SERVICE_TIERS,
+        run_mode_options=run_mode_options(),
+        risk_options=RISK_OPTIONS,
         status_code=status_code,
     )
 
@@ -1305,23 +1627,21 @@ def new_project_form_values(
     *,
     name: str = "",
     request_text: str = "",
-    mode: str = "simple_prototype",
-    complexity: str = "simple",
-    agent_provider: str = "google_gemini",
-    agent_model: str = "gemini-3.1-flash-lite",
+    agent_provider: str = "openai",
+    agent_model: str = "gpt-4.1",
     codex_model: str = DEFAULT_CODEX_MODEL,
     codex_reasoning: str = "medium",
     service_tier: str = "standard",
     board_adapter: str = "internal",
     repository: str = "",
     project_owner: str = "",
+    run_mode: str = "complex",
+    risk_mode: str = "autonomous",
 ) -> dict[str, str]:
     agent_provider = normalize_agent_provider(agent_provider)
     return {
         "name": name,
         "request_text": request_text,
-        "mode": mode,
-        "complexity": complexity,
         "agent_provider": agent_provider,
         "agent_model": normalize_agent_model(agent_provider, agent_model),
         "codex_model": normalize_codex_model(codex_model),
@@ -1330,11 +1650,78 @@ def new_project_form_values(
         "board_adapter": normalize_board_adapter(board_adapter),
         "repository": repository.strip(),
         "project_owner": project_owner.strip(),
+        "run_mode": normalize_run_mode(run_mode),
+        "risk_mode": normalize_risk_mode(risk_mode),
     }
 
 
 def normalize_board_adapter(value: str) -> str:
     return value if value in {"internal", "github"} else "internal"
+
+
+def normalize_run_mode(value: str) -> str:
+    try:
+        return mode_policy(value or "medium").run_mode.value
+    except ValueError:
+        return RunMode.MEDIUM.value
+
+
+def normalize_risk_mode(value: str) -> str:
+    normalized = str(value or RiskMode.ASSISTED.value).strip().lower()
+    try:
+        return RiskMode(normalized).value
+    except ValueError:
+        return RiskMode.ASSISTED.value
+
+
+# The two orthogonal run controls. Mode = the team (its roster + pipeline live in
+# mode_policy); Risk = how much you approve. Nothing else.
+_ROLE_LABELS = {
+    "business-analyst-agent": "Business Analyst",
+    "architect-agent": "Architect",
+    "project-manager-agent": "Project Manager",
+    "fullstack-agent": "Builder",
+    "qa-agent": "QA",
+    "deployment-agent": "Deployment",
+    "documentation-handoff-agent": "Handoff",
+}
+# Exactly three teams. (Enterprise dropped: its roster was identical to Complex — the only
+# difference was forced approval gates, which is a Risk concern, not a team. Keeping it would
+# break orthogonality.)
+_TEAM_MODES = (RunMode.SIMPLE, RunMode.MEDIUM, RunMode.COMPLEX)
+_RUN_MODE_LABELS = {
+    RunMode.SIMPLE.value: "Small",
+    RunMode.MEDIUM.value: "Standard",
+    RunMode.COMPLEX.value: "Complex",
+}
+_RUN_MODE_NOTES = {
+    RunMode.SIMPLE.value: "Fast build — no planning or deployment.",
+    RunMode.MEDIUM.value: "Plans before building.",
+    RunMode.COMPLEX.value: "Plans, designs the architecture, and deploys.",
+}
+
+RISK_OPTIONS: tuple[tuple[str, str, str], ...] = (
+    (RiskMode.AUTONOMOUS.value, "Autonomous", "Runs end-to-end without pausing."),
+    (RiskMode.ASSISTED.value, "Assisted", "Pauses for sign-off only when the run needs it."),
+    (RiskMode.SAFE.value, "Safe", "Always pauses for your approval before it starts."),
+)
+
+
+def run_mode_options() -> list[dict[str, object]]:
+    """Each run mode rendered as a team: its real roster comes from
+    ``mode_policy(...).required_agents`` — so the picker shows who actually works the run."""
+    options: list[dict[str, object]] = []
+    for run_mode in _TEAM_MODES:
+        policy = mode_policy(run_mode.value)
+        options.append(
+            {
+                "value": run_mode.value,
+                "label": _RUN_MODE_LABELS.get(run_mode.value, run_mode.value.title()),
+                "roles": [_ROLE_LABELS.get(agent, agent) for agent in policy.required_agents],
+                "note": _RUN_MODE_NOTES.get(run_mode.value, ""),
+            }
+        )
+    return options
 
 
 def _maybe_create_board_connection(
@@ -1371,7 +1758,7 @@ def _maybe_create_board_connection(
 
 
 def normalize_agent_provider(provider: str) -> str:
-    return provider if provider in {"openai", "google_gemini"} else "google_gemini"
+    return provider if provider in {"openai", "google_gemini"} else "openai"
 
 
 def normalize_agent_model(provider: str, model: str) -> str:
@@ -1392,10 +1779,10 @@ def normalize_codex_model(model: str) -> str:
 
 def agent_catalog_for_run(run: Run | None) -> list[dict[str, str]]:
     env = _run_env(run)
-    agent_provider = normalize_agent_provider(env.get("AGENT_LLM_PROVIDER", "google_gemini"))
+    agent_provider = normalize_agent_provider(env.get("AGENT_LLM_PROVIDER", "openai"))
     agent_model = normalize_agent_model(
         agent_provider,
-        env.get("AGENT_LLM_MODEL", "gemini-3.1-flash-lite"),
+        env.get("AGENT_LLM_MODEL", "gpt-4.1"),
     )
     env_codex_model = (
         env.get("AGENT_CODEX_MODEL")
@@ -1448,45 +1835,22 @@ def user_gemini_key(repo: ConsoleRepository, user: User) -> str:
     return ""
 
 
-def platform_gemini_key() -> str:
-    return os.getenv("GOOGLE_API_KEY", "").strip() or os.getenv("GEMINI_API_KEY", "").strip()
-
-
-def platform_agent_gemini_key() -> str:
-    return os.getenv("AGENT_GEMINI_API_KEY", "").strip() or platform_gemini_key()
-
-
-def platform_formatter_gemini_key() -> str:
-    return os.getenv("GEMINI_FORMATTER_API_KEY", "").strip() or platform_gemini_key()
-
-
-def user_or_platform_gemini_key(repo: ConsoleRepository, user: User) -> str:
-    return user_gemini_key(repo, user) or platform_agent_gemini_key()
-
-
-def formatter_gemini_key(repo: ConsoleRepository, user: User) -> str:
-    return user_gemini_key(repo, user) or platform_formatter_gemini_key()
-
-
 def prepare_run_environment(
     run_dir: Path,
     *,
-    api_key: str,
     agent_model: str,
     agent_reasoning: str,
     codex_model: str,
     codex_reasoning: str,
     service_tier: str,
     gemini_api_key: str = "",
-    agent_provider: str = "google_gemini",
-    github_token: str = "",
+    agent_provider: str = "openai",
 ) -> Path:
     agent_provider = normalize_agent_provider(agent_provider)
     agent_model = normalize_agent_model(agent_provider, agent_model)
     codex_model = normalize_codex_model(codex_model)
     values = {
-        "OPENAI_API_KEY": api_key,
-        "CODEX_API_KEY": api_key,
+        CODEX_AUTH_MODE_ENV: codex_auth_mode_from_env(),
         "AGENT_LLM_PROVIDER": agent_provider,
         "AGENT_LLM_MODEL": agent_model,
         "COORDINATOR_AGENT_REASONING_EFFORT": agent_reasoning,
@@ -1502,16 +1866,49 @@ def prepare_run_environment(
         "AGENTIC_CODEX_REASONING_EFFORT": codex_reasoning,
         "AGENTIC_CODEX_SERVICE_TIER": service_tier,
     }
-    if values["AGENT_LLM_PROVIDER"] == "google_gemini" and gemini_api_key.strip():
-        values["GOOGLE_API_KEY"] = gemini_api_key.strip()
-    if github_token.strip():
-        # The connected user's GitHub OAuth token, so the Codex worker delivers
-        # (git push / gh pr / merge) under THAT user's account on any host —
-        # including a fresh VM with no host gh auth. It lives only in the run-local
-        # delivery env (never the generated-project deliverable).
-        values["GH_TOKEN"] = github_token.strip()
-        values["GITHUB_TOKEN"] = github_token.strip()
     return write_target_env(run_dir, values)
+
+
+def _codex_start_preflight(
+    repo: ConsoleRepository,
+    user: User,
+    *,
+    ignore_project_id: int | None = None,
+) -> str:
+    if codex_auth_mode_from_env() != CODEX_AUTH_MODE_USER_CHATGPT:
+        return ""
+    connection = repo.get_codex_auth_connection(user.id)
+    if connection is None or connection.status != "connected":
+        return "Connect your Codex account in Settings before starting a run."
+    # The DB row is metadata; verify the actual login state at the gate so a deleted,
+    # corrupt, or expired auth file is caught before worker startup.
+    if not (codex_account_auth.codex_home_for_user(user.id) / "auth.json").exists():
+        return "Your Codex login is missing or expired. Reconnect your Codex account in Settings."
+    status_result = codex_account_auth.codex_login_status(user.id)
+    if not status_result.connected:
+        repo.upsert_codex_auth_connection(
+            user.id,
+            auth_slot=f"user:{user.id}",
+            status="needs_relogin",
+            auth_mode=getattr(connection, "auth_mode", ""),
+            last_error=status_result.message,
+        )
+        return "Your Codex login is missing or expired. Reconnect your Codex account in Settings."
+    active_statuses = {
+        "starting",
+        "running",
+        "initialized",
+        "head",
+        "sprint_running",
+        "deployment_running",
+    }
+    for project in repo.list_projects_for_user(user.id):
+        if ignore_project_id is not None and project.id == ignore_project_id:
+            continue
+        run = repo.latest_run_for_project(project.id, user.id)
+        if run and run.status.strip().lower() in active_statuses:
+            return "Your Codex account already has a run in progress. Stop or finish it first."
+    return ""
 
 
 def restart_run_settings(repo: ConsoleRepository, project: Project, user: User) -> dict[str, str]:
@@ -1536,12 +1933,14 @@ def restart_run_settings(repo: ConsoleRepository, project: Project, user: User) 
             "google_gemini" if saved_agent_model.startswith("gemini-") else "openai"
         )
     return {
-        "agent_provider": saved_agent_provider or "google_gemini",
-        "agent_model": saved_agent_model or "gemini-3.1-flash-lite",
+        "agent_provider": saved_agent_provider or "openai",
+        "agent_model": saved_agent_model or "gpt-4.1",
         "agent_reasoning": agent_reasoning,
         "codex_model": normalize_codex_model(codex_model),
         "codex_reasoning": latest_env.get("AGENTIC_CODEX_REASONING_EFFORT", "medium"),
         "service_tier": latest_env.get("AGENTIC_CODEX_SERVICE_TIER", "standard"),
+        "run_mode": (latest_run.run_mode if latest_run else "") or RunMode.MEDIUM.value,
+        "risk_mode": (latest_run.risk_mode if latest_run else "") or RiskMode.ASSISTED.value,
     }
 
 
@@ -1571,11 +1970,10 @@ def _slug(value: str) -> str:
     return slug or "user"
 
 
-def _run_requirements(name: str, request_text: str, mode: str, complexity: str) -> str:
+def _run_requirements(name: str, request_text: str, run_mode: str) -> str:
     return (
         f"# {name.strip()}\n\n"
-        f"Project type: {project_type_label(mode)}\n"
-        f"Scope size: {scope_size_label(complexity)}\n\n"
+        f"Delivery mode: {_RUN_MODE_LABELS.get(run_mode, run_mode.title())}\n\n"
         f"{request_text.strip()}\n"
     )
 

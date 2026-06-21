@@ -14,7 +14,7 @@
             <a class="project-card-link" href="/projects/{{ project.id }}" aria-label="Open {{ project.name }}"></a>
             <div class="project-card-main">
               <h3>{{ project.name }}</h3>
-              <p>Showcase &middot; {{ project.mode|project_type_label }} &middot; {{ project.complexity|scope_size_label }}</p>
+              <p>Showcase</p>
               <small class="request-preview">{{ project.display_request[:180] if project.display_request else "Project details are available inside the workspace." }}{{ "..." if project.display_request|length > 180 else "" }}</small>
               {% if project.generated_app_url %}
                 <small class="project-update">Generated app is available</small>

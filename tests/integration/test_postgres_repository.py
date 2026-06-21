@@ -27,15 +27,12 @@ def test_console_repository_smoke_against_postgres_url(tmp_path, monkeypatch):
         owner_user_id=user.id,
         name="Postgres Smoke",
         request_text="Smoke",
-        mode="ui_web_app",
-        complexity="small",
     )
     run = repo.create_run(
         project_id=project.id,
         run_uid=f"pg-run-{suffix}",
         run_dir=Path(tmp_path) / f"pg-run-{suffix}",
         status="running",
-        mode="ui_web_app",
         reasoning="medium",
     )
     repo.append_raw_log_event(
@@ -83,7 +80,6 @@ def test_get_active_work_system_connection_prefers_run_scope(tmp_path, monkeypat
         run_uid=f"conn-run-{suffix}",
         run_dir=Path(tmp_path) / f"conn-run-{suffix}",
         status="running",
-        mode="ui_web_app",
         reasoning="medium",
     )
 

@@ -29,6 +29,10 @@ ENV/
 !.env.example
 !.env.template
 
+# provisioning state (holds the generated DB password — operator machine only)
+infra/.provision-state/
+*.dbpw
+
 # IDEs
 .idea/
 .vscode/
@@ -52,3 +56,6 @@ ops/qa-runtime/node_modules/
 ops/qa-runtime/browsers/
 ops/qa-runtime/package*.json
 ops/qa-runtime/setup-proof.png
+
+# Phase 3 planning docs kept local-only (off commit history)
+docs/milestones/phase-3/

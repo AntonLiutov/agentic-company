@@ -85,6 +85,9 @@ def test_new_project_page_renders_model_controls_without_transcription_controls(
     assert "gpt-5.4-mini" in response.text
     assert "gpt-5.3-codex-spark" not in response.text
     assert "gpt-5.2" not in response.text
+    # Build model is locked until this user connects Codex (they have not here).
+    assert 'name="codex_model" disabled' in response.text
+    assert "Connect Codex in" in response.text
     assert "Dictation " + "language" not in response.text
     assert "Start " + "".join(["dict", "ation"]) not in response.text
     assert "Speech" + "matics" not in response.text
@@ -149,8 +152,6 @@ def test_private_project_not_visible_to_another_user(tmp_path):
         owner_user_id=user_a.id,
         name="Secret",
         request_text="private",
-        mode="simple_prototype",
-        complexity="simple",
     )
     app = create_app(repo)
     client = TestClient(app)
@@ -163,6 +164,7 @@ def test_private_project_not_visible_to_another_user(tmp_path):
 
 
 def test_create_project_starts_run_with_monkeypatched_runtime(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "api_key")
     repo = ConsoleRepository()
     app = create_app(repo)
     client = TestClient(app)
@@ -210,15 +212,347 @@ def test_create_project_starts_run_with_monkeypatched_runtime(tmp_path, monkeypa
     run_dir = run_root / "console-test"
     env_text = (run_dir / "delivery" / "agent-runtime.env").read_text(encoding="utf-8")
     assert not (run_dir / "generated-project" / ".env").exists()
-    assert "OPENAI_API_KEY=sk-test-project" in env_text
-    assert "CODEX_API_KEY=sk-test-project" in env_text
+    assert "OPENAI_API_KEY=sk-test-project" not in env_text
+    assert "CODEX_API_KEY=sk-test-project" not in env_text
     assert "AGENT_LLM_PROVIDER=openai" in env_text
     assert "AGENT_CODEX_MODEL=gpt-5.5" in env_text
     assert "AGENTIC_CODEX_SERVICE_TIER=standard" in env_text
     assert repo.list_projects_for_user(1)[0].name == "Task Tracker"
 
 
+def test_create_project_persists_control_modes(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "api_key")
+    repo = ConsoleRepository()
+    app = create_app(repo)
+    client = TestClient(app)
+    client.post(
+        "/register",
+        data={
+            "email": "control@example.test",
+            "username": "control",
+            "password": "password-1",
+        },
+    )
+    repo.save_provider_secret(1, "google_gemini", "AIza-project")
+    run_root = tmp_path / "runs"
+
+    def fake_create_console_run(username, requirements_text):
+        run_dir = run_root / "control-run"
+        run_dir.mkdir(parents=True)
+        (run_dir / "00-requirements.md").write_text(requirements_text, encoding="utf-8")
+        return run_dir
+
+    monkeypatch.setattr(
+        "agentic_company.console.web.app.create_web_console_run",
+        fake_create_console_run,
+    )
+    monkeypatch.setattr("agentic_company.console.web.app.start_codex_execution", lambda run_dir: 1)
+
+    response = client.post(
+        "/projects",
+        data={
+            "name": "Controlled Run",
+            "request_text": "Build a task tracker",
+            "mode": "simple_prototype",
+            "complexity": "simple",
+            "agent_provider": "google_gemini",
+            "agent_model": "gemini-3.1-flash-lite",
+            "run_mode": "medium",
+            "risk_mode": "safe",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    run = repo.latest_run_for_project(repo.list_projects_for_user(1)[0].id, 1)
+    assert run is not None
+    assert run.run_mode == "medium"
+    assert run.risk_mode == "safe"
+
+
+def test_create_project_blocked_until_codex_connected(tmp_path, monkeypatch):
+    # Under the user_chatgpt default, starting a run is gated on a connected Codex
+    # account — without one the create handler must 400 and create nothing.
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "user_chatgpt")
+    repo = ConsoleRepository()
+    app = create_app(repo)
+    client = TestClient(app)
+    client.post(
+        "/register",
+        data={
+            "email": "nocodex@example.test",
+            "username": "nocodex",
+            "password": "password-1",
+        },
+    )
+    repo.save_provider_secret(1, "openai", "sk-test-nocodex")
+
+    response = client.post(
+        "/projects",
+        data={
+            "name": "Gated App",
+            "request_text": "Build a gated app",
+            "agent_provider": "openai",
+            "agent_model": "gpt-4.1",
+            "codex_model": "gpt-5.5",
+            "codex_reasoning": "medium",
+            "service_tier": "standard",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert "Connect your Codex account" in response.text
+    assert repo.list_projects_for_user(1) == []
+
+
+def test_healthz_is_open_and_reports_release_sha(monkeypatch):
+    # The deploy gate polls /healthz: no auth, no DB, echoes the running release sha.
+    monkeypatch.setenv("AGENTIC_RELEASE_SHA", "deadbeef")
+    client = TestClient(create_app(ConsoleRepository()))
+
+    response = client.get("/healthz")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "sha": "deadbeef"}
+
+
+def test_workspace_can_approve_pending_gate(tmp_path):
+    repo = ConsoleRepository()
+    repo.init_schema()
+    user = repo.create_user(
+        email="approver@example.test",
+        username="approver",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Approval Project",
+        request_text="Build",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="approval-ui",
+        run_dir=tmp_path / "approval-ui",
+        status="paused_provider_limit",
+        reasoning="medium",
+    )
+    approval = repo.request_run_approval(
+        run.id,
+        gate_type="deployment",
+        requested_action="publish",
+        risk_summary="Deployment needs operator approval.",
+    )
+    app = create_app(repo)
+    client = TestClient(app)
+    client.cookies.set("agentic_console_session", repo.create_session(user.id))
+
+    page = client.get(f"/projects/{project.id}")
+    response = client.post(
+        f"/projects/{project.id}/approvals/{approval.id}/approve",
+        follow_redirects=False,
+    )
+
+    assert page.status_code == 200
+    assert "Pending Approval" in page.text
+    assert response.status_code == 303
+    assert repo.get_run_approval(approval.id).status == "approved"
+
+
+def _gated_run(repo, tmp_path, *, uid):
+    user = repo.create_user(email=f"{uid}@example.test", username=uid, password="password-1")
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Gated",
+        request_text="Build",
+    )
+    run_dir = tmp_path / uid
+    run_dir.mkdir(parents=True)
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid=run_dir.name,
+        run_dir=run_dir,
+        status="running",
+        reasoning="medium",
+        run_mode="simple",
+        risk_mode="safe",
+    )
+    return user, project, run, run_dir
+
+
+def test_safe_mode_gates_run_start_and_approve_resumes(tmp_path, monkeypatch):
+    # safe risk mode must HOLD the run at an approval gate instead of starting (spending);
+    # Approve then resumes it. Proves run/risk modes are behavioural, and Approve is real.
+    from agentic_company.console.web.app import _gate_or_start_run
+
+    repo = ConsoleRepository()
+    repo.init_schema()
+    user, project, run, run_dir = _gated_run(repo, tmp_path, uid="gate-approve")
+    started: list[Path] = []
+    monkeypatch.setattr(
+        "agentic_company.console.web.app.start_codex_execution",
+        lambda path: started.append(path) or 1,
+    )
+
+    _gate_or_start_run(
+        repo, project_id=project.id, run=run, run_dir=run_dir, run_mode="simple", risk_mode="safe"
+    )
+
+    assert started == []  # gated, not started
+    assert repo.get_run_by_uid(run_dir.name).status == "awaiting_approval"
+    pending = repo.list_run_approvals(run.id, status="pending")
+    assert len(pending) == 1
+
+    app = create_app(repo)
+    client = TestClient(app)
+    client.cookies.set("agentic_console_session", repo.create_session(user.id))
+    response = client.post(
+        f"/projects/{project.id}/approvals/{pending[0].id}/approve", follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert started == [run_dir]  # Approve resumed -> the run actually started
+    assert repo.get_run_by_uid(run_dir.name).status == "running"
+    assert repo.get_run_approval(pending[0].id).status == "approved"
+
+
+def test_reject_gate_stops_the_run(tmp_path, monkeypatch):
+    from agentic_company.console.web.app import _gate_or_start_run
+
+    repo = ConsoleRepository()
+    repo.init_schema()
+    user, project, run, run_dir = _gated_run(repo, tmp_path, uid="gate-reject")
+    started: list[Path] = []
+    monkeypatch.setattr(
+        "agentic_company.console.web.app.start_codex_execution",
+        lambda path: started.append(path) or 1,
+    )
+    _gate_or_start_run(
+        repo, project_id=project.id, run=run, run_dir=run_dir, run_mode="simple", risk_mode="safe"
+    )
+    pending = repo.list_run_approvals(run.id, status="pending")
+
+    app = create_app(repo)
+    client = TestClient(app)
+    client.cookies.set("agentic_console_session", repo.create_session(user.id))
+    response = client.post(
+        f"/projects/{project.id}/approvals/{pending[0].id}/reject", follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert started == []  # Reject never starts the run
+    assert repo.get_run_by_uid(run_dir.name).status == "stopped"
+    assert repo.get_run_approval(pending[0].id).status == "rejected"
+
+
+def test_new_project_form_values_normalizes_the_two_controls():
+    from agentic_company.console.web.app import new_project_form_values
+
+    # The form carries exactly two run controls now: run_mode (the team/shape) and risk_mode.
+    values = new_project_form_values(run_mode="complex", risk_mode="safe")
+    assert values["run_mode"] == "complex"
+    assert values["risk_mode"] == "safe"
+    assert "mode" not in values and "complexity" not in values and "team_preset" not in values
+
+
+def test_codex_preflight_requires_auth_json_on_disk(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import agentic_company.console.web.app as app_mod
+    from agentic_company.console.web.app import _codex_start_preflight
+    from agentic_company.integrations.codex.runner import CODEX_AUTH_MODE_USER_CHATGPT
+
+    monkeypatch.setattr(app_mod, "codex_auth_mode_from_env", lambda: CODEX_AUTH_MODE_USER_CHATGPT)
+    user = SimpleNamespace(id=7)
+    repo = SimpleNamespace(
+        get_codex_auth_connection=lambda uid: SimpleNamespace(status="connected"),
+        list_projects_for_user=lambda uid: [],
+    )
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    monkeypatch.setattr(app_mod.codex_account_auth, "codex_home_for_user", lambda uid: home)
+    monkeypatch.setattr(
+        app_mod.codex_account_auth,
+        "codex_login_status",
+        lambda uid: SimpleNamespace(connected=True, auth_mode="chatgpt", message="logged in"),
+    )
+
+    # connected DB row but no auth.json on disk -> blocked with a reconnect message
+    assert "Codex login" in _codex_start_preflight(repo, user)
+    # auth.json present -> preflight passes
+    (home / "auth.json").write_text("{}", encoding="utf-8")
+    assert _codex_start_preflight(repo, user) == ""
+
+
+def test_pending_codex_login_auto_connects_when_auth_json_appears(tmp_path, monkeypatch):
+    import agentic_company.console.web.app as app_mod
+    from agentic_company.console.web.app import _reconcile_pending_codex_login
+
+    repo = ConsoleRepository()
+    repo.init_schema()
+    user = repo.create_user(email="cx@example.test", username="cx", password="password-1")
+    repo.upsert_codex_auth_connection(
+        user.id, auth_slot=f"user:{user.id}", status="pending", auth_mode="chatgpt"
+    )
+    home = tmp_path / "cxhome"
+    home.mkdir()
+    monkeypatch.setattr(app_mod.codex_account_auth, "codex_home_for_user", lambda uid: home)
+    status_calls = []
+
+    def fake_status(uid):
+        status_calls.append(uid)
+        return type("Status", (), {"connected": True, "auth_mode": "chatgpt", "message": "ok"})()
+
+    monkeypatch.setattr(app_mod.codex_account_auth, "codex_login_status", fake_status)
+
+    # login still in progress (no auth.json) -> stays pending
+    _reconcile_pending_codex_login(repo, user)
+    assert repo.get_codex_auth_connection(user.id).status == "pending"
+    assert status_calls == []
+
+    # browser login finished and `codex login status` confirms it -> auto-connected
+    (home / "auth.json").write_text("{}", encoding="utf-8")
+    _reconcile_pending_codex_login(repo, user)
+    assert repo.get_codex_auth_connection(user.id).status == "connected"
+    assert status_calls == [user.id]
+
+
+def test_create_project_requires_codex_connection_in_user_chatgpt_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "user_chatgpt")
+    repo = ConsoleRepository()
+    app = create_app(repo)
+    client = TestClient(app)
+    client.post(
+        "/register",
+        data={
+            "email": "codex-required@example.test",
+            "username": "codexrequired",
+            "password": "password-1",
+        },
+    )
+    repo.save_provider_secret(1, "google_gemini", "AIza-project")
+
+    response = client.post(
+        "/projects",
+        data={
+            "name": "Task Tracker",
+            "request_text": "Build a task tracker",
+            "mode": "simple_prototype",
+            "complexity": "simple",
+            "agent_provider": "google_gemini",
+            "agent_model": "gemini-3.1-flash-lite",
+            "codex_model": "gpt-5.5",
+            "codex_reasoning": "medium",
+            "service_tier": "standard",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Connect your Codex account" in response.text
+
+
 def test_create_project_with_github_board_records_connection(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "api_key")
     repo = ConsoleRepository()
     app = create_app(repo)
     client = TestClient(app)
@@ -279,8 +613,6 @@ def test_new_run_creates_canonical_planning_work_items(tmp_path):
         owner_user_id=user.id,
         name="Board",
         request_text="Build",
-        mode="simple_prototype",
-        complexity="simple",
     )
 
     run = repo.create_run(
@@ -288,7 +620,6 @@ def test_new_run_creates_canonical_planning_work_items(tmp_path):
         run_uid="run-planning",
         run_dir=tmp_path / "run-planning",
         status="running",
-        mode="simple_prototype",
         reasoning="medium",
     )
 
@@ -315,8 +646,6 @@ def test_new_run_registers_source_requirements_artifact(tmp_path):
         owner_user_id=user.id,
         name="Requirements",
         request_text="Build",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run_dir = tmp_path / "run-requirements"
     run_dir.mkdir()
@@ -327,7 +656,6 @@ def test_new_run_registers_source_requirements_artifact(tmp_path):
         run_uid="run-requirements",
         run_dir=run_dir,
         status="running",
-        mode="simple_prototype",
         reasoning="medium",
     )
 
@@ -353,8 +681,6 @@ def test_pm_queue_materializes_feature_work_items_in_db(tmp_path):
         owner_user_id=user.id,
         name="PM",
         request_text="Build",
-        mode="simple_prototype",
-        complexity="large",
     )
     run_dir = tmp_path / "run-pm"
     pm_dir = run_dir / "upstream-planning" / "project-management"
@@ -385,7 +711,6 @@ def test_pm_queue_materializes_feature_work_items_in_db(tmp_path):
         run_uid="run-pm",
         run_dir=run_dir,
         status="running",
-        mode="simple_prototype",
         reasoning="medium",
     )
 
@@ -429,8 +754,6 @@ def test_logs_endpoint_filters_db_activity_by_task_id(tmp_path):
         owner_user_id=user.id,
         name="Logs",
         request_text="Build",
-        mode="simple_prototype",
-        complexity="large",
     )
     run_dir = tmp_path / "run-logs"
     pm_dir = run_dir / "upstream-planning" / "project-management"
@@ -449,7 +772,6 @@ def test_logs_endpoint_filters_db_activity_by_task_id(tmp_path):
         run_uid="run-logs",
         run_dir=run_dir,
         status="running",
-        mode="simple_prototype",
         reasoning="medium",
     )
     with repo.connect() as conn:
@@ -533,8 +855,6 @@ def test_status_endpoint_reports_active_owner_without_duplicate_running(tmp_path
         owner_user_id=user.id,
         name="Status owner",
         request_text="Build",
-        mode="simple_prototype",
-        complexity="large",
         status="running",
     )
     run = repo.create_run(
@@ -542,7 +862,6 @@ def test_status_endpoint_reports_active_owner_without_duplicate_running(tmp_path
         run_uid="run-status-owner",
         run_dir=tmp_path / "run-status-owner",
         status="running",
-        mode="simple_prototype",
         reasoning="medium",
     )
     with repo.connect() as conn:
@@ -581,8 +900,6 @@ def test_logs_endpoint_reads_db_activity_only_when_db_work_items_exist(tmp_path)
         owner_user_id=user.id,
         name="Strict logs",
         request_text="Build",
-        mode="simple_prototype",
-        complexity="large",
     )
     run_dir = tmp_path / "run-strict-logs"
     run = repo.create_run(
@@ -590,7 +907,6 @@ def test_logs_endpoint_reads_db_activity_only_when_db_work_items_exist(tmp_path)
         run_uid="run-strict-logs",
         run_dir=run_dir,
         status="running",
-        mode="simple_prototype",
         reasoning="medium",
     )
     app = create_app(repo)
@@ -615,8 +931,6 @@ def test_db_activity_requires_explicit_work_item_rows(tmp_path):
         owner_user_id=user.id,
         name="Strict sync",
         request_text="Build",
-        mode="simple_prototype",
-        complexity="large",
     )
     run_dir = tmp_path / "run-strict-sync"
     run_dir.mkdir()
@@ -625,7 +939,6 @@ def test_db_activity_requires_explicit_work_item_rows(tmp_path):
         run_uid="run-strict-sync",
         run_dir=run_dir,
         status="running",
-        mode="simple_prototype",
         reasoning="medium",
     )
     with repo.connect() as conn:
@@ -647,6 +960,8 @@ def test_db_activity_requires_explicit_work_item_rows(tmp_path):
 
 
 def test_create_project_can_use_gemini_for_agent_executor(tmp_path, monkeypatch):
+    import agentic_company.console.web.app as app_mod
+
     repo = ConsoleRepository()
     app = create_app(repo)
     client = TestClient(app)
@@ -660,6 +975,26 @@ def test_create_project_can_use_gemini_for_agent_executor(tmp_path, monkeypatch)
     )
     repo.save_provider_secret(1, "openai", "sk-codex-project")
     repo.save_provider_secret(1, "google_gemini", "AIza-project")
+    repo.upsert_codex_auth_connection(
+        1, auth_slot="user:1", status="connected", auth_mode="chatgpt"
+    )
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(app_mod.codex_account_auth, "codex_home_for_user", lambda uid: codex_home)
+
+    def fake_codex_status(uid):
+        return type(
+            "Status",
+            (),
+            {"connected": True, "auth_mode": "chatgpt", "message": "ok"},
+        )()
+
+    monkeypatch.setattr(
+        app_mod.codex_account_auth,
+        "codex_login_status",
+        fake_codex_status,
+    )
     run_root = tmp_path / "runs"
 
     def fake_create_console_run(username, requirements_text):
@@ -696,13 +1031,12 @@ def test_create_project_can_use_gemini_for_agent_executor(tmp_path, monkeypatch)
     assert not (run_dir / "generated-project" / ".env").exists()
     assert "AGENT_LLM_PROVIDER=google_gemini" in env_text
     assert "AGENT_LLM_MODEL=gemini-3.1-flash-lite" in env_text
-    assert "GOOGLE_API_KEY=AIza-project" in env_text
-    assert "CODEX_API_KEY=sk-codex-project" in env_text
-    assert "OPENAI_API_KEY=sk-codex-project" in env_text
+    assert "GOOGLE_API_KEY=AIza-project" not in env_text
+    assert "CODEX_API_KEY=sk-codex-project" not in env_text
+    assert "OPENAI_API_KEY=sk-codex-project" not in env_text
 
 
-def test_create_project_can_use_platform_gemini_key(tmp_path, monkeypatch):
-    monkeypatch.delenv("AGENT_GEMINI_API_KEY", raising=False)
+def test_create_project_ignores_platform_gemini_env_without_user_key(tmp_path, monkeypatch):
     monkeypatch.setenv("GOOGLE_API_KEY", "AIza-platform")
     repo = ConsoleRepository()
     app = create_app(repo)
@@ -715,28 +1049,13 @@ def test_create_project_can_use_platform_gemini_key(tmp_path, monkeypatch):
             "password": "password-1",
         },
     )
-    repo.save_provider_secret(1, "openai", "sk-codex-project")
-    run_root = tmp_path / "runs"
-
-    def fake_create_console_run(username, requirements_text):
-        run_dir = run_root / "console-platform-gemini"
-        run_dir.mkdir(parents=True)
-        (run_dir / "00-requirements.md").write_text(requirements_text, encoding="utf-8")
-        return run_dir
-
-    monkeypatch.setattr(
-        "agentic_company.console.web.app.create_web_console_run",
-        fake_create_console_run,
-    )
-    monkeypatch.setattr("agentic_company.console.web.app.start_codex_execution", lambda run_dir: 1)
-
     response = client.post(
         "/projects",
         data={
             "name": "Platform Gemini Task",
             "request_text": "Build a tiny Gemini-routed app",
-            "mode": "simple_prototype",
-            "complexity": "simple",
+            "agent_provider": "google_gemini",
+            "agent_model": "gemini-3.1-flash-lite",
             "codex_model": "gpt-5.5",
             "codex_reasoning": "medium",
             "service_tier": "standard",
@@ -744,17 +1063,12 @@ def test_create_project_can_use_platform_gemini_key(tmp_path, monkeypatch):
         follow_redirects=False,
     )
 
-    assert response.status_code == 303
-    run_dir = run_root / "console-platform-gemini"
-    env_text = (run_dir / "delivery" / "agent-runtime.env").read_text(encoding="utf-8")
-    assert not (run_dir / "generated-project" / ".env").exists()
-    assert "AGENT_LLM_PROVIDER=google_gemini" in env_text
-    assert "GOOGLE_API_KEY=AIza-platform" in env_text
+    assert response.status_code == 400
+    assert "Add a Gemini key" in response.text
+    assert repo.list_projects_for_user(1) == []
 
 
-def test_format_request_uses_gemini_key_not_openai_key(tmp_path, monkeypatch):
-    monkeypatch.delenv("GEMINI_FORMATTER_API_KEY", raising=False)
-    monkeypatch.delenv("AGENT_GEMINI_API_KEY", raising=False)
+def test_format_request_uses_selected_openai_config_by_default(tmp_path, monkeypatch):
     monkeypatch.setenv("GOOGLE_API_KEY", "AIza-platform-format")
     repo = ConsoleRepository()
     app = create_app(repo)
@@ -768,12 +1082,15 @@ def test_format_request_uses_gemini_key_not_openai_key(tmp_path, monkeypatch):
         },
     )
     repo.save_provider_secret(1, "openai", "sk-openai-format")
+    repo.save_provider_secret(1, "google_gemini", "AIza-user-format")
     captured: dict[str, str] = {}
 
-    def fake_format(text: str, *, api_key: str = "") -> str:
+    def fake_format(text: str, *, provider: str, model: str, api_key: str = "") -> str:
         captured["text"] = text
+        captured["provider"] = provider
+        captured["model"] = model
         captured["api_key"] = api_key
-        return "# Product Request\n\n## Summary\nFormatted by Gemini.\n"
+        return "# Product Request\n\n## Summary\nFormatted by OpenAI.\n"
 
     monkeypatch.setattr("agentic_company.console.web.app.format_request_text_with_llm", fake_format)
 
@@ -782,16 +1099,66 @@ def test_format_request_uses_gemini_key_not_openai_key(tmp_path, monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
-    assert payload["source"] == "gemini"
+    assert payload["source"] == "openai"
     assert payload["formatted"].startswith("# Product Request")
-    assert captured == {"text": "make a tiny app", "api_key": "AIza-platform-format"}
+    assert captured == {
+        "text": "make a tiny app",
+        "provider": "openai",
+        "model": "gpt-4.1",
+        "api_key": "sk-openai-format",
+    }
 
 
-def test_format_request_without_gemini_keeps_text_and_shows_message(tmp_path, monkeypatch):
-    monkeypatch.delenv("GEMINI_FORMATTER_API_KEY", raising=False)
-    monkeypatch.delenv("AGENT_GEMINI_API_KEY", raising=False)
+def test_format_request_uses_selected_gemini_config(tmp_path, monkeypatch):
+    repo = ConsoleRepository()
+    app = create_app(repo)
+    client = TestClient(app)
+    client.post(
+        "/register",
+        data={
+            "email": "format-gemini@example.test",
+            "username": "formatgemini",
+            "password": "password-1",
+        },
+    )
+    repo.save_provider_secret(1, "google_gemini", "AIza-user-format")
+    captured: dict[str, str] = {}
+
+    def fake_format(text: str, *, provider: str, model: str, api_key: str = "") -> str:
+        captured["text"] = text
+        captured["provider"] = provider
+        captured["model"] = model
+        captured["api_key"] = api_key
+        return "# Product Request\n\n## Summary\nFormatted by Gemini.\n"
+
+    monkeypatch.setattr("agentic_company.console.web.app.format_request_text_with_llm", fake_format)
+
+    response = client.post(
+        "/api/format-request",
+        data={
+            "text": "make a tiny app",
+            "agent_provider": "google_gemini",
+            "agent_model": "gemini-3.1-flash-lite",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["source"] == "google_gemini"
+    assert payload["formatted"].startswith("# Product Request")
+    assert captured == {
+        "text": "make a tiny app",
+        "provider": "google_gemini",
+        "model": "gemini-3.1-flash-lite",
+        "api_key": "AIza-user-format",
+    }
+
+
+def test_format_request_without_selected_provider_key_keeps_text_and_shows_message(
+    tmp_path, monkeypatch
+):
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     repo = ConsoleRepository()
     app = create_app(repo)
     client = TestClient(app)
@@ -809,9 +1176,9 @@ def test_format_request_without_gemini_keeps_text_and_shows_message(tmp_path, mo
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is False
-    assert payload["source"] == "gemini"
+    assert payload["source"] == "openai"
     assert payload["formatted"] == "keep my original text"
-    assert "not configured" in payload["message"]
+    assert "OpenAI is not connected" in payload["message"]
 
 
 def test_create_project_requires_saved_openai_key(tmp_path, monkeypatch):
@@ -838,6 +1205,8 @@ def test_create_project_requires_saved_openai_key(tmp_path, monkeypatch):
             "request_text": "Build a task tracker",
             "mode": "simple_prototype",
             "complexity": "simple",
+            "agent_provider": "openai",
+            "agent_model": "gpt-4.1",
         },
     )
 
@@ -847,6 +1216,7 @@ def test_create_project_requires_saved_openai_key(tmp_path, monkeypatch):
 
 
 def test_restart_project_creates_new_run_from_saved_request(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "api_key")
     repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
@@ -859,8 +1229,6 @@ def test_restart_project_creates_new_run_from_saved_request(tmp_path, monkeypatc
         owner_user_id=user.id,
         name="Restartable",
         request_text="Build a tiny app",
-        mode="simple_prototype",
-        complexity="simple",
     )
     old_run_dir = tmp_path / "runs" / "old"
     old_env = old_run_dir / "delivery" / "agent-runtime.env"
@@ -883,7 +1251,6 @@ def test_restart_project_creates_new_run_from_saved_request(tmp_path, monkeypatc
         run_uid="old",
         run_dir=old_run_dir,
         status="stale",
-        mode="simple_prototype",
         reasoning="medium",
     )
     new_run_dir = tmp_path / "runs" / "new"
@@ -916,6 +1283,66 @@ def test_restart_project_creates_new_run_from_saved_request(tmp_path, monkeypatc
     assert len(repo.runs_for_project(project.id, user.id)) == 2
 
 
+def test_continue_project_reuses_existing_run_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "api_key")
+    repo = ConsoleRepository()
+    repo.init_schema()
+    user = repo.create_user(
+        email="continue@example.test",
+        username="continue",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Continuable",
+        request_text="Build a tiny app",
+    )
+    run_dir = tmp_path / "runs" / "same-run"
+    run_dir.mkdir(parents=True)
+    (run_dir / ".codex-execution.stop").write_text("stop\n", encoding="utf-8")
+    (run_dir / ".stop-requested").write_text("stop\n", encoding="utf-8")
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid=run_dir.name,
+        run_dir=run_dir,
+        status="stopped",
+        reasoning="medium",
+    )
+    # Drive the REAL stop path (control intent + durable process stop flag), not a
+    # cosmetic "failed" status — so the test proves Continue clears the ACTUAL stop
+    # sources (the previous fake masked that Continue left stop_requested_at set).
+    repo.set_run_control_intent(run.id, intent="cancel", reason="Stopped by user.")
+    repo.request_console_process_stop(run.id, process_name="codex_execution")
+    assert repo.get_console_process_state(run.id, "codex_execution").stop_requested_at
+    started: list[Path] = []
+    monkeypatch.setattr(
+        "agentic_company.console.web.app.start_codex_execution",
+        lambda path: started.append(path) or 1,
+    )
+    app = create_app(repo)
+    client = TestClient(app)
+    client.cookies.set("agentic_console_session", repo.create_session(user.id))
+
+    response = client.post(f"/projects/{project.id}/continue", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert started == [run_dir]
+    assert not (run_dir / ".codex-execution.stop").exists()
+    assert not (run_dir / ".stop-requested").exists()
+    updated = repo.get_run_by_uid(run_dir.name)
+    assert updated is not None
+    assert updated.id == run.id
+    assert updated.status == "running"
+    proc = repo.get_console_process_state(run.id, "codex_execution")
+    assert proc.status == "continued"
+    assert not proc.stop_requested_at  # durable DB stop flag cleared on continue
+    # No remaining stop source (file gone, control_intent cleared, DB flag cleared,
+    # Redis noop in tests) => the continued run will not immediately re-stop.
+    from agentic_company.platform.db.runtime_db import run_stop_requested
+
+    assert run_stop_requested(run_dir.name, run_dir) is False
+
+
 def test_restart_button_visible_for_blocked_private_run(tmp_path):
     repo = ConsoleRepository()
     repo.init_schema()
@@ -928,8 +1355,6 @@ def test_restart_button_visible_for_blocked_private_run(tmp_path):
         owner_user_id=user.id,
         name="Blocked Project",
         request_text="Build a tiny app",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run_dir = tmp_path / "runs" / "blocked"
     run_dir.mkdir(parents=True)
@@ -952,7 +1377,6 @@ def test_restart_button_visible_for_blocked_private_run(tmp_path):
         run_uid="blocked",
         run_dir=run_dir,
         status="head_planning_blocked",
-        mode="simple_prototype",
         reasoning="medium",
     )
     app = create_app(repo)
@@ -984,8 +1408,6 @@ def test_project_request_visible_in_lists_and_workspace(tmp_path):
             "- First button creates one action.\n"
             "- Second button creates another action.\n"
         ),
-        mode="simple_prototype",
-        complexity="simple",
     )
     app = create_app(repo)
     client = TestClient(app)
@@ -1018,8 +1440,6 @@ def test_delete_private_project_removes_it_from_workspace(tmp_path):
         owner_user_id=user.id,
         name="Delete Me",
         request_text="private",
-        mode="simple_prototype",
-        complexity="simple",
     )
     app = create_app(repo)
     client = TestClient(app)
@@ -1044,8 +1464,6 @@ def test_stop_project_marks_latest_run_stopped(tmp_path):
         owner_user_id=user.id,
         name="Stop Me",
         request_text="private",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run_dir = tmp_path / "runs" / "stop"
     run_dir.mkdir(parents=True)
@@ -1054,7 +1472,6 @@ def test_stop_project_marks_latest_run_stopped(tmp_path):
         run_uid="stop",
         run_dir=run_dir,
         status="running",
-        mode="simple_prototype",
         reasoning="medium",
     )
     app = create_app(repo)
@@ -1088,8 +1505,6 @@ def test_stop_project_completes_when_runtime_cache_is_unavailable(tmp_path, monk
         owner_user_id=user.id,
         name="Stop Cache",
         request_text="private",
-        mode="simple_prototype",
-        complexity="simple",
         status="running",
     )
     run_dir = tmp_path / "runs" / "stop-cache"
@@ -1099,7 +1514,6 @@ def test_stop_project_completes_when_runtime_cache_is_unavailable(tmp_path, monk
         run_uid="stop-cache",
         run_dir=run_dir,
         status="running",
-        mode="simple_prototype",
         reasoning="medium",
     )
     repo.upsert_sprint(
@@ -1163,8 +1577,6 @@ def test_stop_project_completes_when_runtime_cache_config_is_invalid(
         owner_user_id=user.id,
         name="Stop Bad Cache",
         request_text="private",
-        mode="simple_prototype",
-        complexity="simple",
         status="running",
     )
     run_dir = tmp_path / "runs" / "stop-bad-cache"
@@ -1174,7 +1586,6 @@ def test_stop_project_completes_when_runtime_cache_config_is_invalid(
         run_uid="stop-bad-cache",
         run_dir=run_dir,
         status="running",
-        mode="simple_prototype",
         reasoning="medium",
     )
 
@@ -1215,8 +1626,6 @@ def test_promote_and_demote_project_from_workspace(tmp_path):
         owner_user_id=owner.id,
         name="Promote Me",
         request_text="private",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run_dir = tmp_path / "runs" / "showcase"
     run_dir.mkdir(parents=True)
@@ -1239,7 +1648,6 @@ def test_promote_and_demote_project_from_workspace(tmp_path):
         run_uid="showcase",
         run_dir=run_dir,
         status="complete",
-        mode="simple_prototype",
         reasoning="medium",
     )
     repo.upsert_artifact_record(run.id, release)
@@ -1298,8 +1706,6 @@ def test_promote_project_requires_completed_run(tmp_path):
         owner_user_id=owner.id,
         name="Not Ready",
         request_text="private",
-        mode="simple_prototype",
-        complexity="simple",
     )
     app = create_app(repo)
     client = TestClient(app)
@@ -1352,15 +1758,11 @@ def test_showcase_page_lists_multiple_public_projects_with_owner_private_action(
         owner_user_id=owner.id,
         name="Owner Showcase",
         request_text="Seeded showcase request from database.",
-        mode="simple_prototype",
-        complexity="simple",
     )
     other_project = repo.create_project(
         owner_user_id=other.id,
         name="Other Showcase",
         request_text="other public",
-        mode="simple_prototype",
-        complexity="simple",
     )
     owner_run_dir = tmp_path / "runs" / "owner-showcase"
     owner_run_dir.mkdir(parents=True)
@@ -1373,7 +1775,6 @@ def test_showcase_page_lists_multiple_public_projects_with_owner_private_action(
         run_uid="owner-showcase",
         run_dir=owner_run_dir,
         status="ready",
-        mode="simple_prototype",
         reasoning="medium",
     )
     assert repo.set_project_visibility(owner_project.id, owner.id, "public_demo")
@@ -1409,8 +1810,6 @@ def test_artifact_path_traversal_is_rejected(tmp_path):
         owner_user_id=user.id,
         name="Artifacts",
         request_text="private",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -1419,7 +1818,6 @@ def test_artifact_path_traversal_is_rejected(tmp_path):
         run_uid="run",
         run_dir=Path(run_dir),
         status="ready",
-        mode="simple_prototype",
         reasoning="medium",
     )
     app = create_app(repo)
@@ -1443,8 +1841,6 @@ def test_json_artifact_is_not_exposed_in_product_console(tmp_path):
         owner_user_id=user.id,
         name="Artifacts",
         request_text="private",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -1454,7 +1850,6 @@ def test_json_artifact_is_not_exposed_in_product_console(tmp_path):
         run_uid="run-json",
         run_dir=Path(run_dir),
         status="ready",
-        mode="simple_prototype",
         reasoning="medium",
     )
     app = create_app(repo)
@@ -1478,8 +1873,6 @@ def test_artifact_view_uses_business_title_instead_of_internal_path(tmp_path):
         owner_user_id=user.id,
         name="Report Project",
         request_text="private",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run_dir = tmp_path / "run"
     report_path = run_dir / "handoff" / "sprints" / "sprint-01" / "release-report.html"
@@ -1501,7 +1894,6 @@ def test_artifact_view_uses_business_title_instead_of_internal_path(tmp_path):
         run_uid="run-report",
         run_dir=Path(run_dir),
         status="ready",
-        mode="simple_prototype",
         reasoning="medium",
     )
     repo.upsert_artifact_record(run.id, record)
@@ -1534,8 +1926,6 @@ def test_artifact_view_resolves_registry_id(tmp_path):
         owner_user_id=user.id,
         name="Registry Report",
         request_text="private",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run_dir = tmp_path / "run"
     report_path = run_dir / "handoff" / "project" / "final" / "release-report.html"
@@ -1546,7 +1936,6 @@ def test_artifact_view_resolves_registry_id(tmp_path):
         run_uid="run-registry-report",
         run_dir=Path(run_dir),
         status="ready",
-        mode="simple_prototype",
         reasoning="medium",
     )
     record = register_artifact(
@@ -1595,8 +1984,6 @@ def test_run_trace_api_returns_owned_structured_trace_without_secrets(tmp_path):
         owner_user_id=user.id,
         name="Trace API",
         request_text="private",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run_dir = tmp_path / "trace-api"
     run_dir.mkdir()
@@ -1605,7 +1992,6 @@ def test_run_trace_api_returns_owned_structured_trace_without_secrets(tmp_path):
         run_uid="trace-api",
         run_dir=run_dir,
         status="ready",
-        mode="simple_prototype",
         reasoning="medium",
     )
     repo.upsert_run_event(
@@ -1668,8 +2054,6 @@ def test_html_artifact_view_opens_report_links_outside_preview(tmp_path):
         owner_user_id=user.id,
         name="Report Links",
         request_text="private",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run_dir = tmp_path / "run"
     report_path = run_dir / "handoff" / "sprints" / "sprint-01" / "release-report.html"
@@ -1696,7 +2080,6 @@ def test_html_artifact_view_opens_report_links_outside_preview(tmp_path):
         run_uid="run-report-links",
         run_dir=Path(run_dir),
         status="ready",
-        mode="simple_prototype",
         reasoning="medium",
     )
     repo.upsert_artifact_record(run.id, record)
@@ -1718,6 +2101,7 @@ def test_html_artifact_view_opens_report_links_outside_preview(tmp_path):
     assert "Open report" in response.text
     assert raw_response.status_code == 200
     assert '<base target="_blank">' in raw_response.text
+    assert "sandbox" in raw_response.headers["content-security-policy"]
 
 
 def test_artifact_view_renders_mermaid_reports(tmp_path):
@@ -1732,8 +2116,6 @@ def test_artifact_view_renders_mermaid_reports(tmp_path):
         owner_user_id=user.id,
         name="Mermaid Project",
         request_text="private",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run_dir = tmp_path / "run"
     report_path = run_dir / "upstream-planning" / "architecture.mmd"
@@ -1755,7 +2137,6 @@ def test_artifact_view_renders_mermaid_reports(tmp_path):
         run_uid="run-mermaid",
         run_dir=Path(run_dir),
         status="ready",
-        mode="simple_prototype",
         reasoning="medium",
     )
     repo.upsert_artifact_record(run.id, record)
@@ -1791,8 +2172,6 @@ def test_project_agents_tab_shows_agent_catalog(tmp_path):
         owner_user_id=user.id,
         name="Agent Project",
         request_text="private",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -1815,7 +2194,6 @@ def test_project_agents_tab_shows_agent_catalog(tmp_path):
         run_uid="run-agents",
         run_dir=Path(run_dir),
         status="ready",
-        mode="simple_prototype",
         reasoning="medium",
     )
     app = create_app(repo)

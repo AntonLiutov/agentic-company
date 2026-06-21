@@ -181,12 +181,11 @@ class LangChainCreateAgentRuntime:
         api_key = _agent_provider_api_key(provider, request.delivery_state)
         if not api_key:
             provider_label = "Gemini" if provider == "google_gemini" else "OpenAI"
-            required_key = "GOOGLE_API_KEY" if provider == "google_gemini" else "OPENAI_API_KEY"
             raise MissingAgentRuntimeConfig(
-                f"{required_key} is required for {request.agent_id} {provider_label} decisions."
+                f"{provider_label} is not connected in Settings for "
+                f"{request.agent_id} decisions."
             )
 
-        _set_provider_process_env(provider, api_key)
         model_name = _first_env_value(request.model_env_keys, request.delivery_state)
         model_name = model_name or request.default_model
         reasoning_effort = _reasoning_effort_for_request(request)
@@ -1024,27 +1023,38 @@ def _agent_llm_provider(delivery_state: DeliveryState) -> str:
 
 
 def _agent_provider_api_key(provider: str, delivery_state: DeliveryState) -> str:
-    if provider == "google_gemini":
-        return agent_env_value("GOOGLE_API_KEY", delivery_state) or agent_env_value(
-            "GEMINI_API_KEY", delivery_state
-        )
-    return agent_env_value("OPENAI_API_KEY", delivery_state)
+    return _web_run_provider_api_key(provider, delivery_state)
 
 
-def _set_provider_process_env(provider: str, api_key: str) -> None:
-    """Expose the active provider key to the model client via process env.
+def _web_run_provider_api_key(provider: str, delivery_state: DeliveryState) -> str:
+    """Load the owning user's provider key without writing it into run files."""
 
-    This mutates the shared process environment and is not safe for concurrent
-    runs from different users; a multi-tenant runtime must thread the key through
-    the client config instead of os.environ.
-    """
-
-    os.environ[AGENT_LLM_PROVIDER_ENV] = provider
-    if provider == "google_gemini":
-        os.environ.setdefault("GOOGLE_API_KEY", api_key)
-        os.environ.setdefault("GEMINI_API_KEY", api_key)
-    else:
-        os.environ.setdefault("OPENAI_API_KEY", api_key)
+    run_uid = str(delivery_state.get("run_id") or "").strip()
+    if not run_uid:
+        return ""
+    try:
+        from agentic_company.console.web.auth import decrypt_secret
+        from agentic_company.console.web.db import ConsoleRepository
+    except Exception:
+        return ""
+    try:
+        repo = ConsoleRepository()
+        run = repo.get_run_by_uid(run_uid)
+        if run is None:
+            return ""
+        project = repo.get_project(run.project_id)
+        if project is None or project.owner_user_id is None:
+            return ""
+        credential = repo.get_provider_secret(project.owner_user_id, provider)
+        if credential is None:
+            return ""
+        if credential.storage_mode == "encrypted":
+            return decrypt_secret(credential.encrypted_value)
+        if credential.storage_mode == "local_demo":
+            return credential.encrypted_value
+    except Exception:
+        return ""
+    return ""
 
 
 def _create_chat_model(

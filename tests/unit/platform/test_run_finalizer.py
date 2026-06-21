@@ -22,6 +22,8 @@ from agentic_company.platform.run.run_finalizer import (
         ({"status": "head_delivery_completed"}, RunStatus.COMPLETED),
         ({"status": "deployment_deployed"}, RunStatus.COMPLETED),
         ({"status": "head_planning_blocked"}, RunStatus.BLOCKED),
+        ({"status": "qa_provider_limit_blocked"}, RunStatus.PAUSED_PROVIDER_LIMIT),
+        ({"status": "codex_auth_expired"}, RunStatus.PAUSED_CODEX_AUTH),
         ({"status": "running", "blockers": ["waiting on QA"]}, RunStatus.BLOCKED),
         ({"status": "stopped"}, RunStatus.STOPPED),
         # A run that returns without reaching a real terminal state is a failure,
@@ -54,8 +56,6 @@ def _run_uid(tmp_path) -> str:
         owner_user_id=user.id,
         name="Finalizer app",
         request_text="Build",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -64,7 +64,6 @@ def _run_uid(tmp_path) -> str:
         run_uid="run-finalize",
         run_dir=run_dir,
         status=RunStatus.RUNNING,
-        mode="simple_prototype",
         reasoning="medium",
     )
     return run.run_uid

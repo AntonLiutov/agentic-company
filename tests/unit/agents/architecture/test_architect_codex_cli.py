@@ -187,8 +187,6 @@ def _register_run(run_dir: Path, monkeypatch) -> None:
         owner_user_id=user.id,
         name="Architecture",
         request_text="Design",
-        mode="internal_tool",
-        complexity="simple",
         status="running",
     )
     repo.create_run(
@@ -196,6 +194,5 @@ def _register_run(run_dir: Path, monkeypatch) -> None:
         run_uid="run",
         run_dir=run_dir,
         status="running",
-        mode="internal_tool",
         reasoning="medium",
     )

@@ -39,7 +39,7 @@ def build_run_repo(
     token = resolve_oauth_github_token(repo, conn)
     adapter = GitHubRepoAdapter(
         gh=gh or GhRunner(github_token=token),
-        git=git or GitRunner(),
+        git=git or GitRunner(github_token=token),
         github_token=token,
     )
     return adapter, _repo_spec(run, conn)

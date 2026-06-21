@@ -41,10 +41,7 @@ function Import-DotEnvFile {
 
 function Get-GeminiKey {
   $keyNames = @(
-    "GEMINI_FORMATTER_API_KEY",
-    "AGENT_GEMINI_API_KEY",
-    "GOOGLE_API_KEY",
-    "GEMINI_API_KEY"
+    "GOOGLE_API_KEY"
   )
 
   foreach ($name in $keyNames) {
@@ -77,7 +74,7 @@ Import-DotEnvFile -Path $envPath
 $geminiKey = Get-GeminiKey
 if (-not $geminiKey) {
   Write-Host "Gemini key: not configured"
-  Write-Host "Expected one of: GEMINI_FORMATTER_API_KEY, AGENT_GEMINI_API_KEY, GOOGLE_API_KEY, GEMINI_API_KEY"
+  Write-Host "Expected: GOOGLE_API_KEY"
   exit 2
 }
 

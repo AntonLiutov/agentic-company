@@ -1,0 +1,4 @@
+# Installed at /etc/sudoers.d/agentic-deployer (mode 0440) by bootstrap_vm.sh.
+# The `deployer` user (which runs the GitHub Actions self-hosted runner) may ONLY
+# restart/inspect the console and re-run the Key Vault secrets fetch — nothing else.
+deployer ALL=(root) NOPASSWD: /usr/bin/systemctl restart agentic-company-console, /usr/bin/systemctl is-active agentic-company-console, /usr/bin/systemctl status agentic-company-console, /usr/bin/systemctl restart agentic-secrets-fetch

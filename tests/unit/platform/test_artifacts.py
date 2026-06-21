@@ -26,8 +26,6 @@ def test_update_execution_request_context_clears_stale_codex_resume_thread(
         owner_user_id=user.id,
         name="Run",
         request_text="Build",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -36,7 +34,6 @@ def test_update_execution_request_context_clears_stale_codex_resume_thread(
         run_uid="run",
         run_dir=run_dir,
         status="running",
-        mode="simple_prototype",
         reasoning="medium",
     )
     write_execution_request(

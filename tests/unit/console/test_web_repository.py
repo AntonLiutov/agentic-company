@@ -1,3 +1,5 @@
+from dataclasses import fields
+
 from agentic_company.console.web.db import CONSOLE_SCHEMA_VERSION, ConsoleRepository
 from agentic_company.platform.artifacts.artifact_registry import artifact_id_for, register_artifact
 from agentic_company.platform.run.run_trace import ModelCallEvent, ToolCallEvent
@@ -20,8 +22,6 @@ def test_sessions_and_private_project_isolation(tmp_path):
         owner_user_id=user_a.id,
         name="Private app",
         request_text="Build something",
-        mode="simple_prototype",
-        complexity="simple",
     )
 
     assert repo.user_for_session(token) == user_a
@@ -81,6 +81,73 @@ def test_provider_key_storage_masks_and_deletes(tmp_path, monkeypatch):
     assert repo.get_provider_secret(user.id, "openai") is None
 
 
+def test_codex_auth_connection_stores_metadata_only(tmp_path):
+    repo = ConsoleRepository()
+    repo.init_schema()
+    user = repo.create_user(
+        email="codex-auth@example.test",
+        username="codexauth",
+        password="password-1",
+    )
+
+    connection = repo.upsert_codex_auth_connection(
+        user.id,
+        auth_slot=f"user:{user.id}",
+        status="connected",
+        auth_mode="chatgpt",
+    )
+
+    assert connection.user_id == user.id
+    assert connection.auth_slot == f"user:{user.id}"
+    assert connection.status == "connected"
+    assert connection.auth_mode == "chatgpt"
+    assert all("token" not in field.name for field in fields(connection))
+
+
+def test_run_approval_round_trips_decision(tmp_path):
+    repo = ConsoleRepository()
+    repo.init_schema()
+    user = repo.create_user(
+        email="approval@example.test",
+        username="approval",
+        password="password-1",
+    )
+    project = repo.create_project(
+        owner_user_id=user.id,
+        name="Approval",
+        request_text="Build",
+    )
+    run = repo.create_run(
+        project_id=project.id,
+        run_uid="approval-run",
+        run_dir=tmp_path / "approval-run",
+        status="running",
+        reasoning="medium",
+        run_mode="medium",
+        risk_mode="safe",
+    )
+
+    approval = repo.request_run_approval(
+        run.id,
+        gate_type="deployment",
+        requested_action="deploy",
+        risk_summary="Deployment needs operator approval.",
+        requested_by="team-lead-agent",
+    )
+    repo.decide_run_approval(
+        approval.id,
+        status="approved",
+        decided_by=user.username,
+        decision_reason="Approved for smoke.",
+    )
+
+    decided = repo.get_run_approval(approval.id)
+    assert decided is not None
+    assert decided.status == "approved"
+    assert decided.decided_by == user.username
+    assert repo.get_run(run.id).risk_mode == "safe"
+
+
 def test_artifact_metadata_upsert_and_filter(tmp_path):
     repo = ConsoleRepository()
     repo.init_schema()
@@ -93,8 +160,6 @@ def test_artifact_metadata_upsert_and_filter(tmp_path):
         owner_user_id=user.id,
         name="Artifact Project",
         request_text="Build",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -105,7 +170,6 @@ def test_artifact_metadata_upsert_and_filter(tmp_path):
         run_uid="run-artifacts",
         run_dir=run_dir,
         status="ready",
-        mode="simple_prototype",
         reasoning="medium",
     )
     record = register_artifact(
@@ -145,8 +209,6 @@ def test_trace_events_upsert_from_contract_records(tmp_path):
         owner_user_id=user.id,
         name="Trace Project",
         request_text="Build",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run_dir = tmp_path / "trace-run"
     run_dir.mkdir()
@@ -155,7 +217,6 @@ def test_trace_events_upsert_from_contract_records(tmp_path):
         run_uid="trace-run",
         run_dir=run_dir,
         status="ready",
-        mode="simple_prototype",
         reasoning="medium",
     )
     repo.upsert_tool_call_event(
@@ -227,15 +288,12 @@ def test_activity_events_are_listed_chronologically(tmp_path):
         owner_user_id=user.id,
         name="Activity Project",
         request_text="Build",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run = repo.create_run(
         project_id=project.id,
         run_uid="activity-run",
         run_dir=tmp_path / "run",
         status="running",
-        mode="simple_prototype",
         reasoning="medium",
     )
     with repo.connect() as conn:
@@ -274,15 +332,12 @@ def test_raw_log_events_are_append_only_and_filterable(tmp_path):
         owner_user_id=user.id,
         name="Logs Project",
         request_text="Build",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run = repo.create_run(
         project_id=project.id,
         run_uid="logs-run",
         run_dir=tmp_path / "logs-run",
         status="running",
-        mode="simple_prototype",
         reasoning="medium",
     )
 
@@ -328,15 +383,12 @@ def test_console_process_state_tracks_status_stop_and_env_keys(tmp_path):
         owner_user_id=user.id,
         name="Process Project",
         request_text="Build",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run = repo.create_run(
         project_id=project.id,
         run_uid="process-run",
         run_dir=tmp_path / "process-run",
         status="running",
-        mode="simple_prototype",
         reasoning="medium",
     )
 
@@ -366,15 +418,12 @@ def test_delete_private_project_removes_project_and_runs(tmp_path):
         owner_user_id=user.id,
         name="Disposable",
         request_text="delete me",
-        mode="simple_prototype",
-        complexity="simple",
     )
     repo.create_run(
         project_id=project.id,
         run_uid="delete-run",
         run_dir=tmp_path / "run",
         status="ready",
-        mode="simple_prototype",
         reasoning="medium",
     )
 
@@ -393,8 +442,6 @@ def test_project_can_be_promoted_and_demoted_as_showcase(tmp_path):
         owner_user_id=owner.id,
         name="Showcase Candidate",
         request_text="promote me",
-        mode="simple_prototype",
-        complexity="simple",
     )
 
     assert repo.set_project_visibility(project.id, owner.id, "public_demo")

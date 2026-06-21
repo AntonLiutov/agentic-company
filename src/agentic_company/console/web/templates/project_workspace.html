@@ -7,8 +7,7 @@
       <h2>{{ project.name }}</h2>
       <div class="compact-meta">
         <span>{{ "Showcase" if project.visibility == "public_demo" else "Private" }}</span>
-        <span>{{ project.mode|project_type_label }}</span>
-        <span>{{ project.complexity|scope_size_label }}</span>
+        {% if run and run.run_mode %}<span>{{ run.run_mode|title }}</span>{% endif %}
         {% if run_timing.started_at %}
           <span class="duration-pill" data-duration-start="{{ run_timing.started_at }}" data-duration-end="{{ run_timing.completed_at }}">{{ run_timing.elapsed_label }}</span>
         {% endif %}
@@ -25,8 +24,13 @@
         </form>
       {% endif %}
       {% if can_restart %}
+        {% if can_continue %}
+        <form method="post" action="/projects/{{ project.id }}/continue">
+          <button class="primary" type="submit">Continue Run</button>
+        </form>
+        {% endif %}
         <form method="post" action="/projects/{{ project.id }}/restart">
-          <button class="primary" type="submit">Restart Project</button>
+          <button type="submit">Restart Project</button>
         </form>
       {% endif %}
       {% if project.owner_user_id == user.id and project.visibility != "public_demo" and showcase_ready %}
@@ -45,6 +49,29 @@
       {% endif %}
     </div>
   </section>
+
+  {% if pending_approvals %}
+    <section class="panel">
+      <div class="panel-heading">
+        <h2>Pending Approval</h2>
+        <span class="badge">{{ pending_approvals|length }} gate{{ "" if pending_approvals|length == 1 else "s" }}</span>
+      </div>
+      <div class="artifact-list">
+        {% for approval in pending_approvals %}
+          <div class="artifact-row">
+            <span>{{ approval.gate_type|replace("_", " ")|title }} · {{ approval.requested_action }}</span>
+            <small>{{ approval.risk_summary }}</small>
+            <form method="post" action="/projects/{{ project.id }}/approvals/{{ approval.id }}/approve">
+              <button class="primary" type="submit">Approve</button>
+            </form>
+            <form method="post" action="/projects/{{ project.id }}/approvals/{{ approval.id }}/reject">
+              <button class="danger" type="submit">Reject</button>
+            </form>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
 
   <nav class="tabs">
     {% for item in ["overview", "board", "agents", "artifacts", "handoff"] %}

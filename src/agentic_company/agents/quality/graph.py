@@ -183,30 +183,13 @@ def _write_quality_execution_request(
     ]
     repo_ctx = _run_repo_context(str(delivery_state["run_id"]))
     if repo_ctx:
-        pr = _work_item_pr(str(delivery_state["run_id"]), work_item_id)
-        if pr:
-            instructions.append(
-                f"A git repository is connected for this run: {repo_ctx['repository']} "
-                f"(base branch `{repo_ctx['base_branch']}`). A pull request is recorded for "
-                f"this work item: {pr.get('url')}. Follow the git-pr-workflow skill "
-                "(Reviewer section): ORIENT first with `git remote -v`, `git status`, "
-                "`git branch --show-current`, and the PR diff; review the running app against "
-                "exactly what the PR changes; never accept stale or unpushed code. Report "
-                "`passed` only when the PR is correct — the PLATFORM performs the merge on a "
-                "pass (you do not run `gh pr merge`; the worker sandbox has no merge "
-                "credentials). If QA FAILS, report the concrete defects so the builder repairs "
-                "the same branch and you re-review."
-            )
-        else:
-            instructions.append(
-                f"A git repository is connected for this run: {repo_ctx['repository']} "
-                f"(base branch `{repo_ctx['base_branch']}`), but no pull request is recorded "
-                f"for work item `{work_item_id}`. Do not invent a PR gate. Validate the "
-                "canonical work-item acceptance criteria and release contract. Treat the "
-                "missing PR as a QA blocker only when the canonical work-item contract or "
-                "upstream implementation handoff explicitly says this item must be accepted "
-                "through a PR."
-            )
+        instructions.append(
+            f"A git repository is connected: {repo_ctx['repository']} "
+            f"(base branch `{repo_ctx['base_branch']}`). The builder delivered this work item "
+            f"as a pull request on branch `adl/{work_item_id.lower()}`. Review it and decide its "
+            "fate by following the git-pr-workflow skill (Reviewer workflow). The platform does "
+            "NOT touch git — you own review, merge, and comment."
+        )
     request = build_execution_request_payload(
         delivery_state,
         agent_id=QUALITY_AGENT_ID,
@@ -293,11 +276,8 @@ def _apply_quality_result(state: QualityAgentGraphState) -> QualityAgentGraphSta
 
     delivery_state = state["delivery_state"]
     status = state.get("status") or _normalize_qa_status(result.status)
-    if status == "passed" and work_item_id:
-        # Platform-owned, PR-gated merge: the sandboxed QA worker cannot merge (its
-        # workspace-write policy 401s gh), so the platform merges the recorded PR
-        # host-side. No recorded PR -> nothing to merge; never a QA blocker.
-        _ensure_recorded_pr_merged(str(delivery_state["run_id"]), str(work_item_id))
+    # The QA worker owns the merge itself (gh pr merge, full git access) — the platform does
+    # NOT touch git. (Platform-side merge disabled.)
     event_log = Path(state["run_dir"])
     artifact = (
         _primary_report_artifact(str(work_item_id), result.output_artifacts)
@@ -344,16 +324,6 @@ def _apply_quality_result(state: QualityAgentGraphState) -> QualityAgentGraphSta
     return {**state, "delivery_state": updated}
 
 
-def _work_item_pr(run_id: str, work_item_id: str) -> dict[str, Any] | None:
-    """The PR recorded for this work item, so QA can reference its url, or None."""
-    try:
-        from agentic_company.platform.delivery.delivery_pr import get_work_item_pr
-
-        return get_work_item_pr(run_id, work_item_id)
-    except Exception:
-        return None
-
-
 def _run_repo_context(run_id: str) -> dict[str, str] | None:
     """Connected repo info ({repository, base_branch}) so QA always gets its PR duties."""
     try:
@@ -362,16 +332,6 @@ def _run_repo_context(run_id: str) -> dict[str, str] | None:
         return run_repo_context(run_id)
     except Exception:
         pass
-
-
-def _ensure_recorded_pr_merged(run_id: str, work_item_id: str):
-    """Platform-owned, PR-gated merge after a QA pass (no-op when no PR is recorded)."""
-    try:
-        from agentic_company.platform.delivery.delivery_pr import ensure_recorded_pr_merged
-
-        return ensure_recorded_pr_merged(run_id, work_item_id)
-    except Exception:
-        return None
 
 
 def _quality_user_prompt(state: DeliveryState, work_item_id: str | None) -> str:

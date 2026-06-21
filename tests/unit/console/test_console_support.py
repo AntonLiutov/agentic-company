@@ -38,9 +38,11 @@ def test_console_support_lists_and_loads_sample_requirements(tmp_path):
 def test_env_persistence_helpers_round_trip(tmp_path):
     run_dir = tmp_path / "run"
 
-    write_target_env(run_dir, {"OPENAI_API_KEY": "sk-test", "EMPTY": ""})
+    write_target_env(
+        run_dir, {"AGENT_LLM_MODEL": "gpt-4.1", "OPENAI_API_KEY": "sk-test", "EMPTY": ""}
+    )
 
-    assert saved_env_keys(run_dir) == ["OPENAI_API_KEY"]
+    assert saved_env_keys(run_dir) == ["AGENT_LLM_MODEL"]
     assert initial_env_value("MISSING", tmp_path) == ""
 
 
@@ -52,8 +54,6 @@ def test_env_persistence_mirrors_safe_key_metadata_when_run_exists(tmp_path, mon
         owner_user_id=user.id,
         name="Env",
         request_text="Build",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run_dir = tmp_path / "run"
     run = repo.create_run(
@@ -61,16 +61,17 @@ def test_env_persistence_mirrors_safe_key_metadata_when_run_exists(tmp_path, mon
         run_uid="run",
         run_dir=run_dir,
         status="running",
-        mode="simple_prototype",
         reasoning="medium",
     )
 
-    write_target_env(run_dir, {"OPENAI_API_KEY": "sk-test", "EMPTY": ""})
+    write_target_env(
+        run_dir, {"AGENT_LLM_MODEL": "gpt-4.1", "OPENAI_API_KEY": "sk-test", "EMPTY": ""}
+    )
 
     state = repo.get_console_process_state(run.id, "agent_runtime_env")
     assert state is not None
     assert state.status == "written"
-    assert state.env_keys == ["OPENAI_API_KEY"]
+    assert state.env_keys == ["AGENT_LLM_MODEL"]
 
 
 def test_missing_required_env_keys_reads_saved_values(tmp_path, monkeypatch):
@@ -82,9 +83,9 @@ def test_missing_required_env_keys_reads_saved_values(tmp_path, monkeypatch):
 
     assert "OPENAI_API_KEY" in missing_required_env_keys(run_dir)
 
-    write_target_env(run_dir, {"OPENAI_API_KEY": "sk-test"})
+    write_target_env(run_dir, {"AGENT_LLM_MODEL": "gpt-4.1"})
 
-    assert "OPENAI_API_KEY" not in missing_required_env_keys(run_dir)
+    assert "OPENAI_API_KEY" in missing_required_env_keys(run_dir)
     assert read_required_configuration(run_dir) == ["OPENAI_API_KEY"]
 
 

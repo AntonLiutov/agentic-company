@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -80,9 +81,28 @@ class GitLike(Protocol):
 class GitRunner:
     """Runs the real git CLI."""
 
-    def __init__(self, *, git_binary: str = "git", timeout_seconds: int = 120) -> None:
+    def __init__(
+        self, *, git_binary: str = "git", timeout_seconds: int = 120, github_token: str = ""
+    ) -> None:
         self._git = git_binary
         self._timeout = timeout_seconds
+        self._github_token = (github_token or "").strip()
+
+    def _env(self) -> dict[str, str]:
+        """Authenticate ``git`` as the connected user — and as nobody else.
+
+        With a per-user token bound, expose it as ``GH_TOKEN``/``GITHUB_TOKEN`` so the
+        repo-local credential helper (``_configure_push_credentials``) can push on a host
+        with no ambient git credentials (a fresh VM). With NO token bound, scrub any
+        ambient ``GH_TOKEN``/``GITHUB_TOKEN`` inherited from the host environment so an
+        env-supplied token can never silently authenticate the push: the UI-issued token is
+        the only token source. (The OS git credential manager used in local dev is not an
+        env var, so it is unaffected.)"""
+        env = {k: v for k, v in os.environ.items() if k not in {"GH_TOKEN", "GITHUB_TOKEN"}}
+        if self._github_token:
+            env["GH_TOKEN"] = self._github_token
+            env["GITHUB_TOKEN"] = self._github_token
+        return env
 
     def run(self, args: list[str], *, cwd: Path) -> str:
         try:
@@ -92,6 +112,7 @@ class GitRunner:
                 capture_output=True,
                 text=True,
                 timeout=self._timeout,
+                env=self._env(),
             )
         except FileNotFoundError as exc:
             raise GitError("git is not installed on the host") from exc
@@ -144,12 +165,12 @@ class GitHubRepoAdapter:
         self._configure_push_credentials(target)
 
     def _configure_push_credentials(self, target_dir: Path) -> None:
-        """Make the worker's ``git push`` authenticate via the per-user token on a host
-        with no git credential setup (a fresh VM). A repo-local credential helper reads
-        the token from the worker's ``GH_TOKEN`` env at push time, so the token never
-        lands in ``.git/config``, the command line, or ``git remote -v`` output. When no
-        per-user token is bound we leave it untouched and fall back to the host's own git
-        credentials (local development)."""
+        """Make ``git push`` authenticate via the per-user token on a host with no git
+        credential setup (a fresh VM). A repo-local credential helper reads the token from
+        the ``GH_TOKEN`` env that the platform-side ``GitRunner`` injects at push time (see
+        ``GitRunner._env``), so the token never lands in ``.git/config``, the command line,
+        or ``git remote -v`` output. When no per-user token is bound we leave it untouched
+        and fall back to the host's own git credentials (local development)."""
         if not self._github_token:
             return
         # POSIX shell helper (git ships sh on Windows too): answer only credential `get`

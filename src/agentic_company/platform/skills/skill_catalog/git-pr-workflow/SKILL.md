@@ -77,11 +77,42 @@ git add -A && git status                       # re-check: unstage secrets (git 
 git commit -m "feat(<id>): <title>"            # use fix(<id>): ... on a repair
 git push -u origin adl/<id>
 ```
-Pull request — open one only if none exists (you checked in step 1):
+### 4. PULL REQUEST — write its details from the TEMPLATE, off the real branch diff
+
+The PR title and body must ALWAYS describe **what this branch actually changes vs the base**
+— derive them from the real diff, never from guesswork and never leaving a stale or
+machine-written body in place. First read the diff:
 ```sh
-gh pr create --base <base_branch> --head adl/<id> --title "[<id>] <title>" --body "<what this delivers>"
+git diff --stat <base_branch>...adl/<id>     # files/areas this branch changes vs base
+git log <base_branch>..adl/<id> --oneline    # the commits being proposed
 ```
-If a PR already exists, the push already updated it — do NOT open a second one.
+
+Open a PR only if none exists (you checked in step 1):
+```sh
+gh pr create --base <base_branch> --head adl/<id> --title "[<id>] <title>" --body "<TEMPLATE below>"
+```
+If a PR ALREADY exists (even one opened by something else), your push updated its commits —
+do NOT open a second one, but you MUST refresh its title and body so they reflect the work
+now on the branch (overwrite any stale/placeholder body):
+```sh
+gh pr edit <pr> --title "[<id>] <title>" --body "<TEMPLATE below>"
+```
+
+**PR body TEMPLATE** — fill every section from the actual diff above; keep it tight (no fluff,
+no invented sections):
+```md
+## What this delivers
+<one sentence: what a user can now do, in product terms>
+
+## Changes
+- <3-6 bullets summarising the files/areas changed, taken from `git diff --stat <base>...adl/<id>`>
+
+## Verification
+<how it was built/checked locally (e.g. build command, smoke); leave to QA's review otherwise>
+
+## Work item
+<id> — <title>
+```
 
 Finally, report the branch and the PR URL in your execution summary.
 
@@ -128,21 +159,21 @@ Only after Step 1 is done and its `## Git state` block is written may you procee
 Serve and exercise the app (browser + functional QA) AND re-read the PR diff together,
 checking the running app against exactly what the PR changes.
 
-### 3. DECIDE — your verdict drives the merge (the platform performs it)
-- **Pass** → report `passed`. The PLATFORM performs the merge host-side
-  (`gh pr merge --squash --delete-branch`); do NOT run the merge yourself — the worker
-  sandbox has no merge credentials, so an in-worker `gh pr merge` only fails with `401`.
-  Your job is the verdict; the platform acts on it.
+### 3. DECIDE — you own the merge (the platform does NOT touch git)
+- **Pass** → MERGE the PR yourself: `gh pr merge <pr> --squash --delete-branch` (you have
+  full git access). You MAY also leave ONE short positive comment with your verdict:
+  `gh pr comment <pr> --body "<one-line verdict>"` (one comment, not a thread). Report
+  `passed`.
 - **Fail** → leave ONE general comment with concrete defects and reproduction steps:
-  `gh pr comment <pr> --body "<findings>"`. The platform never merges a failed PR. Report
-  `failed` so the builder repairs the same branch and you re-review.
+  `gh pr comment <pr> --body "<findings>"`. NEVER merge a failed PR. Report `failed` so the
+  builder repairs the same branch and you re-review.
 - **Environment blocker** (outbound-network/sandbox/credentials, not an app defect)
   → do not file it as a defect; report `blocked` for human attention.
 
 ## Result vocabulary
 
 - Builder: report the branch + PR URL, and whether it was a new PR or an update.
-- QA: `passed` (reviewed; platform merges), `failed` (commented, repair needed), `blocked`
+- QA: `passed` (reviewed and merged), `failed` (commented, repair needed), `blocked`
   (environment limitation, not an app defect).
 
 ## Examples
@@ -155,8 +186,8 @@ Output: pushed `adl/f2`, opened PR "[F2] …", reported the URL in the summary.
 ### Good (QA)
 
 Input: PR for F1 exists; the app works in the browser.
-Output: opened with a `## Git state` block, reviewed the PR diff, reported `passed`;
-the platform merged the PR.
+Output: opened with a `## Git state` block, reviewed the PR diff, merged it yourself
+(`gh pr merge`), left a one-line positive comment, reported `passed`.
 
 ### Bad
 

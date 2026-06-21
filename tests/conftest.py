@@ -19,13 +19,22 @@ def postgres_test_database_url() -> str:
         "postgresql://agentic:agentic_dev_password@127.0.0.1:54329/agentic_company",
     ).strip()
     schema = f"adl_test_{os.getpid()}"
-    with psycopg.connect(base_url, autocommit=True) as conn:
-        conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-        conn.execute(f'CREATE SCHEMA "{schema}"')
+    # connect_timeout so a down DB fails fast (Windows otherwise stalls on SYN
+    # retransmits and the whole session hangs with no output). Skip — not hang —
+    # with a clear "start the services" message.
+    try:
+        with psycopg.connect(base_url, autocommit=True, connect_timeout=5) as conn:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            conn.execute(f'CREATE SCHEMA "{schema}"')
+    except psycopg.OperationalError as exc:
+        pytest.skip(
+            f"PostgreSQL not reachable ({base_url.rsplit('@', 1)[-1]}): {exc}. "
+            "Start it: docker compose -f docker-compose.dev.yml up -d postgres redis"
+        )
     separator = "&" if "?" in base_url else "?"
     schema_url = f"{base_url}{separator}options={quote(f'-csearch_path={schema}', safe='')}"
     yield schema_url
-    with psycopg.connect(base_url, autocommit=True) as conn:
+    with psycopg.connect(base_url, autocommit=True, connect_timeout=5) as conn:
         conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
 
 
@@ -39,6 +48,9 @@ def isolate_unit_database_env(
     monkeypatch.setenv("AGENTIC_DATABASE_URL", postgres_test_database_url)
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("APP_SECRET_KEY", "test-app-secret-key-0123456789ab")
+    # The local .env (loaded at app import) may set a dev-only host-wide sandbox override
+    # (danger-full-access on a Windows dev box). Tests assert per-agent sandboxes, so clear it.
+    monkeypatch.delenv("AGENTIC_CODEX_SANDBOX_OVERRIDE", raising=False)
     # Unit tests must not spin up the async board-mirror pool (hundreds of cases
     # in one process) or do any real board I/O; the mirror is exercised directly
     # in its own tests and validated live.
@@ -46,7 +58,7 @@ def isolate_unit_database_env(
 
     import psycopg
 
-    with psycopg.connect(postgres_test_database_url, autocommit=True) as conn:
+    with psycopg.connect(postgres_test_database_url, autocommit=True, connect_timeout=5) as conn:
         rows = conn.execute(
             """
             SELECT tablename

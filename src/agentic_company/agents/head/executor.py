@@ -74,8 +74,8 @@ class LangChainHeadExecutor:
             if finish_if_stopped():
                 return toolbox.result()
             toolbox.block_planning(
-                reason="OPENAI_API_KEY is required for Head Agent decisions.",
-                message="Set OPENAI_API_KEY in Settings or the run-level agent runtime env.",
+                reason="The selected planning provider is not connected for Head Agent decisions.",
+                message="Connect the selected planning provider in Settings.",
             )
             return toolbox.result()
         except LangChainAgentRuntimeError as exc:

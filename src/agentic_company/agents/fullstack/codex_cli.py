@@ -47,7 +47,9 @@ class CodexCliRunner:
     """
 
     codex_binary: str | None = None
-    # Implementation installs dependencies and runs builds/tests that need network.
+    # Implementation installs deps, runs builds/tests, and owns its own git/PR via the
+    # git-pr-workflow skill — needs full host access (matches main; least-privilege deferred
+    # until the platform-side delivery flow is proven).
     sandbox: str = "danger-full-access"
     timeout_seconds: int = 1800
     summary_filename: str = "07-execution-summary.md"

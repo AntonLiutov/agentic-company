@@ -167,8 +167,6 @@ def _message_store(tmp_path, monkeypatch):
         owner_user_id=user.id,
         name="Messages",
         request_text="Messages",
-        mode="internal_tool",
-        complexity="simple",
         status="running",
     )
     run = repo.create_run(
@@ -176,7 +174,6 @@ def _message_store(tmp_path, monkeypatch):
         run_uid="run-messages",
         run_dir=run_dir,
         status="running",
-        mode="internal_tool",
         reasoning="medium",
     )
     return AgentMessageStore(run_dir), repo, run

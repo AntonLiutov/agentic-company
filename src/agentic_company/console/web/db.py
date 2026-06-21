@@ -64,8 +64,6 @@ class Project:
     id: int
     owner_user_id: int | None
     name: str
-    mode: str
-    complexity: str
     status: str
     visibility: str
     created_at: str
@@ -84,11 +82,14 @@ class Run:
     run_dir: str
     target_project_dir: str
     status: str
-    mode: str
     reasoning: str
     generated_app_url: str
     created_at: str
     updated_at: str
+    run_mode: str = ""
+    risk_mode: str = "assisted"
+    pause_reason: str = ""
+    paused_at: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +98,34 @@ class ProviderCredential:
     masked_value: str
     encrypted_value: str
     storage_mode: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class CodexAuthConnection:
+    user_id: int
+    auth_slot: str
+    status: str
+    auth_mode: str
+    last_checked_at: str
+    last_refresh_at: str
+    last_error: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class RunApproval:
+    id: int
+    run_id: int
+    gate_type: str
+    requested_action: str
+    risk_summary: str
+    status: str
+    requested_by: str
+    decided_by: str
+    decision_reason: str
+    created_at: str
+    decided_at: str
     updated_at: str
 
 
@@ -451,8 +480,6 @@ class ConsoleRepository:
         owner_user_id: int,
         name: str,
         request_text: str,
-        mode: str,
-        complexity: str,
         status: str = "starting",
     ) -> Project:
         now = utc_now()
@@ -460,17 +487,15 @@ class ConsoleRepository:
             cursor = conn.execute(
                 """
                 INSERT INTO projects (
-                    owner_user_id, name, request_text, mode, complexity,
+                    owner_user_id, name, request_text,
                     status, visibility, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 'private', ?, ?)
+                VALUES (?, ?, ?, ?, 'private', ?, ?)
                 """,
                 (
                     owner_user_id,
                     name.strip(),
                     request_text.strip(),
-                    mode,
-                    complexity,
                     status,
                     now,
                     now,
@@ -522,18 +547,19 @@ class ConsoleRepository:
         run_dir: Path,
         target_project_dir: Path | str | None = None,
         status: str,
-        mode: str,
         reasoning: str,
+        run_mode: str = "",
+        risk_mode: str = "assisted",
     ) -> Run:
         now = utc_now()
         with self.connect() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO runs (
-                    project_id, run_uid, run_dir, target_project_dir, status, mode, reasoning,
-                    created_at, updated_at
+                    project_id, run_uid, run_dir, target_project_dir, status, reasoning,
+                    run_mode, risk_mode, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_id,
@@ -541,8 +567,9 @@ class ConsoleRepository:
                     str(run_dir),
                     str(target_project_dir or (run_dir / "generated-project")),
                     status,
-                    mode,
                     reasoning,
+                    run_mode,
+                    risk_mode,
                     now,
                     now,
                 ),
@@ -795,6 +822,24 @@ class ConsoleRepository:
                     updated_at = excluded.updated_at
                 """,
                 (run_id, process_name, now, now, now),
+            )
+
+    def clear_console_process_stop(self, run_id: int, *, process_name: str) -> None:
+        """Clear a process stop request so a continued run is not re-stopped on re-entry.
+
+        ``upsert_console_process_state`` deliberately PRESERVES ``stop_requested_at`` (a
+        plain status write must not erase a pending stop), so a Continue has to clear it
+        explicitly — otherwise ``run_stop_requested`` keeps returning True and the run
+        re-stops on the first node."""
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE console_processes
+                SET stop_requested_at = '', updated_at = ?
+                WHERE run_id = ? AND process_name = ?
+                """,
+                (now, run_id, process_name),
             )
 
     def set_run_control_intent(self, run_id: int, *, intent: str, reason: str = "") -> None:
@@ -2038,6 +2083,143 @@ class ConsoleRepository:
                 (user_id, provider),
             )
 
+    def get_codex_auth_connection(self, user_id: int) -> CodexAuthConnection | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT user_id, auth_slot, status, auth_mode, last_checked_at,
+                       last_refresh_at, last_error, updated_at
+                FROM user_codex_auth
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+        return _codex_auth_connection(row) if row else None
+
+    def upsert_codex_auth_connection(
+        self,
+        user_id: int,
+        *,
+        auth_slot: str,
+        status: str,
+        auth_mode: str = "",
+        last_error: str = "",
+        last_refresh_at: str = "",
+    ) -> CodexAuthConnection:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_codex_auth (
+                    user_id, auth_slot, status, auth_mode, last_checked_at,
+                    last_refresh_at, last_error, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id)
+                DO UPDATE SET
+                    auth_slot = excluded.auth_slot,
+                    status = excluded.status,
+                    auth_mode = excluded.auth_mode,
+                    last_checked_at = excluded.last_checked_at,
+                    last_refresh_at = excluded.last_refresh_at,
+                    last_error = excluded.last_error,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    auth_slot,
+                    status,
+                    auth_mode,
+                    now,
+                    last_refresh_at,
+                    last_error,
+                    now,
+                    now,
+                ),
+            )
+        connection = self.get_codex_auth_connection(user_id)
+        if connection is None:  # pragma: no cover - defensive
+            raise RuntimeError("Saved Codex auth connection could not be loaded")
+        return connection
+
+    def delete_codex_auth_connection(self, user_id: int) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM user_codex_auth WHERE user_id = ?", (user_id,))
+
+    def request_run_approval(
+        self,
+        run_id: int,
+        *,
+        gate_type: str,
+        requested_action: str,
+        risk_summary: str,
+        requested_by: str = "",
+    ) -> RunApproval:
+        now = utc_now()
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO run_approvals (
+                    run_id, gate_type, requested_action, risk_summary, status,
+                    requested_by, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
+                """,
+                (run_id, gate_type, requested_action, risk_summary, requested_by, now, now),
+            )
+            approval_id = int(cursor.lastrowid)
+        approval = self.get_run_approval(approval_id)
+        if approval is None:  # pragma: no cover - defensive
+            raise RuntimeError("Saved run approval could not be loaded")
+        return approval
+
+    def get_run_approval(self, approval_id: int) -> RunApproval | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM run_approvals WHERE id = ?",
+                (approval_id,),
+            ).fetchone()
+        return _run_approval(row) if row else None
+
+    def list_run_approvals(self, run_id: int, *, status: str = "") -> list[RunApproval]:
+        clauses = ["run_id = ?"]
+        params: list[Any] = [run_id]
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        with self.connect() as conn:
+            where_sql = " AND ".join(clauses)
+            rows = conn.execute(
+                f"SELECT * FROM run_approvals WHERE {where_sql} ORDER BY created_at, id",
+                tuple(params),
+            ).fetchall()
+        return [_run_approval(row) for row in rows]
+
+    def decide_run_approval(
+        self,
+        approval_id: int,
+        *,
+        status: str,
+        decided_by: str,
+        decision_reason: str = "",
+    ) -> None:
+        if status not in {"approved", "rejected"}:
+            raise ValueError("Approval decision status must be approved or rejected.")
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE run_approvals
+                SET status = ?,
+                    decided_by = ?,
+                    decision_reason = ?,
+                    decided_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (status, decided_by, decision_reason, now, now, approval_id),
+            )
+
     def seed_public_demo_from_env(self) -> None:
         run_dir = os.getenv("PUBLIC_DEMO_RUN_DIR", "").strip()
         if not run_dir:
@@ -2073,11 +2255,10 @@ class ConsoleRepository:
                 cursor = conn.execute(
                     """
                     INSERT INTO projects (
-                        owner_user_id, name, request_text, mode, complexity,
+                        owner_user_id, name, request_text,
                         status, visibility, created_at, updated_at
                     )
-                    VALUES (NULL, ?, '', 'public_demo', 'medium',
-                            'demo_ready', 'public_demo', ?, ?)
+                    VALUES (NULL, ?, '', 'demo_ready', 'public_demo', ?, ?)
                     """,
                     (name, now, now),
                 )
@@ -2094,10 +2275,10 @@ class ConsoleRepository:
                 conn.execute(
                     """
                     INSERT INTO runs (
-                        project_id, run_uid, run_dir, status, mode, reasoning,
+                        project_id, run_uid, run_dir, status, reasoning,
                         created_at, updated_at
                     )
-                    VALUES (?, ?, ?, 'demo_ready', 'public_demo', 'medium', ?, ?)
+                    VALUES (?, ?, ?, 'demo_ready', 'medium', ?, ?)
                     """,
                     (project_id, run_path.name, str(run_path), now, now),
                 )
@@ -2128,8 +2309,6 @@ def _project(row: Any) -> Project:
         id=int(row["id"]),
         owner_user_id=int(row["owner_user_id"]) if row["owner_user_id"] is not None else None,
         name=str(row["name"]),
-        mode=str(row["mode"]),
-        complexity=str(row["complexity"]),
         status=str(row["status"]),
         visibility=str(row["visibility"]),
         created_at=str(row["created_at"]),
@@ -2149,11 +2328,14 @@ def _run(row: Any) -> Run:
         run_dir=str(row["run_dir"]),
         target_project_dir=str(row["target_project_dir"] or ""),
         status=str(row["status"]),
-        mode=str(row["mode"]),
         reasoning=str(row["reasoning"]),
         generated_app_url=str(row["generated_app_url"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
+        run_mode=str(row["run_mode"] if "run_mode" in row.keys() else ""),
+        risk_mode=str(row["risk_mode"] if "risk_mode" in row.keys() else "assisted"),
+        pause_reason=str(row["pause_reason"] if "pause_reason" in row.keys() else ""),
+        paused_at=str(row["paused_at"] if "paused_at" in row.keys() else ""),
     )
 
 
@@ -2163,6 +2345,36 @@ def _provider(row: Any) -> ProviderCredential:
         masked_value=str(row["masked_value"]),
         encrypted_value=str(row["encrypted_value"]),
         storage_mode=str(row["storage_mode"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def _codex_auth_connection(row: Any) -> CodexAuthConnection:
+    return CodexAuthConnection(
+        user_id=int(row["user_id"]),
+        auth_slot=str(row["auth_slot"]),
+        status=str(row["status"]),
+        auth_mode=str(row["auth_mode"]),
+        last_checked_at=str(row["last_checked_at"]),
+        last_refresh_at=str(row["last_refresh_at"]),
+        last_error=str(row["last_error"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def _run_approval(row: Any) -> RunApproval:
+    return RunApproval(
+        id=int(row["id"]),
+        run_id=int(row["run_id"]),
+        gate_type=str(row["gate_type"]),
+        requested_action=str(row["requested_action"]),
+        risk_summary=str(row["risk_summary"]),
+        status=str(row["status"]),
+        requested_by=str(row["requested_by"]),
+        decided_by=str(row["decided_by"]),
+        decision_reason=str(row["decision_reason"]),
+        created_at=str(row["created_at"]),
+        decided_at=str(row["decided_at"]),
         updated_at=str(row["updated_at"]),
     )
 

@@ -144,8 +144,6 @@ def _create_run(tmp_path, monkeypatch, run_dir, run_uid):
         owner_user_id=user.id,
         name="Review",
         request_text="Review",
-        mode="internal_tool",
-        complexity="simple",
         status="running",
     )
     repo.create_run(
@@ -153,6 +151,5 @@ def _create_run(tmp_path, monkeypatch, run_dir, run_uid):
         run_uid=run_uid,
         run_dir=run_dir,
         status="running",
-        mode="internal_tool",
         reasoning="medium",
     )

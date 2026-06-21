@@ -158,8 +158,6 @@ def test_trace_events_are_persisted_to_console_db(tmp_path: Path, monkeypatch):
         owner_user_id=user.id,
         name="Trace",
         request_text="Trace",
-        mode="internal_tool",
-        complexity="simple",
         status="running",
     )
     run = repo.create_run(
@@ -167,7 +165,6 @@ def test_trace_events_are_persisted_to_console_db(tmp_path: Path, monkeypatch):
         run_uid="run-trace-db",
         run_dir=tmp_path,
         status="running",
-        mode="internal_tool",
         reasoning="medium",
     )
 
@@ -223,8 +220,6 @@ def test_codex_agent_message_run_events_are_card_logs(tmp_path: Path, monkeypatc
         owner_user_id=user.id,
         name="Card log",
         request_text="Build",
-        mode="internal_tool",
-        complexity="simple",
         status="running",
     )
     run = repo.create_run(
@@ -232,7 +227,6 @@ def test_codex_agent_message_run_events_are_card_logs(tmp_path: Path, monkeypatc
         run_uid="run-card-log",
         run_dir=tmp_path,
         status="running",
-        mode="internal_tool",
         reasoning="medium",
     )
     materialize_planning_items("run-card-log")
@@ -277,8 +271,6 @@ def test_codex_agent_message_does_not_create_unknown_card_log(tmp_path: Path, mo
         owner_user_id=user.id,
         name="Card log missing",
         request_text="Build",
-        mode="internal_tool",
-        complexity="simple",
         status="running",
     )
     run = repo.create_run(
@@ -286,7 +278,6 @@ def test_codex_agent_message_does_not_create_unknown_card_log(tmp_path: Path, mo
         run_uid="run-card-log-missing",
         run_dir=tmp_path,
         status="running",
-        mode="internal_tool",
         reasoning="medium",
     )
 
@@ -330,8 +321,6 @@ def test_codex_review_runner_records_model_trace_and_registers_artifacts(
         owner_user_id=user.id,
         name="Review",
         request_text="Review",
-        mode="internal_tool",
-        complexity="simple",
         status="running",
     )
     run = repo.create_run(
@@ -339,7 +328,6 @@ def test_codex_review_runner_records_model_trace_and_registers_artifacts(
         run_uid="run-review",
         run_dir=tmp_path,
         status="running",
-        mode="internal_tool",
         reasoning="medium",
     )
     runner = CodexReviewRunner(command_executor=_review_command)
@@ -390,8 +378,6 @@ def test_status_inspector_runner_records_model_trace_and_registers_artifacts(
         owner_user_id=user.id,
         name="Status",
         request_text="Status",
-        mode="internal_tool",
-        complexity="simple",
         status="running",
     )
     run = repo.create_run(
@@ -399,7 +385,6 @@ def test_status_inspector_runner_records_model_trace_and_registers_artifacts(
         run_uid="run-status",
         run_dir=tmp_path,
         status="running",
-        mode="internal_tool",
         reasoning="medium",
     )
     runner = StatusInspectorRunner(command_executor=_status_command)

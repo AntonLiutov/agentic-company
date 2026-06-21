@@ -44,14 +44,9 @@ def test_quality_pass_marks_feature_passed_without_platform_merge(tmp_path, monk
     assert delivery_state["status"] == "qa_feature_passed_next_feature_ready"
 
 
-def test_quality_pass_does_not_require_platform_pr_record(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "agentic_company.platform.delivery.delivery_pr.get_work_item_pr",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("QA completion must not depend on platform PR lookup")
-        ),
-    )
-
+def test_quality_pass_does_not_require_platform_pr_record(tmp_path):
+    # The platform no longer records or looks up PRs (workers own git); a QA pass
+    # depends only on the QA result, never on any platform PR machinery.
     result = quality_graph._apply_quality_result(
         {
             "delivery_state": _state(tmp_path),

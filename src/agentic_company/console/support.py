@@ -32,6 +32,15 @@ CODEX_PROCESS = "codex_execution"
 DEPLOYMENT_PROCESS = "azure_deployment"
 AGENT_RUNTIME_ENV_PROCESS = "agent_runtime_env"
 PROCESS_HEARTBEAT_SECONDS = 30
+SECRET_RUNTIME_ENV_KEYS = {
+    "CODEX_API_KEY",
+    "OPENAI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "CODEX_ACCESS_TOKEN",
+    "CODEX_REFRESH_TOKEN",
+}
 
 
 @dataclass(slots=True)
@@ -229,6 +238,17 @@ def request_codex_execution_stop(run_dir: Path) -> Path:
     return path
 
 
+def prepare_codex_execution_continue(run_dir: Path) -> None:
+    """Clear durable stop sentinels and make the run startable again."""
+
+    for marker in (run_dir / ".codex-execution.stop", run_dir / ".stop-requested"):
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            continue
+    _record_process_state(run_dir, CODEX_PROCESS, "continued")
+
+
 def agent_runtime_env_path(run_dir: Path) -> Path:
     return run_dir / AGENT_RUNTIME_ENV_RELATIVE_PATH
 
@@ -239,6 +259,9 @@ def write_target_env(run_dir: Path, values: dict[str, str]) -> Path:
     existing = read_env_keys(env_path)
     merged = {**existing}
     for key, value in values.items():
+        if _is_secret_runtime_env_key(key):
+            LOGGER.warning("Refusing to persist secret runtime env key=%s run_dir=%s", key, run_dir)
+            continue
         if str(value).strip():
             merged[key] = str(value)
     env_path.write_text(
@@ -253,6 +276,13 @@ def write_target_env(run_dir: Path, values: dict[str, str]) -> Path:
     )
     LOGGER.info("Wrote agent runtime env keys=%s run_dir=%s", sorted(merged), run_dir)
     return env_path
+
+
+def _is_secret_runtime_env_key(key: str) -> bool:
+    upper = key.strip().upper()
+    if upper in SECRET_RUNTIME_ENV_KEYS:
+        return True
+    return upper.endswith("_TOKEN") or upper.endswith("_SECRET") or upper.endswith("_PASSWORD")
 
 
 def read_env_keys(env_path: Path) -> dict[str, str]:

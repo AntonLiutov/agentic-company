@@ -90,9 +90,9 @@ class LangChainTeamLeadExecutor:
                 _invoke(force_tool_call=True)
         except MissingAgentRuntimeConfig:
             toolbox.block_sprint(
-                reason="OPENAI_API_KEY is required for Team Lead AgentExecutor decisions.",
+                reason="The selected planning provider is not connected for Team Lead decisions.",
                 work_item_id=TEAM_LEAD_COORDINATION_WORK_ITEM_ID,
-                message="Set OPENAI_API_KEY in Settings or the run-level agent runtime env.",
+                message="Connect the selected planning provider in Settings.",
             )
             return toolbox.result()
         except LangChainAgentRuntimeError as exc:

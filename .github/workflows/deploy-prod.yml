@@ -1,0 +1,37 @@
+name: Deploy (prod)
+
+# Prod is NEVER auto-deployed. A human triggers this and a required reviewer on the
+# `prod` GitHub Environment must approve before the job runs on the prod VM's runner.
+# Provision the prod VM with the SAME ops/deploy/bootstrap_vm.sh, its OWN shared/.env
+# (prod OAuth app + prod DNS callback + a fresh APP_SECRET_KEY), and a runner labelled
+# `vm-prod` before using this.
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit SHA on main to promote to prod (defaults to the tip of main)"
+        required: false
+        default: ""
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy-prod:
+    name: Release to prod VM
+    runs-on: [self-hosted, vm-prod]
+    environment: prod   # configure required reviewers on this Environment in repo settings
+    steps:
+      - name: Check out the commit to promote
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha || 'main' }}
+      - name: Resolve the SHA being deployed
+        id: rev
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Release on the prod VM
+        run: bash ops/deploy/deploy.sh
+        env:
+          DEPLOY_SHA: ${{ steps.rev.outputs.sha }}
+          DEPLOY_ENV: prod

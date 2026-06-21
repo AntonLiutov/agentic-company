@@ -336,8 +336,6 @@ def _setup_run(tmp_path: Path):
         owner_user_id=user.id,
         name="Phase 1",
         request_text="Build",
-        mode="simple_prototype",
-        complexity="simple",
         status="running",
     )
     run_dir = tmp_path / "phase1-run"
@@ -348,7 +346,6 @@ def _setup_run(tmp_path: Path):
         run_uid="phase1-run",
         run_dir=run_dir,
         status="running",
-        mode="simple_prototype",
         reasoning="medium",
     )
     repo.upsert_sprint(

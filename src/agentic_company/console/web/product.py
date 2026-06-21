@@ -34,8 +34,8 @@ AGENT_MODEL_OPTIONS = [
 ]
 
 AGENT_PROVIDER_OPTIONS = [
-    ("google_gemini", "Google Gemini"),
     ("openai", "OpenAI"),
+    ("google_gemini", "Google Gemini"),
 ]
 
 GEMINI_MODEL_OPTIONS = [
@@ -49,7 +49,7 @@ GEMINI_MODEL_OPTIONS = [
 
 CODEX_MODEL_OPTIONS = [
     DEFAULT_CODEX_MODEL,
-    "gpt-5.4",
+    "gpt-5.5",
     "gpt-5.4-mini",
 ]
 
@@ -84,6 +84,9 @@ STATUS_LABELS = {
     "done": "Done",
     "failed": "Needs Attention",
     "failed_to_start": "Could Not Start",
+    "awaiting_approval": "Awaiting Approval",
+    "paused_codex_auth": "Paused: Codex Login",
+    "paused_provider_limit": "Paused: Provider Limit",
     "fullstack": "Build",
     "fullstack_feature_implemented": "Build Ready",
     "handoff": "Release Report",
@@ -294,24 +297,6 @@ def _remove_internal_names(label: str) -> str:
     for technical, business in replacements.items():
         cleaned = re.sub(rf"\b{re.escape(technical)}\b", business, cleaned)
     return cleaned
-
-
-def project_type_label(mode: str) -> str:
-    return {
-        "simple_prototype": "Simple prototype",
-        "internal_tool": "Internal tool",
-        "platform_improvement": "Platform improvement",
-        "ui_web_app": "UI/web app",
-        "public_demo": "Showcase",
-    }.get(mode, mode.replace("_", " ").title())
-
-
-def scope_size_label(complexity: str) -> str:
-    return {
-        "simple": "Small",
-        "medium": "Medium",
-        "complex": "Large",
-    }.get(complexity, complexity.title())
 
 
 def agent_icon_path(agent_name: str) -> str:
@@ -973,8 +958,8 @@ def _ordered_activity_groups(
 
 def agent_catalog(
     *,
-    agent_provider: str = "google_gemini",
-    agent_model: str = "gemini-3.1-flash-lite",
+    agent_provider: str = "openai",
+    agent_model: str = "gpt-4.1",
     codex_model: str = DEFAULT_CODEX_MODEL,
     codex_reasoning: str = "medium",
 ) -> list[dict[str, str]]:
@@ -1268,9 +1253,9 @@ def system_checks(
     gemini_key_configured: bool | None = None,
 ) -> list[dict[str, str]]:
     if openai_key_configured is None:
-        openai_key_configured = bool(os.getenv("OPENAI_API_KEY") or os.getenv("CODEX_API_KEY"))
+        openai_key_configured = False
     if gemini_key_configured is None:
-        gemini_key_configured = bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
+        gemini_key_configured = False
     codex_available = bool(_codex_binary())
     docker_available = bool(shutil.which("docker"))
     azure_available = bool(shutil.which("az"))
@@ -1569,19 +1554,21 @@ def format_request_text(text: str) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-def format_request_text_with_llm(text: str, *, api_key: str = "") -> str:
-    """Use Gemini to structure a request."""
+def format_request_text_with_llm(
+    text: str,
+    *,
+    provider: str,
+    model: str,
+    api_key: str = "",
+) -> str:
+    """Use the provider/model selected in the UI to structure a request."""
 
     clean = _normalize_speech_text(text)
     if not clean:
         return ""
     key = api_key.strip()
     if not key:
-        raise GeminiFormatterUnavailable("Gemini is not configured.")
-    try:
-        from langchain_google_genai import ChatGoogleGenerativeAI
-    except ImportError as exc:
-        raise GeminiFormatterUnavailable("Gemini formatter dependencies are unavailable.") from exc
+        raise GeminiFormatterUnavailable("The selected formatter provider is not connected.")
 
     prompt = (
         "Format the user's dictated product request into clean Markdown.\n"
@@ -1606,19 +1593,31 @@ def format_request_text_with_llm(text: str, *, api_key: str = "") -> str:
         f"User text:\n{clean}"
     )
     try:
-        response = ChatGoogleGenerativeAI(
-            google_api_key=key,
-            model=os.getenv(
-                "AGENTIC_FORMATTER_MODEL",
-                "gemini-3.1-flash-lite",
-            ),
-            temperature=0,
-        ).invoke(prompt)
+        if provider == "google_gemini":
+            from langchain_google_genai import ChatGoogleGenerativeAI
+
+            response = ChatGoogleGenerativeAI(
+                google_api_key=key,
+                model=model,
+                temperature=0,
+            ).invoke(prompt)
+        else:
+            from langchain_openai import ChatOpenAI
+
+            response = ChatOpenAI(
+                api_key=key,
+                model=model,
+                temperature=0,
+            ).invoke(prompt)
     except Exception as exc:
-        raise GeminiFormatterUnavailable("Gemini is not reachable right now.") from exc
+        raise GeminiFormatterUnavailable(
+            "The selected formatter provider is not reachable."
+        ) from exc
     formatted = _llm_text_content(response.content).strip()
     if not formatted:
-        raise GeminiFormatterUnavailable("Gemini returned an empty response.")
+        raise GeminiFormatterUnavailable(
+            "The selected formatter provider returned an empty response."
+        )
     return formatted + "\n"
 
 
