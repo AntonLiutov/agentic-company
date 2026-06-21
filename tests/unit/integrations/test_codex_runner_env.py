@@ -233,6 +233,7 @@ def test_codex_exec_environment_sets_owner_codex_home(monkeypatch, tmp_path: Pat
 
 def test_codex_exec_environment_sets_tool_caches_when_api_key_exists(monkeypatch, tmp_path: Path):
     target_dir = tmp_path / "generated-project"
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "api_key")
     monkeypatch.setenv("CODEX_API_KEY", "sk-test")
     monkeypatch.delenv("AGENTIC_CODEX_BINARY_MODE", raising=False)
 
@@ -255,6 +256,7 @@ def test_codex_exec_environment_anchors_relative_browser_paths_to_repo_root(
     from agentic_company.integrations.codex import runner as runner_module
 
     target_dir = tmp_path / "generated-project"
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "api_key")
     monkeypatch.setenv("CODEX_API_KEY", "sk-test")
     monkeypatch.delenv("AGENTIC_CODEX_BINARY_MODE", raising=False)
     monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "ops/qa-runtime/browsers")
@@ -271,6 +273,7 @@ def test_codex_exec_environment_anchors_relative_browser_paths_to_repo_root(
 def test_codex_exec_environment_leaves_absolute_browser_path_untouched(monkeypatch, tmp_path: Path):
     target_dir = tmp_path / "generated-project"
     absolute = tmp_path / "ops" / "qa-runtime" / "browsers"
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "api_key")
     monkeypatch.setenv("CODEX_API_KEY", "sk-test")
     monkeypatch.delenv("AGENTIC_CODEX_BINARY_MODE", raising=False)
     monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(absolute))

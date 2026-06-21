@@ -164,6 +164,7 @@ def test_private_project_not_visible_to_another_user(tmp_path):
 
 
 def test_create_project_starts_run_with_monkeypatched_runtime(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "api_key")
     repo = ConsoleRepository()
     app = create_app(repo)
     client = TestClient(app)
@@ -220,6 +221,7 @@ def test_create_project_starts_run_with_monkeypatched_runtime(tmp_path, monkeypa
 
 
 def test_create_project_persists_control_modes(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "api_key")
     repo = ConsoleRepository()
     app = create_app(repo)
     client = TestClient(app)
@@ -266,6 +268,42 @@ def test_create_project_persists_control_modes(tmp_path, monkeypatch):
     assert run is not None
     assert run.run_mode == "medium"
     assert run.risk_mode == "safe"
+
+
+def test_create_project_blocked_until_codex_connected(tmp_path, monkeypatch):
+    # Under the user_chatgpt default, starting a run is gated on a connected Codex
+    # account — without one the create handler must 400 and create nothing.
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "user_chatgpt")
+    repo = ConsoleRepository()
+    app = create_app(repo)
+    client = TestClient(app)
+    client.post(
+        "/register",
+        data={
+            "email": "nocodex@example.test",
+            "username": "nocodex",
+            "password": "password-1",
+        },
+    )
+    repo.save_provider_secret(1, "openai", "sk-test-nocodex")
+
+    response = client.post(
+        "/projects",
+        data={
+            "name": "Gated App",
+            "request_text": "Build a gated app",
+            "agent_provider": "openai",
+            "agent_model": "gpt-4.1",
+            "codex_model": "gpt-5.5",
+            "codex_reasoning": "medium",
+            "service_tier": "standard",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert "Connect your Codex account" in response.text
+    assert repo.list_projects_for_user(1) == []
 
 
 def test_workspace_can_approve_pending_gate(tmp_path):
@@ -503,6 +541,7 @@ def test_create_project_requires_codex_connection_in_user_chatgpt_mode(tmp_path,
 
 
 def test_create_project_with_github_board_records_connection(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "api_key")
     repo = ConsoleRepository()
     app = create_app(repo)
     client = TestClient(app)
@@ -1004,8 +1043,8 @@ def test_create_project_ignores_platform_gemini_env_without_user_key(tmp_path, m
         data={
             "name": "Platform Gemini Task",
             "request_text": "Build a tiny Gemini-routed app",
-            "mode": "simple_prototype",
-            "complexity": "simple",
+            "agent_provider": "google_gemini",
+            "agent_model": "gemini-3.1-flash-lite",
             "codex_model": "gpt-5.5",
             "codex_reasoning": "medium",
             "service_tier": "standard",
@@ -1014,7 +1053,7 @@ def test_create_project_ignores_platform_gemini_env_without_user_key(tmp_path, m
     )
 
     assert response.status_code == 400
-    assert "Add your Gemini key" in response.text
+    assert "Add a Gemini key" in response.text
     assert repo.list_projects_for_user(1) == []
 
 
@@ -1166,6 +1205,7 @@ def test_create_project_requires_saved_openai_key(tmp_path, monkeypatch):
 
 
 def test_restart_project_creates_new_run_from_saved_request(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "api_key")
     repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
@@ -1233,6 +1273,7 @@ def test_restart_project_creates_new_run_from_saved_request(tmp_path, monkeypatc
 
 
 def test_continue_project_reuses_existing_run_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "api_key")
     repo = ConsoleRepository()
     repo.init_schema()
     user = repo.create_user(
