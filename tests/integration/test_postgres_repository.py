@@ -73,7 +73,7 @@ def test_get_active_work_system_connection_prefers_run_scope(tmp_path, monkeypat
         email=f"conn-{suffix}@example.test", username=f"conn_{suffix}", password="password-1"
     )
     project = repo.create_project(
-        owner_user_id=user.id, name="Conn", request_text="x", mode="ui_web_app", complexity="small"
+        owner_user_id=user.id, name="Conn", request_text="x"
     )
     run = repo.create_run(
         project_id=project.id,
