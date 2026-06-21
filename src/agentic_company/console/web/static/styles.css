@@ -295,6 +295,9 @@ button:disabled,
 }
 
 label { display: grid; gap: 0.28rem; color: var(--muted); font-size: 0.8rem; }
+.field-hint { color: var(--muted); font-size: 0.72rem; margin-top: 0.15rem; }
+.field-hint a { color: inherit; text-decoration: underline; }
+input:disabled, select:disabled, textarea:disabled { opacity: 0.55; cursor: not-allowed; }
 input, textarea, select {
   width: 100%;
   border: 1px solid var(--border);

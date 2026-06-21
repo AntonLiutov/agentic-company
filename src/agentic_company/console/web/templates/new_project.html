@@ -22,7 +22,7 @@
       <div>
         <h2>Describe what the agent team should build.</h2>
       </div>
-      <button class="primary" type="submit" data-start-btn data-key-ok="{{ 'true' if start_ready else 'false' }}" {% if not start_ready %}disabled title="{{ start_blocker }}"{% endif %}>Start Project</button>
+      <button class="primary" type="submit" data-start-btn data-key-ok="{{ 'true' if start_ready else 'false' }}" data-blocker="{{ start_blocker }}" {% if not start_ready %}disabled title="{{ start_blocker }}"{% endif %}>Start Project</button>
     </div>
     {% if error %}
       <div class="alert compact-alert">{{ error }}</div>
@@ -110,11 +110,12 @@
         </summary>
         <div class="form-grid form-grid-three">
           <label>Build model
-            <select name="codex_model">
+            <select name="codex_model" {% if not codex_ready %}disabled title="Connect Codex in Settings to choose a build model."{% endif %}>
               {% for model in codex_models %}
                 <option value="{{ model }}" {{ "selected" if model == form_values.codex_model else "" }}>{{ model }}</option>
               {% endfor %}
             </select>
+            {% if not codex_ready %}<small class="field-hint">Connect Codex in <a href="/settings">Settings</a> to choose a model.</small>{% endif %}
           </label>
           <label>Reasoning
             <select name="codex_reasoning">

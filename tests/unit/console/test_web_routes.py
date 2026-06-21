@@ -85,6 +85,9 @@ def test_new_project_page_renders_model_controls_without_transcription_controls(
     assert "gpt-5.4-mini" in response.text
     assert "gpt-5.3-codex-spark" not in response.text
     assert "gpt-5.2" not in response.text
+    # Build model is locked until this user connects Codex (they have not here).
+    assert 'name="codex_model" disabled' in response.text
+    assert "Connect Codex in" in response.text
     assert "Dictation " + "language" not in response.text
     assert "Start " + "".join(["dict", "ation"]) not in response.text
     assert "Speech" + "matics" not in response.text

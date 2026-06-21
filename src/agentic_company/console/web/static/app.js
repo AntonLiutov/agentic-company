@@ -312,6 +312,7 @@ function setupFormatButtons() {
         `;
         byId("apply-format").addEventListener("click", () => {
           target.value = payload.formatted;
+          target.dispatchEvent(new Event("input", { bubbles: true })); // re-run Start-button gate
           target.classList.add("hidden");
           if (formattedView) {
             formattedView.classList.remove("hidden");
@@ -509,6 +510,9 @@ function setupRepoDelivery() {
   const existingSel = document.querySelector("[data-repo-existing]");
   const newInput = document.querySelector("[data-repo-new]");
   const startBtn = document.querySelector("[data-start-btn]");
+  const nameField = document.querySelector("[name='name']");
+  const requestField = document.getElementById("request-text");
+  const MIN_REQUEST_CHARS = 30; // minimum requirements length before a project can start
 
   function validate() {
     if (!startBtn) return;
@@ -519,7 +523,23 @@ function setupRepoDelivery() {
         ? Boolean(newInput && newInput.value.trim())
         : Boolean(existingSel && existingSel.value);
     }
-    startBtn.disabled = !(keyOk && repoOk);
+    const nameOk = Boolean(nameField && nameField.value.trim());
+    const reqLen = requestField ? requestField.value.trim().length : 0;
+    const reqOk = reqLen >= MIN_REQUEST_CHARS;
+    startBtn.disabled = !(keyOk && repoOk && nameOk && reqOk);
+    if (startBtn.disabled) {
+      startBtn.title = !keyOk
+        ? (startBtn.dataset.blocker || "Connect a provider and Codex in Settings first.")
+        : !nameOk
+        ? "Give the project a name first."
+        : !reqOk
+        ? `Describe the requirements — at least ${MIN_REQUEST_CHARS} characters (${reqLen}/${MIN_REQUEST_CHARS}).`
+        : !repoOk
+        ? "Pick or name a GitHub repository first."
+        : "";
+    } else {
+      startBtn.title = "";
+    }
   }
   function setRepoMode(mode) {
     if (repoInput) repoInput.value = mode;
@@ -553,6 +573,8 @@ function setupRepoDelivery() {
   repoSegs.forEach((b) => b.addEventListener("click", () => setRepoMode(b.dataset.repoMode)));
   if (existingSel) existingSel.addEventListener("change", validate);
   if (newInput) newInput.addEventListener("input", validate);
+  if (nameField) nameField.addEventListener("input", validate);
+  if (requestField) requestField.addEventListener("input", validate);
   if (repoSegs.length) setRepoMode("existing");
   setDeliverMode("local");
 }
