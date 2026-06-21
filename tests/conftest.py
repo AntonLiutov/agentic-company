@@ -48,6 +48,9 @@ def isolate_unit_database_env(
     monkeypatch.setenv("AGENTIC_DATABASE_URL", postgres_test_database_url)
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("APP_SECRET_KEY", "test-app-secret-key-0123456789ab")
+    # The local .env (loaded at app import) may set a dev-only host-wide sandbox override
+    # (danger-full-access on a Windows dev box). Tests assert per-agent sandboxes, so clear it.
+    monkeypatch.delenv("AGENTIC_CODEX_SANDBOX_OVERRIDE", raising=False)
     # Unit tests must not spin up the async board-mirror pool (hundreds of cases
     # in one process) or do any real board I/O; the mirror is exercised directly
     # in its own tests and validated live.

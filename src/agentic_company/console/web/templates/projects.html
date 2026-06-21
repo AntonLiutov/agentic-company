@@ -13,7 +13,7 @@
           <a class="project-card" href="/projects/{{ project.id }}">
             <div class="project-card-main">
               <h3>{{ project.name }}</h3>
-              <p>{{ "Showcase" if project.visibility == "public_demo" else "Private" }} &middot; {{ project.mode|project_type_label }} &middot; {{ project.complexity|scope_size_label }}</p>
+              <p>{{ "Showcase" if project.visibility == "public_demo" else "Private" }}</p>
               {% if project.display_request %}
                 <small class="request-preview">{{ project.display_request[:180] }}{{ "..." if project.display_request|length > 180 else "" }}</small>
               {% endif %}

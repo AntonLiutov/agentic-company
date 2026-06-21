@@ -7,44 +7,38 @@
     .seg-toggle .seg { background: transparent; border: 0; border-radius: 0; min-height: auto; padding: 4px 10px; font-size: 0.72rem; color: var(--muted); cursor: pointer; }
     .seg-toggle .seg + .seg { border-left: 1px solid var(--border); }
     .seg-toggle .seg.active { background: var(--blue); color: #fff; font-weight: 600; }
+    .pick-cards { display: flex; flex-direction: column; gap: 8px; }
+    .pick-card { position: relative; display: block; border: 1px solid var(--border); border-radius: 10px; padding: 11px 13px; cursor: pointer; }
+    .pick-card input { position: absolute; opacity: 0; pointer-events: none; }
+    .pick-card:has(input:checked) { border-color: var(--blue); background: rgba(96, 165, 250, 0.08); }
+    .pick-title { font-weight: 650; }
+    .pick-sub { color: var(--muted); font-size: 0.8rem; margin-top: 2px; }
+    .pick-roles { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+    .pick-roles span { font-size: 0.72rem; padding: 2px 9px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); }
+    .field-label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 7px; }
   </style>
   <form class="panel run-form" method="post" action="/projects">
     <div class="panel-heading">
       <div>
         <h2>Describe what the agent team should build.</h2>
       </div>
-      <button class="primary" type="submit" data-start-btn data-key-ok="{{ 'true' if credential else 'false' }}" {% if not credential %}disabled title="Add your OpenAI key in Settings first."{% endif %}>Start Project</button>
+      <button class="primary" type="submit" data-start-btn data-key-ok="{{ 'true' if start_ready else 'false' }}" {% if not start_ready %}disabled title="{{ start_blocker }}"{% endif %}>Start Project</button>
     </div>
     {% if error %}
       <div class="alert compact-alert">{{ error }}</div>
-    {% elif not credential %}
+    {% elif not start_ready %}
       <div class="alert compact-alert">
-        Add your OpenAI key in <a href="/settings">Settings</a> before starting.
+        {{ start_blocker }} <a href="/settings">Open Settings</a>.
       </div>
     {% endif %}
     <div class="form-sections form-accordions">
       <details class="form-section form-section-wide" open>
         <summary>
           <span>Project</span>
-          <small data-project-summary>{{ form_values.name or "Untitled" }}</small>
+          <small data-project-summary>{{ form_values.name }}</small>
         </summary>
-        <div class="form-grid form-grid-three">
+        <div class="form-grid">
           <label>Project name<input name="name" placeholder="Team Task Tracker" value="{{ form_values.name }}" required></label>
-          <label>Project type
-            <select name="mode">
-              <option value="simple_prototype" {{ "selected" if form_values.mode == "simple_prototype" else "" }}>Simple prototype</option>
-              <option value="internal_tool" {{ "selected" if form_values.mode == "internal_tool" else "" }}>Internal tool</option>
-              <option value="platform_improvement" {{ "selected" if form_values.mode == "platform_improvement" else "" }}>Platform improvement</option>
-              <option value="ui_web_app" {{ "selected" if form_values.mode == "ui_web_app" else "" }}>UI/web app</option>
-            </select>
-          </label>
-          <label>Scope size
-            <select name="complexity">
-              <option value="simple" {{ "selected" if form_values.complexity == "simple" else "" }}>Small</option>
-              <option value="medium" {{ "selected" if form_values.complexity == "medium" else "" }}>Medium</option>
-              <option value="complex" {{ "selected" if form_values.complexity == "complex" else "" }}>Large</option>
-            </select>
-          </label>
         </div>
       </details>
       <details class="form-section" open>
@@ -52,16 +46,6 @@
           <span>Planning</span>
           <small data-planning-summary>{{ "Google Gemini" if form_values.agent_provider == "google_gemini" else "OpenAI" }} · {{ form_values.agent_model }}</small>
         </summary>
-        <p
-          class="section-hint provider-readiness compact-chip"
-          data-provider-note="google_gemini"
-          title="Shared Gemini quota is very limited and may cover only a few small projects per day. If quota is exhausted, a run can stop before completion. Use small projects or add your own Gemini key in Settings."
-        >
-          <span class="status-dot warning-dot"></span> Shared quota
-        </p>
-        <p class="section-hint provider-readiness compact-chip hidden" data-provider-note="openai">
-          <span class="status-dot"></span> Key ready
-        </p>
         <div class="form-grid form-grid-two">
           <label>Provider
             <select name="agent_provider" data-provider-select data-model-target="agent-model-select">
@@ -89,30 +73,34 @@
       <details class="form-section">
         <summary>
           <span>Control</span>
-          <small>{{ form_values.run_mode|title }} · {{ form_values.risk_mode|title }} · {{ form_values.team_preset|title }}</small>
+          <small data-control-summary></small>
         </summary>
-        <div class="form-grid form-grid-three">
-          <label>Run mode
-            <select name="run_mode">
-              {% for mode in run_modes %}
-                <option value="{{ mode }}" {{ "selected" if mode == form_values.run_mode else "" }}>{{ mode|replace("_", " ")|title }}</option>
-              {% endfor %}
-            </select>
-          </label>
-          <label>Risk mode
-            <select name="risk_mode">
-              {% for mode in risk_modes %}
-                <option value="{{ mode }}" {{ "selected" if mode == form_values.risk_mode else "" }}>{{ mode|title }}</option>
-              {% endfor %}
-            </select>
-          </label>
-          <label>Team
-            <select name="team_preset">
-              {% for preset in team_presets %}
-                <option value="{{ preset }}" {{ "selected" if preset == form_values.team_preset else "" }}>{{ preset|title }}</option>
-              {% endfor %}
-            </select>
-          </label>
+        <div class="form-field">
+          <span class="field-label">Team — who builds it</span>
+          <div class="pick-cards">
+            {% for opt in run_mode_options %}
+            <label class="pick-card">
+              <input type="radio" name="run_mode" value="{{ opt.value }}" {{ "checked" if opt.value == form_values.run_mode else "" }}>
+              <span class="pick-title">{{ opt.label }}</span>
+              <div class="pick-sub">{{ opt.note }}</div>
+              <div class="pick-roles">
+                {% for role in opt.roles %}<span>{{ role }}</span>{% endfor %}
+              </div>
+            </label>
+            {% endfor %}
+          </div>
+        </div>
+        <div class="form-field" style="margin-top:14px;">
+          <span class="field-label">Risk — when it pauses for you</span>
+          <div class="pick-cards">
+            {% for value, label, description in risk_options %}
+            <label class="pick-card">
+              <input type="radio" name="risk_mode" value="{{ value }}" {{ "checked" if value == form_values.risk_mode else "" }}>
+              <span class="pick-title">{{ label }}</span>
+              <div class="pick-sub">{{ description }}</div>
+            </label>
+            {% endfor %}
+          </div>
         </div>
       </details>
       <details class="form-section">
@@ -201,4 +189,30 @@
     </div>
     <div id="format-preview" class="preview-panel hidden"></div>
   </form>
+  <script>
+    (function () {
+      // Keep the Control header in sync with the selected Team/Risk cards — show the card's
+      // own label (so "Standard"/"Complex", not the raw run_mode value), live on change.
+      function cardTitle(name) {
+        var radio = document.querySelector("input[name='" + name + "']:checked");
+        if (!radio) return "";
+        var card = radio.closest(".pick-card");
+        var title = card ? card.querySelector(".pick-title") : null;
+        return title ? title.textContent.trim() : radio.value;
+      }
+      function updateControlSummary() {
+        var summary = document.querySelector("[data-control-summary]");
+        if (!summary) return;
+        summary.textContent = [cardTitle("run_mode"), cardTitle("risk_mode")]
+          .filter(Boolean)
+          .join(" · ");
+      }
+      document
+        .querySelectorAll("input[name='run_mode'], input[name='risk_mode']")
+        .forEach(function (el) {
+          el.addEventListener("change", updateControlSummary);
+        });
+      updateControlSummary();
+    })();
+  </script>
 {% endblock %}

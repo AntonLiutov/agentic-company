@@ -5,6 +5,17 @@ from pathlib import Path
 from agentic_company.integrations.codex import account_auth
 
 
+def test_codex_home_is_absolute_even_with_relative_auth_root(monkeypatch):
+    # Regression: a relative AGENTIC_CODEX_AUTH_ROOT (e.g. "data/codex-auth") must still
+    # yield an ABSOLUTE codex home. It is passed as CODEX_HOME *and* as the subprocess cwd;
+    # codex resolves a relative CODEX_HOME against that cwd, doubling the path so it "does
+    # not exist" and `codex login` dies on startup before printing its auth URL.
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_ROOT", "data/codex-auth")
+    home = account_auth.codex_home_for_user(3)
+    assert home.is_absolute()
+    assert home.parts[-2:] == ("users", "3")
+
+
 def test_codex_login_status_success_uses_user_scoped_home(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENTIC_CODEX_AUTH_ROOT", str(tmp_path / "auth-root"))
     monkeypatch.setattr(account_auth, "resolve_codex_binary", lambda: "codex-test")
@@ -46,7 +57,7 @@ def test_codex_login_status_failure_is_non_throwing(monkeypatch, tmp_path):
     assert "not logged in" in status.message
 
 
-def test_device_login_state_reads_output_without_tokens(monkeypatch, tmp_path):
+def test_device_login_state_reads_clean_login_fields_without_raw_output(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENTIC_CODEX_AUTH_ROOT", str(tmp_path / "auth-root"))
     home = account_auth.ensure_codex_home_for_user(4)
     (home / account_auth.DEVICE_LOGIN_STATE).write_text(
@@ -54,7 +65,8 @@ def test_device_login_state_reads_output_without_tokens(monkeypatch, tmp_path):
             {
                 "status": "running",
                 "message": "Copy the code.",
-                "output": "Open https://github.com/login/device and enter ABCD-1234",
+                "auth_url": "https://github.com/login/device",
+                "user_code": "ABCD-1234",
             }
         ),
         encoding="utf-8",
@@ -63,7 +75,9 @@ def test_device_login_state_reads_output_without_tokens(monkeypatch, tmp_path):
     state = account_auth.codex_device_login_state(4)
 
     assert state["status"] == "running"
-    assert "ABCD-1234" in state["output"]
+    assert state["auth_url"] == "https://github.com/login/device"
+    assert state["user_code"] == "ABCD-1234"
+    assert "output" not in state
     assert "token" not in json.dumps(state).lower()
 
 
@@ -110,6 +124,7 @@ def test_device_login_capture_writes_clean_url_and_code(monkeypatch, tmp_path):
     payload = json.loads(state_path.read_text(encoding="utf-8"))
     assert payload["auth_url"] == "https://auth.openai.com/codex/device"
     assert payload["user_code"] == "ABCD-9999"
+    assert "output" not in payload
     assert payload["flow"] == "device"  # preserved across rewrites
     assert payload["pid"] == "999"
 

@@ -229,13 +229,15 @@ def _apply_result(state: FullstackAgentGraphState) -> FullstackAgentGraphState:
             owner_agent=result.agent_id,
         ),
     )
-    if result.status == "codex_completed" and work_item_id:
-        try:  # best-effort: branch -> commit -> PR for this feature; never breaks delivery
-            from agentic_company.platform.delivery.delivery_pr import publish_work_item_pr
-
-            publish_work_item_pr(str(delivery_state["run_id"]), work_item_id)
-        except Exception:
-            pass
+    # Platform-side PR publishing DISABLED — the worker owns git/PR via the git-pr-workflow
+    # skill (danger-full-access). Re-enable only once the platform flow is proven end-to-end.
+    # if result.status == "codex_completed" and work_item_id:
+    #     try:  # best-effort: branch -> commit -> PR for this feature; never breaks delivery
+    #         from agentic_company.platform.delivery.delivery_pr import publish_work_item_pr
+    #
+    #         publish_work_item_pr(str(delivery_state["run_id"]), work_item_id)
+    #     except Exception:
+    #         pass
     append_downstream_response(updated, from_agent="fullstack-agent", result=result)
     return {**state, "delivery_state": updated}
 
@@ -288,13 +290,6 @@ def _write_feature_execution_request(
             "commit (never secrets), push, and open the PR. Never commit to the base branch "
             "directly; QA reviews and merges the PR." + existing_note
         )
-        instructions.append(
-            "Phase 3 platform override: do not run `gh`, do not push, and do not "
-            "open or merge pull requests from inside the worker. Implement file "
-            "changes only; the platform publishes the branch and PR host-side "
-            "after your Codex execution completes."
-        )
-        instructions.pop(-2)
     request = build_execution_request_payload(
         delivery_state,
         agent_id="fullstack-agent",

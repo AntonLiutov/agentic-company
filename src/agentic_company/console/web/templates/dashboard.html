@@ -21,7 +21,6 @@
             <a class="row-link" href="/projects/{{ project.id }}">
               <span>
                 <strong>{{ project.name }}</strong>
-                <small>{{ project.mode|project_type_label }} &middot; {{ project.complexity|scope_size_label }}</small>
                 {% if project.display_request %}
                   <small class="request-preview">{{ project.display_request[:140] }}{{ "..." if project.display_request|length > 140 else "" }}</small>
                 {% endif %}
@@ -46,7 +45,6 @@
             <a class="row-link" href="/projects/{{ project.id }}">
               <span>
                 <strong>{{ project.name }}</strong>
-                <small>{{ project.mode|project_type_label }} &middot; {{ project.complexity|scope_size_label }}</small>
                 {% if project.display_request %}
                   <small class="request-preview">{{ project.display_request[:140] }}{{ "..." if project.display_request|length > 140 else "" }}</small>
                 {% endif %}

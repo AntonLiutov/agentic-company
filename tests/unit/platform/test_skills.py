@@ -241,17 +241,15 @@ def test_all_pr_producing_agents_carry_git_pr_workflow_at_runtime():
         assert "git-pr-workflow" in skills, f"{rid} cannot do PR/git work; got {skills}"
 
 
-def test_qa_runtime_worker_reviews_pr_but_platform_merges():
-    # Phase 3: QA keeps the PR workflow context, but the platform performs the
-    # host-side merge after a passing verdict.
+def test_qa_runtime_worker_can_review_and_merge():
+    # Direct regression for "QA не смерджил": the QA worker (runtime id) carries BOTH the
+    # browser QA skill AND the PR workflow, and that workflow instructs merge-on-pass.
     from agentic_company.agents.quality.codex_cli import QUALITY_CODEX_AGENT_ID
 
     skills = [s.skill_id for s in applicable_skills_for_agent(QUALITY_CODEX_AGENT_ID)]
     assert "git-pr-workflow" in skills and "browser-smoke-qa" in skills
     body = DEFAULT_SKILL_CATALOG.get("git-pr-workflow").body
-    assert "QA reviews" in body
-    assert "platform merges" in body.lower()
-    assert "Do not run `gh`" in body
+    assert "gh pr merge" in body  # the merge command QA must run on a pass
 
 
 def test_both_coordinators_select_the_repair_loop_skill():

@@ -5,6 +5,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 import agentic_company.integrations.commands as commands
 from agentic_company.console.web.db import ConsoleRepository
 from agentic_company.integrations.codex.runner import (
@@ -148,6 +150,7 @@ def test_danger_full_access_command_omits_workspace_network(monkeypatch, tmp_pat
 
 
 def test_codex_exec_environment_requires_codex_api_key(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "api_key")
     monkeypatch.delenv("CODEX_API_KEY", raising=False)
     monkeypatch.delenv("AGENTIC_CODEX_BINARY_MODE", raising=False)
 
@@ -160,6 +163,7 @@ def test_codex_exec_environment_requires_codex_api_key(monkeypatch, tmp_path: Pa
 
 
 def test_codex_exec_environment_ignores_secret_run_local_env(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "api_key")
     run_dir = tmp_path / "run"
     target_dir = run_dir / "generated-project"
     target_dir.mkdir(parents=True)
@@ -208,8 +212,6 @@ def test_codex_exec_environment_sets_owner_codex_home(monkeypatch, tmp_path: Pat
         owner_user_id=user.id,
         name="Codex Home",
         request_text="Build",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run_dir = tmp_path / "project-1"
     target_dir = run_dir / "generated-project"
@@ -219,7 +221,6 @@ def test_codex_exec_environment_sets_owner_codex_home(monkeypatch, tmp_path: Pat
         run_uid=run_dir.name,
         run_dir=run_dir,
         status="running",
-        mode="simple_prototype",
         reasoning="medium",
     )
 
@@ -283,6 +284,9 @@ def test_codex_exec_environment_strips_api_key_for_extension_mode(monkeypatch, t
     target_dir = tmp_path / "generated-project"
     monkeypatch.setenv("CODEX_API_KEY", "sk-test")
     monkeypatch.setenv("AGENTIC_CODEX_BINARY_MODE", "extension")
+    # extension binary is forbidden in user_chatgpt mode (it uses the editor's own session);
+    # this test exercises api-key stripping, so opt into the extension explicitly.
+    monkeypatch.setenv("AGENTIC_CODEX_ALLOW_EXTENSION_BINARY", "1")
 
     env = build_codex_exec_environment(target_dir)
     cache_root = tmp_path / ".agentic-cache"
@@ -296,6 +300,7 @@ def test_codex_exec_environment_strips_api_key_for_extension_binary(monkeypatch,
     target_dir = tmp_path / "generated-project"
     monkeypatch.setenv("CODEX_API_KEY", "sk-test")
     monkeypatch.delenv("AGENTIC_CODEX_BINARY_MODE", raising=False)
+    monkeypatch.setenv("AGENTIC_CODEX_ALLOW_EXTENSION_BINARY", "1")
     monkeypatch.setenv(
         "CODEX_BINARY",
         str(
@@ -312,6 +317,66 @@ def test_codex_exec_environment_strips_api_key_for_extension_binary(monkeypatch,
     env = build_codex_exec_environment(target_dir)
 
     assert "CODEX_API_KEY" not in env
+
+
+def test_codex_exec_environment_rejects_extension_binary_in_user_chatgpt(monkeypatch, tmp_path):
+    # The extension binary uses the editor's own session, not the per-user auth.json — so
+    # a user_chatgpt worker must NOT use it (it would silently borrow the VS Code login and
+    # 401 on logout). The build refuses it unless explicitly overridden.
+    monkeypatch.setenv("AGENTIC_CODEX_BINARY_MODE", "extension")
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "user_chatgpt")
+    monkeypatch.delenv("AGENTIC_CODEX_ALLOW_EXTENSION_BINARY", raising=False)
+    with pytest.raises(RuntimeError, match="standalone Codex binary"):
+        build_codex_exec_environment(tmp_path / "generated-project")
+
+
+def test_sandbox_override_wins_over_force_sandbox(monkeypatch):
+    # On a Windows dev host codex can't enforce workspace-write, so writes are denied. The
+    # host-wide override must beat even a per-agent force_sandbox (e.g. the BA's workspace-write).
+    from agentic_company.integrations.codex.runner import build_codex_exec_command
+
+    monkeypatch.setenv("AGENTIC_CODEX_SANDBOX_OVERRIDE", "danger-full-access")
+    cmd = build_codex_exec_command(
+        codex_binary="codex",
+        model="gpt-5.4",
+        sandbox="workspace-write",
+        target_project_dir="t",
+        run_dir=Path("r"),
+        summary_path=Path("s"),
+        force_sandbox=True,
+    )
+    assert cmd[cmd.index("--sandbox") + 1] == "danger-full-access"
+
+
+def test_apply_run_owner_codex_home_handles_both_target_shapes(monkeypatch, tmp_path):
+    # The head/coordinator executor passes the run dir itself; worker agents pass
+    # <run_dir>/generated-project. Both must resolve the owner's per-user CODEX_HOME.
+    from agentic_company.integrations.codex import account_auth, runner
+
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_ROOT", str(tmp_path / "auth"))
+
+    class _Run:
+        project_id = 1
+
+    class _Project:
+        owner_user_id = 7
+
+    class _Repo:
+        def get_run_by_uid(self, uid):
+            return _Run() if uid == "project-xyz" else None
+
+        def get_project(self, pid):
+            return _Project()
+
+    import agentic_company.console.web.db as db
+
+    monkeypatch.setattr(db, "ConsoleRepository", lambda: _Repo())
+    run_dir = tmp_path / "runs" / "u" / "project-xyz"
+    expected = str(account_auth.codex_home_for_user(7))
+    for target in (run_dir, run_dir / "generated-project"):
+        env: dict[str, str] = {}
+        runner._apply_run_owner_codex_home(env, target)
+        assert env.get("CODEX_HOME") == expected
 
 
 def test_repo_local_node_bin_dir_detects_portable_node(tmp_path: Path):
@@ -381,8 +446,6 @@ def test_stream_codex_exec_mirrors_raw_lines_to_db(tmp_path: Path, monkeypatch):
         owner_user_id=user.id,
         name="Raw Codex",
         request_text="Build",
-        mode="internal_tool",
-        complexity="simple",
         status="running",
     )
     run = repo.create_run(
@@ -390,7 +453,6 @@ def test_stream_codex_exec_mirrors_raw_lines_to_db(tmp_path: Path, monkeypatch):
         run_uid="run-raw-codex",
         run_dir=tmp_path / "run",
         status="running",
-        mode="internal_tool",
         reasoning="medium",
     )
     run_dir = Path(run.run_dir)

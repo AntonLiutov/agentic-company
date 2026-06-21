@@ -33,15 +33,12 @@ def test_fullstack_runner_does_not_return_generated_project_sources_as_evidence(
         owner_user_id=user.id,
         name="Fullstack",
         request_text="Build",
-        mode="simple_prototype",
-        complexity="simple",
     )
     repo.create_run(
         project_id=project.id,
         run_uid="run",
         run_dir=run_dir,
         status="running",
-        mode="simple_prototype",
         reasoning="medium",
     )
     write_execution_request(

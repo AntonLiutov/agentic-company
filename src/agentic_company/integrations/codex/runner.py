@@ -11,6 +11,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from agentic_company.integrations.codex.cli import (
+    AGENTIC_CODEX_ALLOW_EXTENSION_BINARY_ENV,
     AGENTIC_CODEX_BINARY_MODE_ENV,
     resolve_codex_binary,
 )
@@ -19,6 +20,7 @@ from agentic_company.integrations.commands import StreamedCommand, stream_comman
 from agentic_company.platform.run.run_trace import record_raw_log_event, record_run_event
 
 CODEX_SANDBOX_ENV = "AGENTIC_CODEX_SANDBOX"
+CODEX_SANDBOX_OVERRIDE_ENV = "AGENTIC_CODEX_SANDBOX_OVERRIDE"
 CODEX_INHERIT_ENV_ENV = "AGENTIC_CODEX_INHERIT_ENV"
 CODEX_UV_CACHE_DIR_ENV = "AGENTIC_CODEX_UV_CACHE_DIR"
 CODEX_DENO_DIR_ENV = "AGENTIC_CODEX_DENO_DIR"
@@ -144,6 +146,12 @@ def build_codex_exec_command(
         if force_sandbox
         else codex_sandbox_from_env(sandbox or DEFAULT_CODEX_SANDBOX)
     )
+    # A host-wide override (e.g. danger-full-access on a Windows dev host where codex can't
+    # enforce workspace-write) wins over per-agent force_sandbox — but NEVER elevates an
+    # intentionally read-only agent (the advisory codex review must stay read-only).
+    override = codex_sandbox_override_from_env()
+    if override and effective_sandbox != "read-only":
+        effective_sandbox = override
     config_args = list(codex_exec_config_args_from_env())
     # workspace-write blocks outbound network by default; re-enable it so QA can
     # verify deployed public URLs and agents can fetch network resources.
@@ -588,6 +596,25 @@ def codex_sandbox_from_env(default: str) -> str:
     return configured
 
 
+def codex_sandbox_override_from_env() -> str:
+    """A host-wide sandbox override that wins over per-agent ``force_sandbox``.
+
+    Codex only enforces ``workspace-write`` via an OS sandbox (Landlock on Linux, Seatbelt on
+    macOS), which does NOT exist on Windows — so on a Windows dev host ``exec --sandbox
+    workspace-write`` denies even in-workspace writes (they become approval-required and are
+    auto-denied in non-interactive ``exec``), and every writing agent reports "read-only".
+    Set ``AGENTIC_CODEX_SANDBOX_OVERRIDE=danger-full-access`` for local Windows dev. DO NOT
+    set it on the shared Linux VM, where least-privilege sandboxes are enforced for real.
+    """
+    configured = os.getenv(CODEX_SANDBOX_OVERRIDE_ENV, "").strip().lower()
+    if not configured:
+        return ""
+    if configured not in VALID_CODEX_SANDBOXES:
+        allowed = ", ".join(sorted(VALID_CODEX_SANDBOXES))
+        raise ValueError(f"{CODEX_SANDBOX_OVERRIDE_ENV} must be one of: {allowed}")
+    return configured
+
+
 def _workspace_network_enabled() -> bool:
     """Whether workspace-write agents may reach the network (on by default).
 
@@ -662,6 +689,21 @@ def build_codex_exec_environment(target_project_dir: Path) -> dict[str, str]:
     if auth_mode == CODEX_AUTH_MODE_USER_CHATGPT:
         _apply_run_owner_codex_home(env, target_project_dir)
     if _uses_extension_binary_mode(env):
+        # The VS Code/Cursor extension binary authenticates with the editor's own global
+        # session and ignores the per-user auth.json — so a user_chatgpt worker would
+        # silently borrow your editor login and 401 the moment it logs out. Refuse it by
+        # default (set AGENTIC_CODEX_BINARY_MODE=auto|npm to use a standalone codex, or
+        # AGENTIC_CODEX_ALLOW_EXTENSION_BINARY=1 to override on a single-user dev box).
+        if auth_mode == CODEX_AUTH_MODE_USER_CHATGPT and (
+            os.getenv(AGENTIC_CODEX_ALLOW_EXTENSION_BINARY_ENV, "").strip() != "1"
+        ):
+            raise RuntimeError(
+                f"{CODEX_AUTH_MODE_ENV}=user_chatgpt requires a standalone Codex binary, but "
+                "the resolved binary is the VS Code/Cursor extension's codex, which ignores "
+                "the per-user auth.json and uses the editor's own session. Set "
+                f"{AGENTIC_CODEX_BINARY_MODE_ENV}=auto (install standalone codex) or "
+                f"{AGENTIC_CODEX_ALLOW_EXTENSION_BINARY_ENV}=1 to override."
+            )
         env.pop(CODEX_API_KEY_ENV, None)
     elif auth_mode == CODEX_AUTH_MODE_USER_CHATGPT:
         env.pop(CODEX_API_KEY_ENV, None)
@@ -676,25 +718,20 @@ def build_codex_exec_environment(target_project_dir: Path) -> dict[str, str]:
         )
     if not env.get(CODEX_API_KEY_ENV, "").strip():
         env.pop(CODEX_API_KEY_ENV, None)
+
+    # A present-but-empty override (e.g. `AGENTIC_CODEX_UV_CACHE_DIR=` in .env, which the
+    # comment documents as "empty -> default") must fall back to the default, not become an
+    # empty cache dir. `dict.get(k, default)` returns "" for an empty value, so coalesce.
+    def _override_or(key: str, default: str) -> str:
+        return (env.get(key) or "").strip() or default
+
     cache_root = Path(
-        env.get("AGENTIC_RUNTIME_CACHE_DIR", str(target_project_dir.parent / ".agentic-cache"))
+        _override_or("AGENTIC_RUNTIME_CACHE_DIR", str(target_project_dir.parent / ".agentic-cache"))
     )
-    env.setdefault(
-        "UV_CACHE_DIR",
-        env.get(CODEX_UV_CACHE_DIR_ENV, str(cache_root / "uv")),
-    )
-    env.setdefault(
-        "UV_PROJECT_ENVIRONMENT",
-        str(cache_root / "venv"),
-    )
-    env.setdefault(
-        "DENO_DIR",
-        env.get(CODEX_DENO_DIR_ENV, str(cache_root / "deno")),
-    )
-    env.setdefault(
-        "npm_config_cache",
-        env.get(CODEX_NPM_CACHE_ENV, str(cache_root / "npm")),
-    )
+    env.setdefault("UV_CACHE_DIR", _override_or(CODEX_UV_CACHE_DIR_ENV, str(cache_root / "uv")))
+    env.setdefault("UV_PROJECT_ENVIRONMENT", str(cache_root / "venv"))
+    env.setdefault("DENO_DIR", _override_or(CODEX_DENO_DIR_ENV, str(cache_root / "deno")))
+    env.setdefault("npm_config_cache", _override_or(CODEX_NPM_CACHE_ENV, str(cache_root / "npm")))
     _anchor_qa_browser_paths(env)
     return env
 
@@ -778,7 +815,6 @@ def _is_secret_runtime_env_key(key: str) -> bool:
 def _apply_run_owner_codex_home(env: dict[str, str], target_project_dir: Path) -> None:
     if env.get(CODEX_HOME_ENV, "").strip():
         return
-    run_dir = target_project_dir.parent
     try:
         from agentic_company.console.web.db import ConsoleRepository
         from agentic_company.integrations.codex.account_auth import codex_home_for_user
@@ -786,7 +822,14 @@ def _apply_run_owner_codex_home(env: dict[str, str], target_project_dir: Path) -
         return
     try:
         repo = ConsoleRepository()
-        run = repo.get_run_by_uid(run_dir.name)
+        # The run dir name is the run_uid. The target is the run dir itself for the
+        # head/coordinator executor, or <run_dir>/generated-project for worker agents — so
+        # probe the target and its parents (don't assume target.parent is the run dir).
+        run = None
+        for candidate in (target_project_dir, *target_project_dir.parents[:2]):
+            run = repo.get_run_by_uid(candidate.name)
+            if run is not None:
+                break
         if run is None:
             return
         project = repo.get_project(run.project_id)
@@ -862,11 +905,24 @@ def _prepend_repo_local_node_to_path(env: dict[str, str]) -> None:
     if node_bin_dir is None:
         return
 
-    path_key = "Path" if os.name == "nt" else "PATH"
-    existing_path = env.get(path_key) or env.get("PATH") or ""
-    path_parts = [part for part in existing_path.split(os.pathsep) if part]
-    if str(node_bin_dir) not in path_parts:
-        env[path_key] = os.pathsep.join([str(node_bin_dir), *path_parts])
+    # The launching shell may expose PATH as "Path" or "PATH" (Windows is case-insensitive,
+    # but a dict handed to the child process is not — two variants are ambiguous and the
+    # child may pick the one WITHOUT node). Collapse every case-variant into a single
+    # canonical key with the bundled node first, so the standalone codex.cmd (a node shim)
+    # always finds node regardless of which shell started the console.
+    path_keys = [key for key in env if key.lower() == "path"]
+    seen: set[str] = set()
+    parts: list[str] = []
+    for key in path_keys:
+        for part in env[key].split(os.pathsep):
+            if part and part not in seen:
+                seen.add(part)
+                parts.append(part)
+    for key in path_keys:
+        del env[key]
+    if str(node_bin_dir) not in parts:
+        parts.insert(0, str(node_bin_dir))
+    env["Path" if os.name == "nt" else "PATH"] = os.pathsep.join(parts)
 
 
 def _repo_local_node_bin_dir(repo_root: Path | None = None) -> Path | None:

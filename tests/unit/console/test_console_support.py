@@ -54,8 +54,6 @@ def test_env_persistence_mirrors_safe_key_metadata_when_run_exists(tmp_path, mon
         owner_user_id=user.id,
         name="Env",
         request_text="Build",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run_dir = tmp_path / "run"
     run = repo.create_run(
@@ -63,7 +61,6 @@ def test_env_persistence_mirrors_safe_key_metadata_when_run_exists(tmp_path, mon
         run_uid="run",
         run_dir=run_dir,
         status="running",
-        mode="simple_prototype",
         reasoning="medium",
     )
 

@@ -666,6 +666,37 @@ def test_team_lead_rejects_second_active_sprint_work_item_before_request(tmp_pat
     assert not (tmp_path / "run" / "team-lead" / "requests").exists()
 
 
+def test_team_lead_review_item_does_not_block_next_claim(tmp_path, monkeypatch):
+    # Regression for the F1<->QA deadlock: a 'review' item (implementation done, parked for
+    # QA) must NOT block claiming the next item. Only an actively in_progress item blocks.
+    repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
+    _add_work_item(repo, "QA-1", sprint_id="sprint-01", delivery_order=2)
+    record_work_item_transition(
+        ToolExecutionRecord(
+            run_id="run",
+            work_item_id="US-1",
+            sprint_id="sprint-01",
+            owner_agent="fullstack-agent",
+            tool_name="run_fullstack",
+            tool_call_id="run:fullstack:us-1",
+            attempt_id="1",
+            status="review",
+            activity_message="US-1 implementation done, parked for QA.",
+        )
+    )
+    toolbox = TeamLeadToolbox(
+        delivery_state=state,
+        sprint={"sprint_id": "sprint-01"},
+        workers=_team_lead_workers(),
+        max_steps=5,
+        history=[],
+    )
+
+    payload = json.loads(toolbox.run_qa("QA-1", reason="Validate the reviewed feature."))
+
+    assert payload["status"] != "work_item_precondition_failed"
+
+
 def test_team_lead_worker_without_correlated_response_blocks_work_item(tmp_path, monkeypatch):
     _repo, _run, state = _setup_runtime(tmp_path, monkeypatch)
     toolbox = TeamLeadToolbox(
@@ -912,8 +943,6 @@ def _setup_runtime(tmp_path, monkeypatch):
         owner_user_id=user.id,
         name="Runtime",
         request_text="Runtime",
-        mode="internal_tool",
-        complexity="simple",
         status="running",
     )
     run = repo.create_run(
@@ -921,7 +950,6 @@ def _setup_runtime(tmp_path, monkeypatch):
         run_uid="run",
         run_dir=run_dir,
         status="running",
-        mode="internal_tool",
         reasoning="medium",
     )
     materialize_planning_items("run")

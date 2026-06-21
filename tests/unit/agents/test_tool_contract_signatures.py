@@ -94,15 +94,12 @@ def test_agent_executor_feedback_artifacts_are_registered_in_db(tmp_path: Path, 
         owner_user_id=user.id,
         name="Feedback",
         request_text="Build",
-        mode="simple_prototype",
-        complexity="simple",
     )
     run = repo.create_run(
         project_id=project.id,
         run_uid="run",
         run_dir=run_dir,
         status="running",
-        mode="simple_prototype",
         reasoning="medium",
     )
     materialize_planning_items("run")

@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 from agentic_company.integrations.codex import (
-    DEFAULT_CODEX_SANDBOX,
     build_codex_exec_command,
     stream_codex_exec_to_log,
     write_structured_codex_artifacts,
@@ -50,7 +49,8 @@ class QualityCodexRunner:
     """
 
     codex_binary: str | None = None
-    sandbox: str = DEFAULT_CODEX_SANDBOX
+    # QA runs browser smoke + may merge the PR via the git-pr-workflow skill — full host access.
+    sandbox: str = "danger-full-access"
     timeout_seconds: int = 3600
     contract_attempts: int = 2
     command_executor: CommandExecutor | None = None

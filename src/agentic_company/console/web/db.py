@@ -64,8 +64,6 @@ class Project:
     id: int
     owner_user_id: int | None
     name: str
-    mode: str
-    complexity: str
     status: str
     visibility: str
     created_at: str
@@ -84,14 +82,12 @@ class Run:
     run_dir: str
     target_project_dir: str
     status: str
-    mode: str
     reasoning: str
     generated_app_url: str
     created_at: str
     updated_at: str
     run_mode: str = ""
     risk_mode: str = "assisted"
-    team_preset: str = "standard"
     pause_reason: str = ""
     paused_at: str = ""
 
@@ -484,8 +480,6 @@ class ConsoleRepository:
         owner_user_id: int,
         name: str,
         request_text: str,
-        mode: str,
-        complexity: str,
         status: str = "starting",
     ) -> Project:
         now = utc_now()
@@ -493,17 +487,15 @@ class ConsoleRepository:
             cursor = conn.execute(
                 """
                 INSERT INTO projects (
-                    owner_user_id, name, request_text, mode, complexity,
+                    owner_user_id, name, request_text,
                     status, visibility, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 'private', ?, ?)
+                VALUES (?, ?, ?, ?, 'private', ?, ?)
                 """,
                 (
                     owner_user_id,
                     name.strip(),
                     request_text.strip(),
-                    mode,
-                    complexity,
                     status,
                     now,
                     now,
@@ -555,21 +547,19 @@ class ConsoleRepository:
         run_dir: Path,
         target_project_dir: Path | str | None = None,
         status: str,
-        mode: str,
         reasoning: str,
         run_mode: str = "",
         risk_mode: str = "assisted",
-        team_preset: str = "standard",
     ) -> Run:
         now = utc_now()
         with self.connect() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO runs (
-                    project_id, run_uid, run_dir, target_project_dir, status, mode, reasoning,
-                    run_mode, risk_mode, team_preset, created_at, updated_at
+                    project_id, run_uid, run_dir, target_project_dir, status, reasoning,
+                    run_mode, risk_mode, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_id,
@@ -577,11 +567,9 @@ class ConsoleRepository:
                     str(run_dir),
                     str(target_project_dir or (run_dir / "generated-project")),
                     status,
-                    mode,
                     reasoning,
                     run_mode,
                     risk_mode,
-                    team_preset,
                     now,
                     now,
                 ),
@@ -2267,11 +2255,10 @@ class ConsoleRepository:
                 cursor = conn.execute(
                     """
                     INSERT INTO projects (
-                        owner_user_id, name, request_text, mode, complexity,
+                        owner_user_id, name, request_text,
                         status, visibility, created_at, updated_at
                     )
-                    VALUES (NULL, ?, '', 'public_demo', 'medium',
-                            'demo_ready', 'public_demo', ?, ?)
+                    VALUES (NULL, ?, '', 'demo_ready', 'public_demo', ?, ?)
                     """,
                     (name, now, now),
                 )
@@ -2288,10 +2275,10 @@ class ConsoleRepository:
                 conn.execute(
                     """
                     INSERT INTO runs (
-                        project_id, run_uid, run_dir, status, mode, reasoning,
+                        project_id, run_uid, run_dir, status, reasoning,
                         created_at, updated_at
                     )
-                    VALUES (?, ?, ?, 'demo_ready', 'public_demo', 'medium', ?, ?)
+                    VALUES (?, ?, ?, 'demo_ready', 'medium', ?, ?)
                     """,
                     (project_id, run_path.name, str(run_path), now, now),
                 )
@@ -2322,8 +2309,6 @@ def _project(row: Any) -> Project:
         id=int(row["id"]),
         owner_user_id=int(row["owner_user_id"]) if row["owner_user_id"] is not None else None,
         name=str(row["name"]),
-        mode=str(row["mode"]),
-        complexity=str(row["complexity"]),
         status=str(row["status"]),
         visibility=str(row["visibility"]),
         created_at=str(row["created_at"]),
@@ -2343,14 +2328,12 @@ def _run(row: Any) -> Run:
         run_dir=str(row["run_dir"]),
         target_project_dir=str(row["target_project_dir"] or ""),
         status=str(row["status"]),
-        mode=str(row["mode"]),
         reasoning=str(row["reasoning"]),
         generated_app_url=str(row["generated_app_url"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
         run_mode=str(row["run_mode"] if "run_mode" in row.keys() else ""),
         risk_mode=str(row["risk_mode"] if "risk_mode" in row.keys() else "assisted"),
-        team_preset=str(row["team_preset"] if "team_preset" in row.keys() else "standard"),
         pause_reason=str(row["pause_reason"] if "pause_reason" in row.keys() else ""),
         paused_at=str(row["paused_at"] if "paused_at" in row.keys() else ""),
     )

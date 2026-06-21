@@ -85,16 +85,16 @@ def _gh_check() -> Check:
 
 
 def _codex_auth_check() -> Check:
-    mode = os.getenv("AGENTIC_CODEX_AUTH_MODE", "api_key").strip().lower()
+    mode = os.getenv("AGENTIC_CODEX_AUTH_MODE", "user_chatgpt").strip().lower()
     if mode in {"chatgpt_service", "user_chatgpt"}:
-        home = (
-            os.getenv("CODEX_HOME", "").strip() or os.getenv("AGENTIC_CODEX_AUTH_ROOT", "").strip()
-        )
+        auth_root = os.getenv("AGENTIC_CODEX_AUTH_ROOT", "").strip()
         return Check(
             "Codex auth (chatgpt)",
-            bool(home),
+            bool(auth_root),
             True,
-            "CODEX_HOME set" if home else "CODEX_HOME / auth root not set for chatgpt auth",
+            "AGENTIC_CODEX_AUTH_ROOT set"
+            if auth_root
+            else "AGENTIC_CODEX_AUTH_ROOT is not set for chatgpt auth",
         )
     ok = bool(os.getenv("CODEX_API_KEY", "").strip())
     return Check(

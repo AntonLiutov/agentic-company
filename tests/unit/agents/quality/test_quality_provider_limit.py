@@ -80,8 +80,6 @@ def _setup_run(run_dir, monkeypatch):
         owner_user_id=user.id,
         name="QA",
         request_text="QA",
-        mode="internal_tool",
-        complexity="simple",
         status="running",
     )
     repo.create_run(
@@ -89,7 +87,6 @@ def _setup_run(run_dir, monkeypatch):
         run_uid="run",
         run_dir=run_dir,
         status="running",
-        mode="internal_tool",
         reasoning="medium",
     )
     materialize_planning_items("run")

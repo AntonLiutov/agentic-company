@@ -945,7 +945,11 @@ def _claim_work_item_for_execution_conn(
         WHERE run_id = ?
           AND sprint_id = ?
           AND work_item_id <> ?
-          AND (active = 1 OR status IN ('in_progress', 'review'))
+          -- Block only on an item that is ACTIVELY executing (in_progress). A 'review'
+          -- item is implementation-complete and parked for QA — it must NOT block its own
+          -- QA item (that deadlocked F1<->QA). The stale `active` flag is not the truth here;
+          -- in_progress is. Serial execution is still guaranteed (one in_progress at a time).
+          AND status = 'in_progress'
         ORDER BY delivery_order, work_item_id
         LIMIT 1
         """,

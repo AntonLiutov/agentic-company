@@ -7,8 +7,7 @@
       <h2>{{ project.name }}</h2>
       <div class="compact-meta">
         <span>{{ "Showcase" if project.visibility == "public_demo" else "Private" }}</span>
-        <span>{{ project.mode|project_type_label }}</span>
-        <span>{{ project.complexity|scope_size_label }}</span>
+        {% if run and run.run_mode %}<span>{{ run.run_mode|title }}</span>{% endif %}
         {% if run_timing.started_at %}
           <span class="duration-pill" data-duration-start="{{ run_timing.started_at }}" data-duration-end="{{ run_timing.completed_at }}">{{ run_timing.elapsed_label }}</span>
         {% endif %}

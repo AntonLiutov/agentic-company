@@ -77,8 +77,6 @@ def test_db_artifact_registration_requires_existing_run_file(tmp_path: Path, mon
         owner_user_id=user.id,
         name="Artifacts",
         request_text="Artifacts",
-        mode="internal_tool",
-        complexity="simple",
         status="running",
     )
     run = repo.create_run(
@@ -86,7 +84,6 @@ def test_db_artifact_registration_requires_existing_run_file(tmp_path: Path, mon
         run_uid="run",
         run_dir=run_dir,
         status="running",
-        mode="internal_tool",
         reasoning="medium",
     )
     materialize_planning_items("run")
@@ -130,8 +127,6 @@ def test_artifact_links_accept_absolute_run_local_refs(tmp_path: Path, monkeypat
         owner_user_id=user.id,
         name="Artifacts",
         request_text="Artifacts",
-        mode="internal_tool",
-        complexity="simple",
         status="running",
     )
     repo.create_run(
@@ -139,7 +134,6 @@ def test_artifact_links_accept_absolute_run_local_refs(tmp_path: Path, monkeypat
         run_uid="run",
         run_dir=run_dir,
         status="running",
-        mode="internal_tool",
         reasoning="medium",
     )
 
@@ -165,8 +159,6 @@ def test_db_artifact_registration_rejects_files_outside_run(tmp_path: Path, monk
         owner_user_id=user.id,
         name="Artifacts",
         request_text="Artifacts",
-        mode="internal_tool",
-        complexity="simple",
         status="running",
     )
     run = repo.create_run(
@@ -174,7 +166,6 @@ def test_db_artifact_registration_rejects_files_outside_run(tmp_path: Path, monk
         run_uid="run",
         run_dir=run_dir,
         status="running",
-        mode="internal_tool",
         reasoning="medium",
     )
     materialize_planning_items("run")
@@ -219,8 +210,6 @@ def test_implementation_source_artifact_content_is_stored_in_db(tmp_path: Path, 
         owner_user_id=user.id,
         name="Implementation artifacts",
         request_text="Artifacts",
-        mode="internal_tool",
-        complexity="simple",
         status="running",
     )
     run = repo.create_run(
@@ -228,7 +217,6 @@ def test_implementation_source_artifact_content_is_stored_in_db(tmp_path: Path, 
         run_uid="run",
         run_dir=run_dir,
         status="running",
-        mode="internal_tool",
         reasoning="medium",
     )
     materialize_planning_items("run")

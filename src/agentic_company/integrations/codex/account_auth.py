@@ -27,10 +27,14 @@ class CodexLoginStatus:
 
 
 def codex_auth_root() -> Path:
+    # MUST be absolute: we pass this as CODEX_HOME *and* as the subprocess cwd, and codex
+    # resolves a relative CODEX_HOME against that cwd — doubling the path (".../users/3/
+    # .../users/3") so it "does not exist" and `codex login` dies before printing its URL.
+    # Resolve here so a relative AGENTIC_CODEX_AUTH_ROOT (e.g. "data/codex-auth") is safe.
     configured = os.getenv(CODEX_AUTH_ROOT_ENV, "").strip()
     if configured:
-        return Path(configured)
-    return Path.cwd() / "data" / "codex-auth"
+        return Path(configured).resolve()
+    return (Path.cwd() / "data" / "codex-auth").resolve()
 
 
 def codex_home_for_user(user_id: int) -> Path:
@@ -97,7 +101,6 @@ def start_codex_login(user_id: int, *, device: bool) -> dict[str, str]:
         "message": "Opening your browser to sign in to Codex…"
         if not device
         else "Starting sign-in…",
-        "output": "",
         "flow": "device" if device else "browser",
         "auth_url": "",
         "user_code": "",
@@ -137,11 +140,11 @@ def start_codex_device_login(user_id: int) -> dict[str, str]:
 def codex_device_login_state(user_id: int) -> dict[str, str]:
     state_path = codex_home_for_user(user_id) / DEVICE_LOGIN_STATE
     if not state_path.exists():
-        return {"status": "idle", "message": "No Codex login in progress.", "output": ""}
+        return {"status": "idle", "message": "No Codex login in progress."}
     try:
         payload = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"status": "unknown", "message": "Could not read Codex login state.", "output": ""}
+        return {"status": "unknown", "message": "Could not read Codex login state."}
     return {str(key): str(value) for key, value in payload.items()}
 
 
@@ -183,12 +186,12 @@ def _login_message(flow: str, status: str, parsed: dict[str, str]) -> str:
     if status == "completed":
         return "Codex is connected."
     if status == "failed":
-        return "Sign-in didn't complete — click Connect Codex to try again."
+        return "Sign-in did not complete. Try again."
     if flow == "device":
         if parsed["user_code"]:
-            return "Open the OpenAI link and enter the code to finish signing in."
+            return "Enter the code to finish signing in."
         return "Starting sign-in…"
-    return "Your browser should have opened — finish signing in there."
+    return "Finish sign-in in your browser."
 
 
 def _write_device_state(state_path: Path, status: str, output_parts: list[str]) -> None:
@@ -203,7 +206,6 @@ def _write_device_state(state_path: Path, status: str, output_parts: list[str]) 
         "status": status,
         "flow": flow,
         "message": _login_message(flow, status, parsed),
-        "output": output,
         "auth_url": parsed["auth_url"],
         "user_code": parsed["user_code"],
     }
@@ -233,6 +235,15 @@ def _codex_auth_env(codex_home: Path) -> dict[str, str]:
         }
     }
     allowed[CODEX_HOME_ENV] = str(codex_home)
+    # The standalone codex is a Node shim (codex.cmd) — without the bundled node on PATH it
+    # fails before opening the browser ("'node' is not recognized"). Mirror the worker env so
+    # console-side `codex login` / `login status` find node too.
+    try:
+        from agentic_company.integrations.codex.runner import _prepend_repo_local_node_to_path
+
+        _prepend_repo_local_node_to_path(allowed)
+    except Exception:
+        pass
     return allowed
 
 

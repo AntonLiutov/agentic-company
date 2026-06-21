@@ -284,6 +284,10 @@ function setupFormatButtons() {
       if (!target || !preview) return;
       const formData = new FormData();
       formData.append("text", target.value);
+      const providerSelect = document.querySelector("[name='agent_provider']");
+      const modelSelect = document.querySelector("[name='agent_model']");
+      if (providerSelect) formData.append("agent_provider", providerSelect.value);
+      if (modelSelect) formData.append("agent_model", modelSelect.value);
       button.textContent = "Formatting...";
       try {
         const response = await fetch("/api/format-request", { method: "POST", body: formData });
@@ -291,8 +295,8 @@ function setupFormatButtons() {
         preview.classList.remove("hidden");
         if (!payload.ok) {
           preview.innerHTML = `
-            <h3>Format with Gemini</h3>
-            <p class="alert">${escapeHtml(payload.message || "Gemini formatting is unavailable right now. Your text was not changed.")}</p>
+            <h3>Format with AI</h3>
+            <p class="alert">${escapeHtml(payload.message || "AI formatting is unavailable right now. Your text was not changed.")}</p>
             <button class="secondary" type="button" id="keep-editing">Keep editing</button>
           `;
           byId("keep-editing").addEventListener("click", () => {
@@ -324,8 +328,8 @@ function setupFormatButtons() {
       } catch (_) {
         preview.classList.remove("hidden");
         preview.innerHTML = `
-          <h3>Format with Gemini</h3>
-          <p class="alert">Sorry, Gemini formatting is not reachable right now. Your text was not changed.</p>
+          <h3>Format with AI</h3>
+          <p class="alert">Sorry, AI formatting is not reachable right now. Your text was not changed.</p>
           <button class="secondary" type="button" id="keep-editing">Keep editing</button>
         `;
         byId("keep-editing").addEventListener("click", () => {

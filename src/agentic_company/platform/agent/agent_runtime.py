@@ -181,9 +181,9 @@ class LangChainCreateAgentRuntime:
         api_key = _agent_provider_api_key(provider, request.delivery_state)
         if not api_key:
             provider_label = "Gemini" if provider == "google_gemini" else "OpenAI"
-            required_key = "GOOGLE_API_KEY" if provider == "google_gemini" else "OPENAI_API_KEY"
             raise MissingAgentRuntimeConfig(
-                f"{required_key} is required for {request.agent_id} {provider_label} decisions."
+                f"{provider_label} is not connected in Settings for "
+                f"{request.agent_id} decisions."
             )
 
         model_name = _first_env_value(request.model_env_keys, request.delivery_state)
@@ -1023,14 +1023,7 @@ def _agent_llm_provider(delivery_state: DeliveryState) -> str:
 
 
 def _agent_provider_api_key(provider: str, delivery_state: DeliveryState) -> str:
-    stored = _web_run_provider_api_key(provider, delivery_state)
-    if stored:
-        return stored
-    if provider == "google_gemini":
-        return agent_env_value("GOOGLE_API_KEY", delivery_state) or agent_env_value(
-            "GEMINI_API_KEY", delivery_state
-        )
-    return agent_env_value("OPENAI_API_KEY", delivery_state)
+    return _web_run_provider_api_key(provider, delivery_state)
 
 
 def _web_run_provider_api_key(provider: str, delivery_state: DeliveryState) -> str:

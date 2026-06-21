@@ -16,8 +16,6 @@
     .gh-btn { display: inline-flex; align-items: center; background: #24292f; color: #fff; font-weight: 600; font-size: 13px; padding: 7px 14px; border-radius: 7px; text-decoration: none; white-space: nowrap; }
     .codex-signin .conn-status { flex-direction: column; align-items: flex-start; gap: 9px; white-space: normal; overflow: visible; }
     .codex-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1.5rem; font-weight: 700; letter-spacing: 0.18em; padding: 7px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--fg); user-select: all; }
-    .codex-signin details { font-size: 0.78rem; color: var(--muted); }
-    .codex-signin pre { white-space: pre-wrap; word-break: break-all; }
     @media (max-width: 640px) { .conn-row { flex-wrap: wrap; } .conn-name { width: auto; } }
   </style>
   {% if key_error %}
@@ -46,7 +44,7 @@
         <form class="conn-action" method="post" action="/settings/gemini/delete"><button class="danger" type="submit">Delete</button></form>
         {% else %}
         <form class="conn-form" method="post" action="/settings/gemini">
-          <input name="api_key" type="password" autocomplete="off" placeholder="Paste Gemini key (AIza…){{ ' — platform key active' if platform_gemini_configured else '' }}">
+          <input name="api_key" type="password" autocomplete="off" placeholder="Paste Gemini key (AIza…)">
           <button class="primary" type="submit">Save</button>
         </form>
         {% endif %}
@@ -58,7 +56,7 @@
           {% if github_connected %}
           <form method="post" action="/auth/github/disconnect" style="margin:0;"><button class="danger" type="submit">Disconnect</button></form>
           {% elif github_configured %}
-          <a class="gh-btn" href="/auth/github/login?next=/settings">Login with GitHub</a>
+          <a class="button primary" href="/auth/github/login?next=/settings">Login with GitHub</a>
           {% endif %}
         </span>
       </div>
@@ -73,7 +71,17 @@
             {%- elif _mode in ("apikey", "api_key") %} API key
             {%- else %} {{ _mode }}{% endif %}
           {% elif codex_auth and codex_auth.status == "pending" %}
-            Signing in…{% if codex_device_login.message %} {{ codex_device_login.message }}{% endif %}
+            {% if codex_device_login.status == "failed" %}
+              Sign-in did not complete. Try again.
+            {% elif codex_device_login.status == "completed" %}
+              Checking Codex sign-in…
+            {% elif codex_device_login.user_code %}
+              Enter the code below to finish signing in.
+            {% elif codex_device_login.auth_url %}
+              Finish sign-in in your browser.
+            {% else %}
+              Opening Codex sign-in…
+            {% endif %}
           {% elif codex_auth and codex_auth.status == "needs_relogin" %}
             Needs re-login
           {% elif codex_auth and codex_auth.status == "error" %}
@@ -84,31 +92,29 @@
         </span>
         <span class="conn-action">
           {% if codex_auth and codex_auth.status == "connected" %}
-          <form method="post" action="/auth/codex/check" style="margin:0;"><button type="submit">Check</button></form>
           <form method="post" action="/auth/codex/disconnect" style="margin:0;"><button class="danger" type="submit">Disconnect</button></form>
+          {% elif codex_auth and codex_auth.status == "pending" %}
+          {% if codex_device_login.auth_url and not codex_device_login.user_code and codex_device_login.status != "failed" %}
+          <a class="gh-btn" href="{{ codex_device_login.auth_url }}" target="_blank" rel="noopener">Open sign-in ↗</a>
+          {% endif %}
+          <form method="post" action="/auth/codex/connect" style="margin:0;"><button type="submit">Try again</button></form>
           {% else %}
           <form method="post" action="/auth/codex/connect" style="margin:0;"><button class="primary" type="submit">Connect Codex</button></form>
-          <form method="post" action="/auth/codex/check" style="margin:0;"><button type="submit">Check</button></form>
           {% endif %}
         </span>
       </div>
-      {% if codex_auth and codex_auth.status == "pending" %}
+      {% if codex_auth and codex_auth.status == "pending" and codex_device_login.user_code and codex_device_login.status != "failed" %}
       <div class="conn-row codex-signin">
         <span class="conn-name">Sign in</span>
         <div class="conn-status">
-          {% if codex_device_login.user_code %}
-          <div>1. Open OpenAI and enter this code:</div>
+          <div>Open OpenAI and enter this code:</div>
           <div class="codex-code">{{ codex_device_login.user_code }}</div>
-          {% endif %}
           {% if codex_device_login.auth_url %}
           <a class="gh-btn" href="{{ codex_device_login.auth_url }}" target="_blank" rel="noopener">
-            {% if codex_device_login.user_code %}Open OpenAI to authorize ↗{% else %}Sign in to Codex ↗{% endif %}
+            Open OpenAI to authorize ↗
           </a>
           {% else %}
-          <span>Opening your browser…</span>
-          {% endif %}
-          {% if codex_device_login.output %}
-          <details><summary>Details</summary><pre>{{ codex_device_login.output }}</pre></details>
+          <span>Use the code above to finish sign-in.</span>
           {% endif %}
         </div>
       </div>

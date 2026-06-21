@@ -181,8 +181,6 @@ def _create_run(tmp_path: Path, monkeypatch, run_dir: Path, run_uid: str) -> Non
         owner_user_id=user.id,
         name="Status",
         request_text="Status",
-        mode="internal_tool",
-        complexity="simple",
         status="running",
     )
     repo.create_run(
@@ -190,6 +188,5 @@ def _create_run(tmp_path: Path, monkeypatch, run_dir: Path, run_uid: str) -> Non
         run_uid=run_uid,
         run_dir=run_dir,
         status="running",
-        mode="internal_tool",
         reasoning="medium",
     )

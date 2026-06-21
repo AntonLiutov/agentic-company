@@ -291,8 +291,6 @@ def _create_run(
         owner_user_id=user.id,
         name="Runtime",
         request_text="Runtime",
-        mode="internal_tool",
-        complexity="simple",
         status="running",
     )
     repo.create_run(
@@ -301,6 +299,5 @@ def _create_run(
         run_dir=run_dir,
         target_project_dir=target_project_dir or run_dir / "generated-project",
         status="running",
-        mode="internal_tool",
         reasoning="medium",
     )
