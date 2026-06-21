@@ -446,6 +446,30 @@ def test_codex_preflight_requires_auth_json_on_disk(tmp_path, monkeypatch):
     assert _codex_start_preflight(repo, user) == ""
 
 
+def test_pending_codex_login_auto_connects_when_auth_json_appears(tmp_path, monkeypatch):
+    import agentic_company.console.web.app as app_mod
+    from agentic_company.console.web.app import _reconcile_pending_codex_login
+
+    repo = ConsoleRepository()
+    repo.init_schema()
+    user = repo.create_user(email="cx@example.test", username="cx", password="password-1")
+    repo.upsert_codex_auth_connection(
+        user.id, auth_slot=f"user:{user.id}", status="pending", auth_mode="chatgpt"
+    )
+    home = tmp_path / "cxhome"
+    home.mkdir()
+    monkeypatch.setattr(app_mod.codex_account_auth, "codex_home_for_user", lambda uid: home)
+
+    # login still in progress (no auth.json) -> stays pending
+    _reconcile_pending_codex_login(repo, user)
+    assert repo.get_codex_auth_connection(user.id).status == "pending"
+
+    # browser login finished (auth.json written) -> auto-connected, no manual Check
+    (home / "auth.json").write_text("{}", encoding="utf-8")
+    _reconcile_pending_codex_login(repo, user)
+    assert repo.get_codex_auth_connection(user.id).status == "connected"
+
+
 def test_create_project_requires_codex_connection_in_user_chatgpt_mode(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTIC_CODEX_AUTH_MODE", "user_chatgpt")
     repo = ConsoleRepository()

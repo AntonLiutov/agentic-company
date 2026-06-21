@@ -666,6 +666,7 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page(request: Request, user: CurrentUser, key_error: str = "") -> HTMLResponse:
         repo = get_repo(request)
+        _reconcile_pending_codex_login(repo, user)
         credential = repo.get_provider_secret(user.id, "openai")
         gemini_credential = repo.get_provider_secret(user.id, "google_gemini")
         return render(
@@ -1357,6 +1358,22 @@ def _sync_canonical_run_completion(
 
     if run.status and project.status != run.status:
         repo.update_project_status(project.id, run.status)
+
+
+def _reconcile_pending_codex_login(repo: ConsoleRepository, user: User) -> None:
+    """Flip a pending Codex connection to connected once the login finished, without a
+    manual Check: a successful ``codex login`` (browser or device) writes ``auth.json``.
+    Called on the Settings render so the browser flow lands as 'connected' on its own."""
+    conn = repo.get_codex_auth_connection(user.id)
+    if conn is None or conn.status != "pending":
+        return
+    if (codex_account_auth.codex_home_for_user(user.id) / "auth.json").exists():
+        repo.upsert_codex_auth_connection(
+            user.id,
+            auth_slot=f"user:{user.id}",
+            status="connected",
+            auth_mode="chatgpt",
+        )
 
 
 def _gate_or_start_run(
