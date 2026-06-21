@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -95,9 +96,11 @@ def start_codex_login(user_id: int, *, device: bool) -> dict[str, str]:
         "status": "started",
         "message": "Opening your browser to sign in to Codex…"
         if not device
-        else "Codex device login started.",
+        else "Starting sign-in…",
         "output": "",
         "flow": "device" if device else "browser",
+        "auth_url": "",
+        "user_code": "",
     }
     state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
     _chmod_best_effort(state_path, 0o600)
@@ -152,16 +155,60 @@ def _capture_device_login(process: subprocess.Popen[str], state_path: Path) -> N
     _write_device_state(state_path, "completed" if code == 0 else "failed", output_parts)
 
 
+_URL_RE = re.compile(r"https://\S+")
+# Device user codes look like ABCD-1234 (4+4 upper/digit). Tight enough to never match a
+# fragment of the browser-flow oauth/authorize URL (its code_challenge/state are mixed-case).
+_USER_CODE_RE = re.compile(r"\b[A-Z0-9]{4}-[A-Z0-9]{4}\b")
+
+
+def _parse_login_output(output: str) -> dict[str, str]:
+    """Pull the human-usable bits out of raw ``codex login`` output.
+
+    The raw CLI text is unfit for a friend on the web console: a giant query-string URL,
+    "navigate to this URL", "use codex login --device-auth". We extract only what a person
+    needs — the page to open and (device flow) the short code to type — so the template can
+    render a clean button + code box instead of dumping the terminal.
+    """
+    code_match = _USER_CODE_RE.search(output)
+    user_code = code_match.group(0) if code_match else ""
+    urls = [u.rstrip(".,)") for u in _URL_RE.findall(output)]
+    # Prefer the short human verification page (…/device, …/activate) over the long
+    # oauth/authorize callback URL; fall back to the first https URL we saw.
+    verification = next((u for u in urls if "/device" in u or "/activate" in u), "")
+    auth_url = verification or (urls[0] if urls else "")
+    return {"auth_url": auth_url, "user_code": user_code}
+
+
+def _login_message(flow: str, status: str, parsed: dict[str, str]) -> str:
+    if status == "completed":
+        return "Codex is connected."
+    if status == "failed":
+        return "Sign-in didn't complete — click Connect Codex to try again."
+    if flow == "device":
+        if parsed["user_code"]:
+            return "Open the OpenAI link and enter the code to finish signing in."
+        return "Starting sign-in…"
+    return "Your browser should have opened — finish signing in there."
+
+
 def _write_device_state(state_path: Path, status: str, output_parts: list[str]) -> None:
+    output = "\n".join(output_parts)
+    parsed = _parse_login_output(output)
+    try:
+        existing = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        existing = {}
+    flow = str(existing.get("flow", ""))
     payload = {
         "status": status,
-        "message": "Codex device login is running."
-        if status == "running"
-        else "Codex device login finished."
-        if status == "completed"
-        else "Codex device login failed.",
-        "output": "\n".join(output_parts),
+        "flow": flow,
+        "message": _login_message(flow, status, parsed),
+        "output": output,
+        "auth_url": parsed["auth_url"],
+        "user_code": parsed["user_code"],
     }
+    if existing.get("pid"):
+        payload["pid"] = existing["pid"]
     state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 

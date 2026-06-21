@@ -14,6 +14,10 @@
     .ok-dot { width: 7px; height: 7px; border-radius: 999px; background: #3fb950; flex: none; }
     .info-i { cursor: help; color: var(--muted); font-size: 0.66rem; font-weight: 600; border: 1px solid var(--border); border-radius: 999px; width: 0.92rem; height: 0.92rem; display: inline-flex; align-items: center; justify-content: center; }
     .gh-btn { display: inline-flex; align-items: center; background: #24292f; color: #fff; font-weight: 600; font-size: 13px; padding: 7px 14px; border-radius: 7px; text-decoration: none; white-space: nowrap; }
+    .codex-signin .conn-status { flex-direction: column; align-items: flex-start; gap: 9px; white-space: normal; overflow: visible; }
+    .codex-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1.5rem; font-weight: 700; letter-spacing: 0.18em; padding: 7px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--fg); user-select: all; }
+    .codex-signin details { font-size: 0.78rem; color: var(--muted); }
+    .codex-signin pre { white-space: pre-wrap; word-break: break-all; }
     @media (max-width: 640px) { .conn-row { flex-wrap: wrap; } .conn-name { width: auto; } }
   </style>
   {% if key_error %}
@@ -84,10 +88,25 @@
           {% endif %}
         </span>
       </div>
-      {% if codex_device_login.output %}
-      <div class="conn-row">
-        <span class="conn-name">Device</span>
-        <pre class="conn-status" style="white-space:pre-wrap;">{{ codex_device_login.output }}</pre>
+      {% if codex_auth and codex_auth.status == "pending" %}
+      <div class="conn-row codex-signin">
+        <span class="conn-name">Sign in</span>
+        <div class="conn-status">
+          {% if codex_device_login.user_code %}
+          <div>1. Open OpenAI and enter this code:</div>
+          <div class="codex-code">{{ codex_device_login.user_code }}</div>
+          {% endif %}
+          {% if codex_device_login.auth_url %}
+          <a class="gh-btn" href="{{ codex_device_login.auth_url }}" target="_blank" rel="noopener">
+            {% if codex_device_login.user_code %}Open OpenAI to authorize ↗{% else %}Sign in to Codex ↗{% endif %}
+          </a>
+          {% else %}
+          <span>Opening your browser…</span>
+          {% endif %}
+          {% if codex_device_login.output %}
+          <details><summary>Details</summary><pre>{{ codex_device_login.output }}</pre></details>
+          {% endif %}
+        </div>
       </div>
       {% endif %}
     </div>

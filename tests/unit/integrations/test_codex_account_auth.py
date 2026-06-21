@@ -67,6 +67,53 @@ def test_device_login_state_reads_output_without_tokens(monkeypatch, tmp_path):
     assert "token" not in json.dumps(state).lower()
 
 
+def test_parse_login_output_extracts_device_url_and_code():
+    out = (
+        "Welcome to Codex.\n"
+        "To sign in, open https://auth.openai.com/codex/device\n"
+        "and enter the code WXYZ-1234 to authorize this device.\n"
+    )
+    parsed = account_auth._parse_login_output(out)
+    assert parsed["auth_url"] == "https://auth.openai.com/codex/device"
+    assert parsed["user_code"] == "WXYZ-1234"
+
+
+def test_parse_login_output_browser_flow_uses_authorize_url_no_code():
+    # The clunky raw browser-flow dump the user pasted: a localhost server line + a giant
+    # oauth/authorize URL. We surface the authorize URL as a button and find no device code.
+    out = (
+        "Starting local login server on http://localhost:1455.\n"
+        "If your browser did not open, navigate to this URL to authenticate:\n"
+        "https://auth.openai.com/oauth/authorize?response_type=code"
+        "&client_id=app_EMoamEEZ73f0CkXaXp7hrann"
+        "&code_challenge=fmow3WY-0frYFMPVohqpg1J5J9-uPitF4bUGc8ZpzsM\n"
+        "On a remote or headless machine? Use `codex login --device-auth` instead.\n"
+    )
+    parsed = account_auth._parse_login_output(out)
+    assert parsed["auth_url"].startswith("https://auth.openai.com/oauth/authorize")
+    assert "localhost" not in parsed["auth_url"]
+    assert parsed["user_code"] == ""
+
+
+def test_device_login_capture_writes_clean_url_and_code(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_ROOT", str(tmp_path / "auth-root"))
+    home = account_auth.ensure_codex_home_for_user(8)
+    state_path = home / account_auth.DEVICE_LOGIN_STATE
+    # seed the flow marker that start_codex_login would have written
+    state_path.write_text(json.dumps({"flow": "device", "pid": "999"}), encoding="utf-8")
+
+    account_auth._write_device_state(
+        state_path,
+        "running",
+        ["Open https://auth.openai.com/codex/device", "Code: ABCD-9999"],
+    )
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    assert payload["auth_url"] == "https://auth.openai.com/codex/device"
+    assert payload["user_code"] == "ABCD-9999"
+    assert payload["flow"] == "device"  # preserved across rewrites
+    assert payload["pid"] == "999"
+
+
 def test_start_codex_login_picks_browser_or_device_flow(monkeypatch, tmp_path):
     # local host -> `codex login` browser OAuth (VS Code-style, no code typing);
     # headless host -> `codex login --device-auth` (the device-code fallback).
