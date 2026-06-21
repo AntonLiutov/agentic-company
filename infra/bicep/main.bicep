@@ -4,6 +4,8 @@
 @description('Environment short name: dev | staging | prod')
 param env string
 param location string = resourceGroup().location
+@description('Postgres region — eastus is offer-restricted on PAYG subscriptions; eastus2 works.')
+param dbLocation string = 'eastus2'
 @description('Object (principal) id of the VM system-assigned managed identity')
 param vmPrincipalId string
 @description('VM public IP to allow through the Postgres firewall')
@@ -33,7 +35,7 @@ module keyvault 'modules/keyvault.bicep' = {
 module postgres 'modules/postgres.bicep' = {
   name: 'postgres-${env}'
   params: {
-    location: location
+    location: dbLocation
     serverName: pgServerName
     administratorPassword: dbAdminPassword
     allowedIp: vmPublicIp
