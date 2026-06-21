@@ -182,8 +182,7 @@ class LangChainCreateAgentRuntime:
         if not api_key:
             provider_label = "Gemini" if provider == "google_gemini" else "OpenAI"
             raise MissingAgentRuntimeConfig(
-                f"{provider_label} is not connected in Settings for "
-                f"{request.agent_id} decisions."
+                f"{provider_label} is not connected in Settings for {request.agent_id} decisions."
             )
 
         model_name = _first_env_value(request.model_env_keys, request.delivery_state)
