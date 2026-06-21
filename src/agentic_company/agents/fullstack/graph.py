@@ -267,14 +267,10 @@ def _write_feature_execution_request(
     if repo_ctx:
         instructions.append(
             f"A git repository is connected for this run: {repo_ctx['repository']} "
-            f"(base branch `{repo_ctx['base_branch']}`). After you finish this work item, DELIVER "
-            "IT AS A PULL REQUEST using the git-pr-workflow skill: orient first (check your "
-            "current branch, recent commits, and `gh pr list`), put your work on branch "
-            f"`adl/{work_item_id.lower()}`, commit (never secrets), and push. If no PR exists for "
-            "that branch yet, open it; if one already exists, push to it and UPDATE its "
-            "title/description so the PR details ALWAYS reflect the current work — never open a "
-            "second PR. Never commit to the base branch directly; QA reviews and merges the PR. "
-            "The platform does NOT touch git — you own the branch and PR."
+            f"(base branch `{repo_ctx['base_branch']}`). Deliver this work item as a pull "
+            f"request on branch `adl/{work_item_id.lower()}` by following the git-pr-workflow "
+            "skill (Builder workflow). The platform does NOT touch git — you own the branch "
+            "and PR."
         )
     request = build_execution_request_payload(
         delivery_state,

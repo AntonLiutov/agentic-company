@@ -186,15 +186,9 @@ def _write_quality_execution_request(
         instructions.append(
             f"A git repository is connected: {repo_ctx['repository']} "
             f"(base branch `{repo_ctx['base_branch']}`). The builder delivered this work item "
-            f"as a pull request from branch `adl/{work_item_id.lower()}`. Follow the "
-            "git-pr-workflow skill (Reviewer section): ORIENT first (`git remote -v`, "
-            "`git status`, `gh pr list`, the PR diff), review the running app against exactly "
-            "what the PR changes — never accept stale or unpushed code. You may also leave ONE "
-            "short PR comment with your verdict via `gh pr comment` (a brief positive note on a "
-            "pass, or the key blocking defect on a fail — one comment, not a thread). On a PASS, "
-            "MERGE the PR yourself with `gh pr merge` — you have full git access. On a FAIL, "
-            "report the concrete defects so the builder repairs the same branch and you "
-            "re-review. The platform does NOT touch git — you own review and merge."
+            f"as a pull request on branch `adl/{work_item_id.lower()}`. Review it and decide its "
+            "fate by following the git-pr-workflow skill (Reviewer workflow). The platform does "
+            "NOT touch git — you own review, merge, and comment."
         )
     request = build_execution_request_payload(
         delivery_state,

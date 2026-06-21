@@ -46,9 +46,9 @@ def test_quality_prompt_includes_execution_instructions(tmp_path, monkeypatch):
     assert "let the platform merge" in prompt
 
 
-def test_quality_request_instructs_self_review_merge_and_comment(tmp_path, monkeypatch):
-    # Worker-owned delivery: when a repo is connected, QA reviews the PR, merges it itself
-    # (gh pr merge), and may leave one short comment. The platform does NOT touch git.
+def test_quality_request_triggers_git_pr_workflow_skill(tmp_path, monkeypatch):
+    # The prompt only gives run context + triggers the skill; the actual review/merge/comment
+    # behavior lives in the git-pr-workflow SKILL (asserted in test_skills), not hardcoded here.
     monkeypatch.setattr(
         quality_graph,
         "_run_repo_context",
@@ -77,7 +77,6 @@ def test_quality_request_instructs_self_review_merge_and_comment(tmp_path, monke
 
     request = json.loads((tmp_path / "delivery" / "execution-request.json").read_text())
     instructions = "\n".join(request["instructions"])
-    assert "adl/f1" in instructions  # QA orients to the work-item branch itself
-    assert "gh pr merge" in instructions  # QA merges on a pass
-    assert "gh pr comment" in instructions  # QA may leave one short verdict comment
+    assert "adl/f1" in instructions  # the work-item branch (run context)
+    assert "git-pr-workflow" in instructions  # prompt triggers the skill (behavior lives there)
     assert "platform does NOT touch git" in instructions
