@@ -65,3 +65,31 @@ def test_device_login_state_reads_output_without_tokens(monkeypatch, tmp_path):
     assert state["status"] == "running"
     assert "ABCD-1234" in state["output"]
     assert "token" not in json.dumps(state).lower()
+
+
+def test_start_codex_login_picks_browser_or_device_flow(monkeypatch, tmp_path):
+    # local host -> `codex login` browser OAuth (VS Code-style, no code typing);
+    # headless host -> `codex login --device-auth` (the device-code fallback).
+    monkeypatch.setenv("AGENTIC_CODEX_AUTH_ROOT", str(tmp_path / "auth-root"))
+    monkeypatch.setattr(account_auth, "resolve_codex_binary", lambda: "codex-test")
+    captured = {}
+
+    class _FakeProc:
+        pid = 4321
+        stdout = None  # capture thread skips reading; wait() returns immediately
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(
+        account_auth.subprocess,
+        "Popen",
+        lambda args, **kw: captured.update(args=args) or _FakeProc(),
+    )
+
+    state = account_auth.start_codex_login(5, device=False)
+    assert captured["args"] == ["codex-test", "login"]
+    assert state["flow"] == "browser"
+
+    account_auth.start_codex_login(6, device=True)
+    assert captured["args"] == ["codex-test", "login", "--device-auth"]

@@ -79,21 +79,34 @@ def codex_login_status(user_id: int, *, timeout_seconds: int = 10) -> CodexLogin
     )
 
 
-def start_codex_device_login(user_id: int) -> dict[str, str]:
-    """Start ``codex login --device-auth`` and capture its device-code output."""
+def start_codex_login(user_id: int, *, device: bool) -> dict[str, str]:
+    """Start ``codex login`` and capture its output.
+
+    ``device=False`` is the browser OAuth flow (like VS Code / Claude Code): codex opens
+    the user's browser and completes via a localhost callback — no code typing. Use it
+    wherever a browser is available (the ``local`` runtime profile). ``device=True`` is
+    the device-code fallback (``--device-auth``) for a headless/remote host (``vm_mvp``),
+    where there is no browser to open on the server, so the user enters a one-time code.
+    """
 
     codex_home = ensure_codex_home_for_user(user_id)
     state_path = codex_home / DEVICE_LOGIN_STATE
     state = {
         "status": "started",
-        "message": "Codex device login started.",
+        "message": "Opening your browser to sign in to Codex…"
+        if not device
+        else "Codex device login started.",
         "output": "",
+        "flow": "device" if device else "browser",
     }
     state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
     _chmod_best_effort(state_path, 0o600)
     env = _codex_auth_env(codex_home)
+    command = [resolve_codex_binary(), "login"]
+    if device:
+        command.append("--device-auth")
     process = subprocess.Popen(
-        [resolve_codex_binary(), "login", "--device-auth"],
+        command,
         cwd=codex_home,
         env=env,
         stdout=subprocess.PIPE,
@@ -106,11 +119,16 @@ def start_codex_device_login(user_id: int) -> dict[str, str]:
     thread = threading.Thread(
         target=_capture_device_login,
         args=(process, state_path),
-        name=f"codex-device-login-{user_id}",
+        name=f"codex-login-{user_id}",
         daemon=True,
     )
     thread.start()
     return state
+
+
+def start_codex_device_login(user_id: int) -> dict[str, str]:
+    """Back-compat: the device-code flow (headless hosts). Prefer ``start_codex_login``."""
+    return start_codex_login(user_id, device=True)
 
 
 def codex_device_login_state(user_id: int) -> dict[str, str]:

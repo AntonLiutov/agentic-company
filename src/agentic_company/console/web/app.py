@@ -732,9 +732,14 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
 
     @app.post("/auth/codex/connect")
     def codex_connect(request: Request, user: CurrentUser) -> Response:
+        from agentic_company.platform.runtime_profile import RuntimeProfile, current_profile
+
         repo = get_repo(request)
+        # local host has a browser → VS Code-style browser OAuth (no code typing);
+        # a headless vm_mvp host falls back to the device-code flow.
+        use_device = current_profile() is RuntimeProfile.VM_MVP
         try:
-            codex_account_auth.start_codex_device_login(user.id)
+            codex_account_auth.start_codex_login(user.id, device=use_device)
         except OSError as exc:
             repo.upsert_codex_auth_connection(
                 user.id,
