@@ -138,6 +138,11 @@ def create_app(repository: ConsoleRepository | None = None) -> FastAPI:
                 )
         return await call_next(request)
 
+    @app.get("/healthz")
+    def healthz() -> dict[str, str]:
+        """Liveness probe for the deploy gate — no auth, no DB. Reports the live release sha."""
+        return {"status": "ok", "sha": os.getenv("AGENTIC_RELEASE_SHA", "")}
+
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request) -> Response:
         user = optional_user(request)

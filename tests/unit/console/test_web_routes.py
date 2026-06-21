@@ -306,6 +306,17 @@ def test_create_project_blocked_until_codex_connected(tmp_path, monkeypatch):
     assert repo.list_projects_for_user(1) == []
 
 
+def test_healthz_is_open_and_reports_release_sha(monkeypatch):
+    # The deploy gate polls /healthz: no auth, no DB, echoes the running release sha.
+    monkeypatch.setenv("AGENTIC_RELEASE_SHA", "deadbeef")
+    client = TestClient(create_app(ConsoleRepository()))
+
+    response = client.get("/healthz")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "sha": "deadbeef"}
+
+
 def test_workspace_can_approve_pending_gate(tmp_path):
     repo = ConsoleRepository()
     repo.init_schema()

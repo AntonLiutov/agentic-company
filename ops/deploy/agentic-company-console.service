@@ -1,0 +1,22 @@
+# Installed at /etc/systemd/system/agentic-company-console.service by bootstrap_vm.sh.
+# Runs the release that `current` points at, under the unprivileged `deployer` user.
+# Env comes from the symlinked prod secrets (current/.env -> shared/.env) plus the
+# per-release sha file the deploy writes (current/.release.env).
+[Unit]
+Description=Agentic Company Console
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deployer
+Group=deployer
+WorkingDirectory=/opt/agentic-company/current
+EnvironmentFile=/opt/agentic-company/current/.env
+EnvironmentFile=-/opt/agentic-company/current/.release.env
+ExecStart=/home/deployer/.local/bin/uv run --extra app agentic-web-console
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
