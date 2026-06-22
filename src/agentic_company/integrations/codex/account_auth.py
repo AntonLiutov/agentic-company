@@ -159,9 +159,14 @@ def _capture_device_login(process: subprocess.Popen[str], state_path: Path) -> N
 
 
 _URL_RE = re.compile(r"https://\S+")
-# Device user codes look like ABCD-1234 (4+4 upper/digit). Tight enough to never match a
-# fragment of the browser-flow oauth/authorize URL (its code_challenge/state are mixed-case).
-_USER_CODE_RE = re.compile(r"\b[A-Z0-9]{4}-[A-Z0-9]{4}\b")
+# Device user codes are 4-then-4..8 upper/digit (codex 0.141 prints e.g. 0SAE-KWF9Q = 4-5).
+# Still tight enough to never match a fragment of the browser-flow oauth/authorize URL
+# (its code_challenge/state are mixed-case).
+_USER_CODE_RE = re.compile(r"\b[A-Z0-9]{4}-[A-Z0-9]{4,8}\b")
+# codex 0.141 COLORS its login output (URL + code wrapped in \x1b[94m…\x1b[0m). Strip ANSI
+# escapes before parsing: otherwise \S+ swallows the trailing reset into the URL (a broken
+# link) and the ANSI bytes hugging the code break the \b word boundary so it never matches.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 
 
 def _parse_login_output(output: str) -> dict[str, str]:
@@ -172,6 +177,7 @@ def _parse_login_output(output: str) -> dict[str, str]:
     needs — the page to open and (device flow) the short code to type — so the template can
     render a clean button + code box instead of dumping the terminal.
     """
+    output = _ANSI_RE.sub("", output)
     code_match = _USER_CODE_RE.search(output)
     user_code = code_match.group(0) if code_match else ""
     urls = [u.rstrip(".,)") for u in _URL_RE.findall(output)]
