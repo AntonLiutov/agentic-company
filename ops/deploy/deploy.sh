@@ -17,6 +17,10 @@ RELEASES="$DEPLOY_ROOT/releases"; SHARED="$DEPLOY_ROOT/shared"
 RELEASE_DIR="$RELEASES/$SHA"; CURRENT="$DEPLOY_ROOT/current"; PREVIOUS="$DEPLOY_ROOT/previous"
 log() { printf '\n>>> %s\n' "$*"; }
 
+# Let the worker push over HTTPS using its per-run GH_TOKEN: gh as git's credential helper.
+# The token itself is injected per run (build_codex_exec_environment), not stored here.
+git config --global credential.https://github.com.helper '!gh auth git-credential' >/dev/null 2>&1 || true
+
 # 0. Re-render secrets from Key Vault (picks up any rotation) before touching anything.
 log "refresh secrets from Key Vault"
 sudo systemctl restart agentic-secrets-fetch

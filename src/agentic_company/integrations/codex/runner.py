@@ -688,6 +688,9 @@ def build_codex_exec_environment(target_project_dir: Path) -> dict[str, str]:
     auth_mode = codex_auth_mode_from_env(env)
     if auth_mode == CODEX_AUTH_MODE_USER_CHATGPT:
         _apply_run_owner_codex_home(env, target_project_dir)
+    # The worker owns git delivery (the git-pr-workflow skill), so it must push + open/merge
+    # its PR as the run owner — inject their GitHub token, independent of the Codex auth mode.
+    _apply_run_owner_github_token(env, target_project_dir)
     if _uses_extension_binary_mode(env):
         # The VS Code/Cursor extension binary authenticates with the editor's own global
         # session and ignores the per-user auth.json — so a user_chatgpt worker would
@@ -836,6 +839,41 @@ def _apply_run_owner_codex_home(env: dict[str, str], target_project_dir: Path) -
         if project is None or project.owner_user_id is None:
             return
         env[CODEX_HOME_ENV] = str(codex_home_for_user(project.owner_user_id))
+    except Exception:
+        return
+
+
+def _apply_run_owner_github_token(env: dict[str, str], target_project_dir: Path) -> None:
+    """Inject the run owner's GitHub OAuth token as GH_TOKEN/GITHUB_TOKEN so the worker can
+    push + open/merge its PR as them (the worker owns git). Multi-user safe: each run delivers
+    under its own owner's token. Runs AFTER the agent-runtime.env secret scrub, so a real
+    per-user token is injected without ever leaking an ambient/host GH_TOKEN.
+    """
+    try:
+        from agentic_company.console.web import github_oauth
+        from agentic_company.console.web.auth import decrypt_secret
+        from agentic_company.console.web.db import ConsoleRepository
+    except Exception:
+        return
+    try:
+        repo = ConsoleRepository()
+        run = None
+        for candidate in (target_project_dir, *target_project_dir.parents[:2]):
+            run = repo.get_run_by_uid(candidate.name)
+            if run is not None:
+                break
+        if run is None:
+            return
+        project = repo.get_project(run.project_id)
+        if project is None or project.owner_user_id is None:
+            return
+        cred = repo.get_provider_secret(project.owner_user_id, github_oauth.PROVIDER)
+        if cred is None:
+            return
+        token = decrypt_secret(cred.encrypted_value)
+        if token:
+            env["GH_TOKEN"] = token
+            env["GITHUB_TOKEN"] = token
     except Exception:
         return
 
