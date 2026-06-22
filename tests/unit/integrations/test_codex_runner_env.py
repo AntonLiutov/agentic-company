@@ -382,6 +382,55 @@ def test_apply_run_owner_codex_home_handles_both_target_shapes(monkeypatch, tmp_
         assert env.get("CODEX_HOME") == expected
 
 
+def test_apply_run_owner_github_token_injects_owner_token(monkeypatch, tmp_path):
+    # The worker owns git delivery (the git-pr-workflow skill): it pushes its branch and
+    # opens/merges the PR as the run owner, so build_codex_exec_environment must inject the
+    # owner's GitHub OAuth token as GH_TOKEN/GITHUB_TOKEN. Multi-user safe: the token is
+    # resolved from THIS run's owner, and it runs after the agent-runtime secret scrub.
+    from agentic_company.integrations.codex import runner
+
+    class _Run:
+        project_id = 1
+
+    class _Project:
+        owner_user_id = 7
+
+    class _Cred:
+        encrypted_value = "enc-blob"
+
+    class _Repo:
+        def get_run_by_uid(self, uid):
+            return _Run() if uid == "project-xyz" else None
+
+        def get_project(self, pid):
+            return _Project()
+
+        def get_provider_secret(self, user_id, provider):
+            assert user_id == 7
+            return _Cred()
+
+    import agentic_company.console.web.auth as auth
+    import agentic_company.console.web.db as db
+
+    monkeypatch.setattr(db, "ConsoleRepository", lambda: _Repo())
+    monkeypatch.setattr(
+        auth, "decrypt_secret", lambda value: "ghp_live" if value == "enc-blob" else ""
+    )
+
+    run_dir = tmp_path / "runs" / "u" / "project-xyz"
+    # Both the head executor (run dir) and worker agents (<run_dir>/generated-project) resolve.
+    for target in (run_dir, run_dir / "generated-project"):
+        env: dict[str, str] = {}
+        runner._apply_run_owner_github_token(env, target)
+        assert env["GH_TOKEN"] == "ghp_live"
+        assert env["GITHUB_TOKEN"] == "ghp_live"
+
+    # An unrelated dir (no run) leaves the env untouched — never injects a stray token.
+    env_none: dict[str, str] = {}
+    runner._apply_run_owner_github_token(env_none, tmp_path / "not-a-run")
+    assert "GH_TOKEN" not in env_none
+
+
 def test_repo_local_node_bin_dir_detects_portable_node(tmp_path: Path):
     node_root = tmp_path / "ops" / "codex-npm-smoke" / ".tools" / "node"
     if os.name == "nt":
