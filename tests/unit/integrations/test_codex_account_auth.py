@@ -92,6 +92,21 @@ def test_parse_login_output_extracts_device_url_and_code():
     assert parsed["user_code"] == "WXYZ-1234"
 
 
+def test_parse_login_output_strips_ansi_and_reads_4_5_device_code():
+    # Real codex 0.141 COLORS its device-login output: the URL + code are wrapped in
+    # \x1b[94m…\x1b[0m, and the code is 4-5 (e.g. 0SAE-KWF9Q). Without stripping ANSI the URL
+    # keeps a trailing reset (a broken link) and the code's \b boundary breaks (empty code).
+    out = (
+        "1. Open this link in your browser\n"
+        "   \x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\n"
+        "2. Enter this one-time code \x1b[90m(expires in 15 minutes)\x1b[0m\n"
+        "   \x1b[94m0SAE-KWF9Q\x1b[0m\n"
+    )
+    parsed = account_auth._parse_login_output(out)
+    assert parsed["auth_url"] == "https://auth.openai.com/codex/device"
+    assert parsed["user_code"] == "0SAE-KWF9Q"
+
+
 def test_parse_login_output_browser_flow_uses_authorize_url_no_code():
     # The clunky raw browser-flow dump the user pasted: a localhost server line + a giant
     # oauth/authorize URL. We surface the authorize URL as a button and find no device code.
