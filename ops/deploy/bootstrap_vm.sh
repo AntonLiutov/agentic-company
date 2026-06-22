@@ -21,6 +21,15 @@ echo ">>> packages: az CLI + postgresql-client + rsync"
 command -v az >/dev/null 2>&1 || curl -sL https://aka.ms/InstallAzureCLIDeb | bash
 command -v psql >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y postgresql-client; }
 command -v rsync >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y rsync; }
+# gh: the console uses the GitHub CLI for the board mirror + repo ensure. bootstrap ensures
+# it even if an older cloud-init host-setup predated the gh step (idempotent).
+if ! command -v gh >/dev/null 2>&1; then
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+  chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    > /etc/apt/sources.list.d/github-cli.list
+  apt-get update -qq && apt-get install -y gh
+fi
 
 echo ">>> deployer user"
 id -u "$DEPLOY_USER" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$DEPLOY_USER"
